@@ -440,6 +440,16 @@ static void updateLvglValues(){
   }
 }
 
+// Ensure LVGL centers the first tile after the first few ticks (post-layout)
+static void lv_fix_initial_layout(lv_timer_t *t){
+  (void)t;
+  if (lv_tv && lv_tile_main){
+    lv_obj_set_tile(lv_tv, lv_tile_main, LV_ANIM_OFF);
+    lv_obj_scroll_to_x(lv_tv, 0, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(lv_tv, 0, LV_ANIM_OFF);
+  }
+}
+
 // Modal dialog to change min/max for pH or ORP
 static void showRangeDialog(bool isPh){
   const char *title = isPh ? "pH range" : "ORP range";
@@ -447,23 +457,36 @@ static void showRangeDialog(bool isPh){
   lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
   lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
   lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  // No scrollbars on modal overlay
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
 
   lv_obj_t *dlg = lv_obj_create(modal);
   lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, 120);
   lv_obj_center(dlg);
   lv_obj_set_style_radius(dlg, 10, 0);
   lv_obj_set_style_pad_all(dlg, 8, 0);
+  // No scrollbars on dialog window
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(dlg, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
 
   lv_obj_t *lbl = lv_label_create(dlg); lv_label_set_text(lbl, title); lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
 
   // Min
   lv_obj_t *minLbl = lv_label_create(dlg); lv_label_set_text(minLbl, "Min:"); lv_obj_align(minLbl, LV_ALIGN_LEFT_MID, 0, -20);
   lv_obj_t *taMin = lv_textarea_create(dlg); lv_obj_set_width(taMin, 80); lv_obj_align_to(taMin, minLbl, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+  // Hide any text area scrollbars
+  lv_obj_set_scrollbar_mode(taMin, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(taMin, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
   char bmin[16]; if (isPh) snprintf(bmin,sizeof(bmin),"%.2f", PH_MIN); else snprintf(bmin,sizeof(bmin),"%d", ORP_MIN); lv_textarea_set_text(taMin, bmin);
 
   // Max
   lv_obj_t *maxLbl = lv_label_create(dlg); lv_label_set_text(maxLbl, "Max:"); lv_obj_align(maxLbl, LV_ALIGN_LEFT_MID, 0, 20);
   lv_obj_t *taMax = lv_textarea_create(dlg); lv_obj_set_width(taMax, 80); lv_obj_align_to(taMax, maxLbl, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+  lv_obj_set_scrollbar_mode(taMax, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(taMax, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
   char bmax[16]; if (isPh) snprintf(bmax,sizeof(bmax),"%.2f", PH_MAX); else snprintf(bmax,sizeof(bmax),"%d", ORP_MAX); lv_textarea_set_text(taMax, bmax);
 
   // Buttons
@@ -1504,6 +1527,9 @@ void setup() {
       lv_obj_set_style_bg_color(scr, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
       lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(scr, lv_color_black(), 0);
+      // Ensure no scrollbars on the root screen
+      lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
       if (LVGL_SAFE_BASELINE) {
         // Minimal stable UI: show values as simple labels
         lv_obj_t *lbl1 = lv_label_create(scr);
@@ -1528,7 +1554,8 @@ void setup() {
       lv_obj_set_style_bg_color(scr, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
       lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(scr, lv_color_white(), 0);
-      lv_obj_set_style_pad_bottom(scr, 16, 0); // space for dots below frame
+      // Eliminate any implicit padding on screen
+      lv_obj_set_style_pad_all(scr, 0, 0);
 
       // (moved lower) create debug label after frame to ensure foreground
 
@@ -1539,6 +1566,9 @@ void setup() {
       lv_obj_set_style_border_width(frame, 0, 0);
       lv_obj_set_style_radius(frame, 0, 0);
       lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_pad_all(frame, 0, 0);
+      lv_obj_set_scrollbar_mode(frame, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
 
       // Tileview with 2 pages (main, settings)
       lv_tv = lv_tileview_create(frame);
@@ -1547,17 +1577,21 @@ void setup() {
       lv_obj_set_scroll_dir(lv_tv, LV_DIR_HOR);
       lv_obj_set_scroll_snap_x(lv_tv, LV_SCROLL_SNAP_CENTER);
       lv_obj_set_style_bg_opa(lv_tv, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_pad_all(lv_tv, 0, 0);
       // Keep scrolling enabled for swipe; just hide scrollbars
       lv_obj_set_scrollbar_mode(lv_tv, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_set_style_bg_opa(lv_tv, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
       lv_obj_set_style_text_color(lv_tv, lv_color_white(), 0);
 
       lv_tile_main = lv_tileview_add_tile(lv_tv, 0, 0, LV_DIR_HOR);
       lv_tile_settings = lv_tileview_add_tile(lv_tv, 1, 0, LV_DIR_HOR);
       lv_obj_set_style_bg_opa(lv_tile_main, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_pad_all(lv_tile_main, 0, 0);
       lv_obj_clear_flag(lv_tile_main, LV_OBJ_FLAG_SCROLLABLE);
       lv_obj_set_scrollbar_mode(lv_tile_main, LV_SCROLLBAR_MODE_OFF);
       lv_obj_set_style_text_color(lv_tile_main, lv_color_white(), 0);
       lv_obj_set_style_bg_opa(lv_tile_settings, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_pad_all(lv_tile_settings, 0, 0);
       lv_obj_clear_flag(lv_tile_settings, LV_OBJ_FLAG_SCROLLABLE);
       lv_obj_set_scrollbar_mode(lv_tile_settings, LV_SCROLLBAR_MODE_OFF);
       lv_obj_set_style_text_color(lv_tile_settings, lv_color_white(), 0);
@@ -1580,9 +1614,11 @@ void setup() {
       lv_obj_t *content = lv_obj_create(lv_tile_main); lv_obj_remove_style_all(content);
       lv_obj_set_size(content, content_w, content_h);
       lv_obj_set_style_pad_all(content, pad, 0);
-      lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 6);
+      // Center content; a slight upward shift keeps room for IP label
+      lv_obj_align(content, LV_ALIGN_CENTER, 0, -5);
       lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLLABLE);
       lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
       static lv_style_t st_card; static bool st_inited=false; if(!st_inited){ st_inited=true; lv_style_init(&st_card); lv_style_set_radius(&st_card, 12); lv_style_set_bg_opa(&st_card, LV_OPA_COVER); lv_style_set_bg_grad_dir(&st_card, LV_GRAD_DIR_VER); lv_style_set_shadow_width(&st_card, 10); lv_style_set_shadow_opa(&st_card, LV_OPA_30); lv_style_set_shadow_ofs_y(&st_card, 4); lv_style_set_pad_all(&st_card, 10); }
       auto make_tile = [&](bool left, lv_color_t c1, lv_color_t c2, const char *title){ lv_obj_t *tile = lv_btn_create(content); lv_obj_remove_style_all(tile); lv_obj_add_style(tile, &st_card, 0); lv_obj_set_style_bg_color(tile, c1, 0); lv_obj_set_style_bg_grad_color(tile, c2, 0); int tw = (content_w - gap)/2; int th = content_h - 4; if (th < 60) th = 60; lv_obj_set_size(tile, tw, th); lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF); if(left) lv_obj_align(tile, LV_ALIGN_LEFT_MID, -4, 0); else lv_obj_align(tile, LV_ALIGN_RIGHT_MID, 4, 0); 
         // title small bottom-left
@@ -1613,7 +1649,7 @@ void setup() {
       if (orp_tile) lv_obj_add_event_cb(orp_tile, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED) showRangeDialog(false); }, LV_EVENT_ALL, NULL);
 
       // Footer IP at bottom-right (always show)
-      lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -2, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
+      lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
 
       lv_lbl_m1 = lv_label_create(lv_tile_main);
       lv_label_set_text(lv_lbl_m1, "M1");
@@ -1637,6 +1673,8 @@ void setup() {
       lv_obj_set_style_bg_color(row1, lv_palette_darken(LV_PALETTE_GREY,2), 0);
       lv_obj_set_style_bg_opa(row1, LV_OPA_30, 0);
       lv_obj_set_style_pad_all(row1, 6, 0);
+      lv_obj_clear_flag(row1, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_set_scrollbar_mode(row1, LV_SCROLLBAR_MODE_OFF);
 
       lv_obj_t *lbl1 = lv_label_create(row1); lv_label_set_text(lbl1, "pH Motor Speed"); lv_obj_align(lbl1, LV_ALIGN_LEFT_MID, 0, 0);
       lv_obj_t *btn1m = lv_btn_create(row1); lv_obj_set_size(btn1m, 36, 32); lv_obj_align(btn1m, LV_ALIGN_RIGHT_MID, -120, 0); lv_obj_add_event_cb(btn1m, on_ph_minus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn1m), "-");
@@ -1650,6 +1688,8 @@ void setup() {
       lv_obj_set_style_bg_color(row2, lv_palette_darken(LV_PALETTE_GREY,2), 0);
       lv_obj_set_style_bg_opa(row2, LV_OPA_30, 0);
       lv_obj_set_style_pad_all(row2, 6, 0);
+      lv_obj_clear_flag(row2, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_set_scrollbar_mode(row2, LV_SCROLLBAR_MODE_OFF);
       lv_obj_t *lbl2 = lv_label_create(row2); lv_label_set_text(lbl2, "ORP Motor Speed"); lv_obj_align(lbl2, LV_ALIGN_LEFT_MID, 0, 0);
       lv_obj_t *btn2m = lv_btn_create(row2); lv_obj_set_size(btn2m, 36, 32); lv_obj_align(btn2m, LV_ALIGN_RIGHT_MID, -120, 0); lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn2m), "-");
       lv_lbl_speed2 = lv_label_create(row2); lv_label_set_text(lv_lbl_speed2, "--%"); lv_obj_align(lv_lbl_speed2, LV_ALIGN_RIGHT_MID, -70, 0);
@@ -1660,8 +1700,22 @@ void setup() {
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
+      // Ensure initial layout is computed and the first tile is active/centered
+      lv_obj_update_layout(scr);
+      lv_obj_update_layout(lv_tv);
+      lv_obj_update_layout(lv_tile_main);
+      // Re-apply content align after sizes are final
+      lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 6);
+      // Activate first tile without animation (prevents initial offset)
+      lv_obj_set_tile(lv_tv, lv_tile_main, LV_ANIM_OFF);
+      // Force scroll offsets to (0,0) to avoid any residual drift
+      lv_obj_scroll_to_x(lv_tv, 0, LV_ANIM_OFF);
+      lv_obj_scroll_to_y(lv_tv, 0, LV_ANIM_OFF);
     };
     build_lvgl_ui();
+    // Add a one-shot timer to enforce centered layout once sizes settle
+    lv_timer_t *once = lv_timer_create(lv_fix_initial_layout, 60, NULL);
+    lv_timer_set_repeat_count(once, 1);
   }
 
   if (!DIAG_MODE) {
