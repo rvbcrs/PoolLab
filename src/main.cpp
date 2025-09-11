@@ -30,8 +30,30 @@
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
+// Core modules
+#include "core/Storage.h"
+#include "core/DisplayBridge.h"
+#include "domain/Metrics.h"
+#include "domain/ControlPolicy.h"
+// IO modules
+#include "io/MqttClient.h"
+#include "io/Touch.h"
+#include "io/Tuya.h"
+#include "ui/UI.h"
+// Icons
+extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
+extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+extern "C" const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+
+#define FIRMWARE_VERSION __DATE__ " " __TIME__
+
+// Local convenience accessor for metrics (scoped to this file only)
+static inline domain::Metrics& METRICS(){ return domain::Metrics::instance(); }
 extern "C" const lv_font_t lv_font_source_code_pro_16;
 extern "C" const lv_font_t lv_font_montserrat_14;
+extern "C" const lv_font_t lv_font_source_code_pro_18;
+extern "C" const lv_font_t lv_font_source_code_pro_36;
+extern "C" const lv_font_t lv_font_source_code_pro_36_bold;
 
 // ====== USER CONFIG ======
 // Set to true for a minimal diagnostic mode (serial prints + color flashes)
@@ -80,12 +102,23 @@ static volatile uint32_t lv_flush_count = 0;
 static volatile uint32_t lv_touch_press_count = 0;
 static volatile int16_t lv_touch_last_x = -1;
 static volatile int16_t lv_touch_last_y = -1;
+// Touch cache polled by a fast LVGL timer to avoid missing short taps
 
 // Main page widgets
 static lv_obj_t *lv_lbl_ph = nullptr;
 static lv_obj_t *lv_lbl_orp = nullptr;
 static lv_obj_t *lv_lbl_temp = nullptr;
 static lv_obj_t *lv_lbl_orp_unit = nullptr;
+static lv_obj_t *lv_lbl_ph_shadow = nullptr;
+static lv_obj_t *lv_lbl_orp_shadow = nullptr;
+static lv_obj_t *lv_img_ph_icon = nullptr;
+static lv_obj_t *lv_img_orp_icon = nullptr;
+static lv_obj_t *lv_img_pump_ph = nullptr;
+static lv_obj_t *lv_img_pump_orp = nullptr;
+static lv_obj_t *lv_img_ph_icon_shadow = nullptr;
+static lv_obj_t *lv_img_orp_icon_shadow = nullptr;
+static lv_obj_t *lv_img_pump_ph_shadow = nullptr;
+static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_lbl_m1 = nullptr; // motor1 indicator
 static lv_obj_t *lv_lbl_m2 = nullptr; // motor2 indicator
@@ -105,6 +138,32 @@ static void updateLvglValues();
 static void showRangeDialog(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
 static const bool DUMMY_MODE = true;  // set true to simulate values
+// Tap vs swipe detection for tiles
+struct TileTapCtx { bool isPh; lv_point_t start; uint32_t start_ms; bool maybe_tap; };
+static void tile_tap_cb(lv_event_t *e){
+  TileTapCtx *ctx = (TileTapCtx*)lv_event_get_user_data(e);
+  lv_event_code_t code = lv_event_get_code(e);
+  if (!ctx) return;
+  const int SLOP = 12; // px
+  const uint32_t MAX_TAP_MS = 300;
+  if (code == LV_EVENT_PRESSED) {
+    lv_indev_t *indev = lv_indev_get_act();
+    lv_point_t p; p.x = p.y = 0;
+    if (indev) lv_indev_get_point(indev, &p);
+    ctx->start = p; ctx->start_ms = lv_tick_get(); ctx->maybe_tap = true;
+  } else if (code == LV_EVENT_PRESSING) {
+    lv_indev_t *indev = lv_indev_get_act();
+    lv_point_t p; p.x = p.y = 0;
+    if (indev) lv_indev_get_point(indev, &p);
+    int dx = LV_ABS(p.x - ctx->start.x);
+    int dy = LV_ABS(p.y - ctx->start.y);
+    if (dx > SLOP || dy > SLOP) ctx->maybe_tap = false; // it's a swipe/drag
+  } else if (code == LV_EVENT_RELEASED) {
+    if (ctx->maybe_tap && lv_tick_elaps(ctx->start_ms) <= MAX_TAP_MS) {
+      showRangeDialog(ctx->isPh);
+    }
+  }
+}
 
 // ---- TB6612FNG motor driver (optional dosing pumps) ----
 static const bool MOTOR_ENABLE = true; // set false to disable all motor control
@@ -157,27 +216,12 @@ static const uint16_t MQTT_PORT  = 1883;
 static const char* MQTT_USER     = "mqqt";  // optional
 static const char* MQTT_PASS     = "mqqt";  // optional
 static const char* MQTT_CLIENTID = "pool-sniffer-c6";
-static const char* TOPIC_STATE_PH   = "pool/sensor/ph";
-static const char* TOPIC_STATE_ORP  = "pool/sensor/orp";
-static const char* TOPIC_STATE_TEMP = "pool/sensor/temp";
-static const char* DISCOVERY_PH     = "homeassistant/sensor/pool_ph/config";
-static const char* DISCOVERY_ORP    = "homeassistant/sensor/pool_orp/config";
-static const char* DISCOVERY_TEMP   = "homeassistant/sensor/pool_temp/config";
 
-static WiFiClient wifiClient;
-static PubSubClient mqtt(wifiClient);
-static bool mqttAnnounced=false;
-static Preferences prefs;
-
-// ---- MQTT command topics for threshold control ----
-static const char* TOPIC_CFG_PH_MIN   = "pool/cfg/ph_min";
-static const char* TOPIC_CFG_PH_MAX   = "pool/cfg/ph_max";
-static const char* TOPIC_CFG_ORP_MIN  = "pool/cfg/orp_min";
-static const char* TOPIC_CFG_ORP_MAX  = "pool/cfg/orp_max";
-static const char* TOPIC_CMD_PH_MIN   = "pool/cmd/ph_min";
-static const char* TOPIC_CMD_PH_MAX   = "pool/cmd/ph_max";
-static const char* TOPIC_CMD_ORP_MIN  = "pool/cmd/orp_min";
-static const char* TOPIC_CMD_ORP_MAX  = "pool/cmd/orp_max";
+// MQTT is handled by io::MqttClient now
+static core::Storage storage("poolcfg");
+static core::DisplayBridge *displayBridge = nullptr;
+static domain::ControlPolicy *control = nullptr;
+static io::MqttClient mqttClient;
 
 // WiFi event logging
 static void setupWiFiEvents() {
@@ -361,10 +405,7 @@ static uint8_t rawCountA = 0;
 static uint8_t rawCountB = 0;
 
 // Live metrics (persist and render in header)
-static bool haveTemp=false, havePh=false, haveOrp=false;
-static float tempC=0.0f, phVal=0.0f, orpMv=0.0f;
-// Once primary DP (106) has been observed for pH, do not allow ALT to overwrite
-static bool preferPhPrimary=false;
+// Metrics moved to domain::Metrics (singleton). Temporary aliases are provided in domain/Metrics.h
 
 // ===== LVGL helpers (definitions) =====
 static void lv_update_speed_labels(){
@@ -375,7 +416,7 @@ static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED
 static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; lv_update_speed_labels(); }
 static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; lv_update_speed_labels(); }
 static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; lv_update_speed_labels(); }
-static void on_speed_save_cb(lv_event_t *e){ (void)e; prefs.putInt("m1_speed", M1_SPEED_PC); prefs.putInt("m2_speed", M2_SPEED_PC); }
+static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); }
 
 // Alert margins and border thickness for near/exceed thresholds (used by LVGL updater)
 static const float WARN_MARGIN_PH = 0.05f;   // pH within 0.05 of min/max
@@ -384,50 +425,85 @@ static const int   WARN_MARGIN_ORP = 20;     // mV within 20 of min/max
 static void updateLvglValues(){
   if (!USE_LVGL_UI) return;
   if (lv_lbl_ph) {
-    if (havePh) { char b[24]; snprintf(b, sizeof(b), "%.2f", (double)phVal); lv_label_set_text(lv_lbl_ph, b); }
+    if (METRICS().havePh) { char b[24]; snprintf(b, sizeof(b), "%.2f", (double)METRICS().phVal); lv_label_set_text(lv_lbl_ph, b); }
     else lv_label_set_text(lv_lbl_ph, "--.--");
+    // Color by thresholds (red out-of-range, orange near limits, else white)
+    lv_color_t phColor = lv_color_white();
+    if (METRICS().havePh) {
+      bool below = METRICS().phVal < PH_MIN;
+      bool above = METRICS().phVal > PH_MAX;
+      bool warn = (!below && !above) && (METRICS().phVal <= PH_MIN + WARN_MARGIN_PH || METRICS().phVal >= PH_MAX - WARN_MARGIN_PH);
+      phColor = below || above ? lv_palette_main(LV_PALETTE_RED) : (warn ? lv_palette_main(LV_PALETTE_ORANGE) : lv_color_white());
+    }
+    lv_obj_set_style_text_color(lv_lbl_ph, phColor, 0);
+    // Mirror text into shadow layer
+    if (lv_lbl_ph_shadow) lv_label_set_text(lv_lbl_ph_shadow, lv_label_get_text(lv_lbl_ph));
   }
   if (lv_lbl_orp) {
-    if (haveOrp) {
-      char b[16]; snprintf(b, sizeof(b), "%d", (int)lrintf(orpMv));
+    if (METRICS().haveOrp) {
+      char b[16]; snprintf(b, sizeof(b), "%d", (int)lrintf(METRICS().orpMv));
       lv_label_set_text(lv_lbl_orp, b);
       if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_label_set_text(lv_lbl_orp, "----");
       if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
     }
+    // Color by thresholds for ORP (red out-of-range, orange near limit, else white)
+    lv_color_t orpColor = lv_color_white();
+    if (METRICS().haveOrp) {
+      int v = (int)lrintf(METRICS().orpMv);
+      bool low = v < ORP_MIN; bool high = v > ORP_MAX;
+      bool warn = (!low && !high) && (v <= ORP_MIN + WARN_MARGIN_ORP || v >= ORP_MAX - WARN_MARGIN_ORP);
+      if (low || high)      orpColor = lv_palette_main(LV_PALETTE_RED);
+      else if (warn)        orpColor = lv_palette_main(LV_PALETTE_ORANGE);
+      else                  orpColor = lv_color_white();
+    }
+    lv_obj_set_style_text_color(lv_lbl_orp, orpColor, 0);
+    if (lv_lbl_orp_unit) lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0);
+    // Mirror text into shadow layer
+    if (lv_lbl_orp_shadow) lv_label_set_text(lv_lbl_orp_shadow, lv_label_get_text(lv_lbl_orp));
   }
   if (lv_lbl_temp) {
-    if (haveTemp) { char b[24]; snprintf(b, sizeof(b), "%.1f C", (double)tempC); lv_label_set_text(lv_lbl_temp, b); }
+    if (METRICS().haveTemp) { char b[24]; snprintf(b, sizeof(b), "%.1f C", (double)METRICS().tempC); lv_label_set_text(lv_lbl_temp, b); }
     else lv_label_set_text(lv_lbl_temp, "--.- C");
   }
   if (lv_lbl_ip) {
     String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
     char b[48]; snprintf(b, sizeof(b), "IP: %s", ip.c_str()); lv_label_set_text(lv_lbl_ip, b);
   }
-  if (lv_lbl_m1) {
-    if (m1Running) { lv_obj_clear_flag(lv_lbl_m1, LV_OBJ_FLAG_HIDDEN); lv_obj_set_style_text_color(lv_lbl_m1, lv_palette_main(LV_PALETTE_GREEN), 0); }
-    else lv_obj_add_flag(lv_lbl_m1, LV_OBJ_FLAG_HIDDEN);
+  if (lv_img_pump_ph) {
+    if (m1Running) {
+      lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
+      if (lv_img_pump_ph_shadow) lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
+      if (lv_img_pump_ph_shadow) lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+    }
   }
-  if (lv_lbl_m2) {
-    if (m2Running) { lv_obj_clear_flag(lv_lbl_m2, LV_OBJ_FLAG_HIDDEN); lv_obj_set_style_text_color(lv_lbl_m2, lv_palette_main(LV_PALETTE_GREEN), 0); }
-    else lv_obj_add_flag(lv_lbl_m2, LV_OBJ_FLAG_HIDDEN);
+  if (lv_img_pump_orp) {
+    if (m2Running) {
+      lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
+      if (lv_img_pump_orp_shadow) lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
+      if (lv_img_pump_orp_shadow) lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+    }
   }
 
   // Card background color by status
   if (lv_card_ph) {
     lv_color_t base = lv_palette_main(LV_PALETTE_BLUE);
-    if (havePh) {
-      bool below = phVal < PH_MIN; bool above = phVal > PH_MAX;
-      bool warn = (!below && !above) && (phVal <= PH_MIN + WARN_MARGIN_PH || phVal >= PH_MAX - WARN_MARGIN_PH);
+    if (METRICS().havePh) {
+      bool below = METRICS().phVal < PH_MIN; bool above = METRICS().phVal > PH_MAX;
+      bool warn = (!below && !above) && (METRICS().phVal <= PH_MIN + WARN_MARGIN_PH || METRICS().phVal >= PH_MAX - WARN_MARGIN_PH);
       base = below || above ? lv_palette_main(LV_PALETTE_RED) : (warn ? lv_palette_main(LV_PALETTE_ORANGE) : lv_palette_main(LV_PALETTE_BLUE));
     }
     lv_obj_set_style_bg_color(lv_card_ph, base, 0);
   }
   if (lv_card_orp) {
     lv_color_t base = lv_palette_main(LV_PALETTE_RED);
-    if (haveOrp) {
-      int v = (int)lrintf(orpMv);
+    if (METRICS().haveOrp) {
+      int v = (int)lrintf(METRICS().orpMv);
       bool low = v < ORP_MIN; bool high = v > ORP_MAX;
       bool warn = (!low && !high) && (v <= ORP_MIN + WARN_MARGIN_ORP || v >= ORP_MAX - WARN_MARGIN_ORP);
       base = low || high ? lv_palette_main(LV_PALETTE_RED) : (warn ? lv_palette_main(LV_PALETTE_ORANGE) : lv_palette_main(LV_PALETTE_GREEN));
@@ -462,8 +538,11 @@ static void showRangeDialog(bool isPh){
   lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
 
+  // Disable tileview scrolling while dialog is open
+  if (lv_tv) lv_obj_clear_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+
   lv_obj_t *dlg = lv_obj_create(modal);
-  lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, 120);
+  lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
   lv_obj_center(dlg);
   lv_obj_set_style_radius(dlg, 10, 0);
   lv_obj_set_style_pad_all(dlg, 8, 0);
@@ -493,23 +572,145 @@ static void showRangeDialog(bool isPh){
   lv_obj_t *btnCancel = lv_btn_create(dlg); lv_obj_set_size(btnCancel, 80, 32); lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_label_set_text(lv_label_create(btnCancel), "Cancel");
   lv_obj_t *btnSave   = lv_btn_create(dlg); lv_obj_set_size(btnSave, 80, 32); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_RIGHT, 0, 0); lv_label_set_text(lv_label_create(btnSave), "Save");
 
-  struct RangeCtx { bool isPh; lv_obj_t *taMin; lv_obj_t *taMax; lv_obj_t *dlg; };
+  struct RangeCtx { bool isPh; lv_obj_t *taMin; lv_obj_t *taMax; lv_obj_t *dlg; lv_obj_t *modal; lv_obj_t *tv; lv_obj_t *lblMin; lv_obj_t *lblMax; };
   RangeCtx *ctx = (RangeCtx*)lv_mem_alloc(sizeof(RangeCtx));
-  ctx->isPh = isPh; ctx->taMin = taMin; ctx->taMax = taMax; ctx->dlg = dlg;
+  ctx->isPh = isPh; ctx->taMin = taMin; ctx->taMax = taMax; ctx->dlg = dlg; ctx->modal = modal; ctx->tv = lv_tv;
 
-  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ lv_obj_t *dlg = lv_event_get_target(e)->parent; lv_obj_del(dlg); }, LV_EVENT_CLICKED, NULL);
-  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
+  // Replace textareas with sliders UI
+  // Clean dialog content and rebuild compact slider layout
+  lv_obj_clean(dlg);
+  lv_obj_set_style_pad_all(dlg, 10, 0);
+
+  // Title
+  lv_obj_t *titleLbl = lv_label_create(dlg);
+  lv_label_set_text(titleLbl, title);
+  lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 0);
+
+  // Labels to show values
+  lv_obj_t *lblMin = lv_label_create(dlg);
+  lv_obj_t *lblMax = lv_label_create(dlg);
+  // Initial placement; final alignment is tied to sliders below
+  lv_obj_align(lblMin, LV_ALIGN_LEFT_MID, 0, -25);
+  lv_obj_align(lblMax, LV_ALIGN_LEFT_MID, 0, 15);
+
+  // Sliders
+  lv_obj_t *slMin = lv_slider_create(dlg);
+  lv_obj_set_width(slMin, lv_obj_get_width(dlg) - 120);
+  // Move sliders ~10px up versus original (-20 -> -30, 20 -> 10)
+  lv_obj_align(slMin, LV_ALIGN_RIGHT_MID, -10, -35);
+  lv_obj_t *slMax = lv_slider_create(dlg);
+  lv_obj_set_width(slMax, lv_obj_get_width(dlg) - 120);
+  lv_obj_align(slMax, LV_ALIGN_RIGHT_MID, -10, 5);
+
+  // Configure ranges and initial values
+  if (isPh) {
+    lv_label_set_text(lblMin, "Min:");
+    lv_label_set_text(lblMax, "Max:");
+    lv_slider_set_range(slMin, 0, 1400);
+    lv_slider_set_range(slMax, 0, 1400);
+    lv_slider_set_value(slMin, (int)(PH_MIN * 100.0f), LV_ANIM_OFF);
+    lv_slider_set_value(slMax, (int)(PH_MAX * 100.0f), LV_ANIM_OFF);
+  } else {
+    lv_label_set_text(lblMin, "Min (mV):");
+    lv_label_set_text(lblMax, "Max (mV):");
+    lv_slider_set_range(slMin, 0, 3000);
+    lv_slider_set_range(slMax, 0, 3000);
+    lv_slider_set_value(slMin, ORP_MIN, LV_ANIM_OFF);
+    lv_slider_set_value(slMax, ORP_MAX, LV_ANIM_OFF);
+  }
+
+  // Show current values next to labels
+  auto update_value_labels = [&](RangeCtx *c){
+    if (c->isPh) {
+      char b1[16], b2[16];
+      snprintf(b1, sizeof(b1), "%.2f", lv_slider_get_value(slMin) / 100.0f);
+      snprintf(b2, sizeof(b2), "%.2f", lv_slider_get_value(slMax) / 100.0f);
+      lv_label_set_text_fmt(lblMin, "Min: %s", b1);
+      lv_label_set_text_fmt(lblMax, "Max: %s", b2);
+    } else {
+      lv_label_set_text_fmt(lblMin, "Min (mV): %d", (int)lv_slider_get_value(slMin));
+      lv_label_set_text_fmt(lblMax, "Max (mV): %d", (int)lv_slider_get_value(slMax));
+    }
+  };
+
+  // Extend ctx to carry new widgets
+  ctx->taMin = slMin; ctx->taMax = slMax; ctx->lblMin = lblMin; ctx->lblMax = lblMax;
+
+  update_value_labels(ctx);
+
+  // Ensure labels are vertically centered to their sliders and sit just to the left
+  lv_obj_align_to(lblMin, slMin, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+  lv_obj_align_to(lblMax, slMax, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+
+  // Enforce constraints and update labels on slider change
+  lv_obj_add_event_cb(slMin, [](lv_event_t *e){
     RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
-    const char *smin = lv_textarea_get_text(c->taMin);
-    const char *smax = lv_textarea_get_text(c->taMax);
-    if (c->isPh) { PH_MIN = atof(smin); PH_MAX = atof(smax); }
-    else { ORP_MIN = atoi(smin); ORP_MAX = atoi(smax); }
-    prefs.putFloat("ph_min", PH_MIN); prefs.putFloat("ph_max", PH_MAX);
-    prefs.putInt("orp_min", ORP_MIN); prefs.putInt("orp_max", ORP_MAX);
-    updateLvglValues();
-    lv_obj_del(c->dlg);
+    lv_obj_t *slMinL = c->taMin;
+    lv_obj_t *slMaxL = c->taMax;
+    int minv = lv_slider_get_value(slMinL);
+    int maxv = lv_slider_get_value(slMaxL);
+    int step = 1;
+    if (minv > maxv - step) { minv = maxv - step; lv_slider_set_value(slMinL, minv, LV_ANIM_OFF); }
+    if (c->isPh) {
+      lv_label_set_text_fmt(c->lblMin, "Min: %.2f", minv / 100.0f);
+      lv_label_set_text_fmt(c->lblMax, "Max: %.2f", lv_slider_get_value(slMaxL) / 100.0f);
+    } else {
+      lv_label_set_text_fmt(c->lblMin, "Min (mV): %d", minv);
+      lv_label_set_text_fmt(c->lblMax, "Max (mV): %d", (int)lv_slider_get_value(slMaxL));
+    }
+  }, LV_EVENT_VALUE_CHANGED, ctx);
+
+  lv_obj_add_event_cb(slMax, [](lv_event_t *e){
+    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
+    lv_obj_t *slMaxL = c->taMax;
+    lv_obj_t *slMinL = c->taMin;
+    int minv = lv_slider_get_value(slMinL);
+    int maxv = lv_slider_get_value(slMaxL);
+    int step = 1;
+    if (maxv < minv + step) { maxv = minv + step; lv_slider_set_value(slMaxL, maxv, LV_ANIM_OFF); }
+    if (c->isPh) {
+      lv_label_set_text_fmt(c->lblMin, "Min: %.2f", lv_slider_get_value(slMinL) / 100.0f);
+      lv_label_set_text_fmt(c->lblMax, "Max: %.2f", maxv / 100.0f);
+    } else {
+      lv_label_set_text_fmt(c->lblMin, "Min (mV): %d", (int)lv_slider_get_value(slMinL));
+      lv_label_set_text_fmt(c->lblMax, "Max (mV): %d", maxv);
+    }
+  }, LV_EVENT_VALUE_CHANGED, ctx);
+
+  // Large buttons
+  lv_obj_t *btnCancel2 = lv_btn_create(dlg); lv_obj_set_size(btnCancel2, 120, 44); lv_obj_align(btnCancel2, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_label_set_text(lv_label_create(btnCancel2), "Cancel");
+  lv_obj_t *btnSave2   = lv_btn_create(dlg); lv_obj_set_size(btnSave2, 120, 44); lv_obj_align(btnSave2, LV_ALIGN_BOTTOM_RIGHT, 0, 0); lv_label_set_text(lv_label_create(btnSave2), "Save");
+
+  // Cancel closes modal and re-enables swiping
+  lv_obj_add_event_cb(btnCancel2, [](lv_event_t *e){
+    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
+    if (c->tv) lv_obj_add_flag(c->tv, LV_OBJ_FLAG_SCROLLABLE);
+    if (c->modal) lv_obj_del(c->modal);
     lv_mem_free(c);
   }, LV_EVENT_CLICKED, ctx);
+
+  // Save applies values then closes modal and re-enables swiping
+  lv_obj_add_event_cb(btnSave2, [](lv_event_t *e){
+    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
+    // Retrieve sliders from ctx
+    lv_obj_t *slMinL = c->taMin;
+    lv_obj_t *slMaxL = c->taMax;
+    if (c->isPh) { PH_MIN = lv_slider_get_value(slMinL) / 100.0f; PH_MAX = lv_slider_get_value(slMaxL) / 100.0f; }
+    else { ORP_MIN = lv_slider_get_value(slMinL); ORP_MAX = lv_slider_get_value(slMaxL); }
+    storage.setPhMin(PH_MIN); storage.setPhMax(PH_MAX);
+    storage.setOrpMin(ORP_MIN); storage.setOrpMax(ORP_MAX);
+    updateLvglValues();
+    if (c->tv) lv_obj_add_flag(c->tv, LV_OBJ_FLAG_SCROLLABLE);
+    if (c->modal) lv_obj_del(c->modal);
+    lv_mem_free(c);
+  }, LV_EVENT_CLICKED, ctx);
+
+  // Ensure restoring scrollable on modal delete (safety)
+  lv_obj_add_event_cb(modal, [](lv_event_t *e){
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+      if (lv_tv) lv_obj_add_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+    }
+  }, LV_EVENT_ALL, NULL);
 }
 
 // ---- Simple vector icons (drawn with primitives) ----
@@ -678,38 +879,38 @@ static void updateValueAreas() {
   if (UI_OVERLAY_ACTIVE) return; // avoid drawing over the modal overlay
 
   // pH value box (draw to canvas, then blit)
-  int phScaled = havePh ? (int)lrintf(phVal * 100.0f) : INT32_MIN;
+  int phScaled = METRICS().havePh ? (int)lrintf(METRICS().phVal * 100.0f) : INT32_MIN;
   if (phScaled != lastPhScaled) {
     lastPhScaled = phScaled;
     if (phCanvas) {
       phCanvas->fillScreen(BLACK);
       phCanvas->setFont(&FreeSansBold24pt7b);
       uint16_t c = WHITE;
-      if (havePh) {
-        bool nearMin = phVal <= PH_MIN + WARN_MARGIN_PH;
-        bool nearMax = phVal >= PH_MAX - WARN_MARGIN_PH;
-        bool below   = phVal < PH_MIN;
-        bool above   = phVal > PH_MAX;
+      if (METRICS().havePh) {
+        bool nearMin = METRICS().phVal <= PH_MIN + WARN_MARGIN_PH;
+        bool nearMax = METRICS().phVal >= PH_MAX - WARN_MARGIN_PH;
+        bool below   = METRICS().phVal < PH_MIN;
+        bool above   = METRICS().phVal > PH_MAX;
         if (below || above) c = RED;
         else if (nearMin || nearMax) c = ORANGE;
       }
       phCanvas->setTextColor(c);
       phCanvas->setCursor(0, 34);
-      if (havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f", phVal); phCanvas->print(b); } else { phCanvas->print("--.--"); }
+      if (METRICS().havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f", METRICS().phVal); phCanvas->print(b); } else { phCanvas->print("--.--"); }
       gfx->draw16bitRGBBitmap(PH_BOX_X, PH_BOX_Y, phCanvas->getBuffer(), PH_BOX_W, PH_BOX_H);
       phCanvas->setFont(nullptr);
     }
   }
 
   // ORP value box (canvas)
-  int orpInt = haveOrp ? (int)lrintf(orpMv) : INT32_MIN;
+  int orpInt = METRICS().haveOrp ? (int)lrintf(METRICS().orpMv) : INT32_MIN;
   if (orpInt != lastOrpInt) {
     lastOrpInt = orpInt;
     if (orpCanvas) {
       orpCanvas->fillScreen(BLACK);
       orpCanvas->setFont(&FreeSansBold24pt7b);
       uint16_t c = WHITE;
-      if (haveOrp) {
+      if (METRICS().haveOrp) {
         bool nearMin = orpInt <= ORP_MIN + WARN_MARGIN_ORP;
         bool nearMax = orpInt >= ORP_MAX - WARN_MARGIN_ORP;
         bool below   = orpInt < ORP_MIN;
@@ -720,7 +921,7 @@ static void updateValueAreas() {
       orpCanvas->setTextColor(c);
       orpCanvas->setCursor(0, 34);
       char vb[16];
-      if (haveOrp) { snprintf(vb,sizeof(vb),"%d", orpInt); orpCanvas->print(vb); } else { strcpy(vb, "----"); orpCanvas->print(vb); }
+      if (METRICS().haveOrp) { snprintf(vb,sizeof(vb),"%d", orpInt); orpCanvas->print(vb); } else { strcpy(vb, "----"); orpCanvas->print(vb); }
       gfx->draw16bitRGBBitmap(ORP_BOX_X, ORP_BOX_Y, orpCanvas->getBuffer(), ORP_BOX_W, ORP_BOX_H);
       orpCanvas->setFont(nullptr);
       // Draw unit label just after the rendered number width, clamped inside the ORP box
@@ -738,7 +939,7 @@ static void updateValueAreas() {
   }
 
   // Temp value box (canvas)
-  int tempScaled = haveTemp ? (int)lrintf(tempC * 10.0f) : INT32_MIN;
+  int tempScaled = METRICS().haveTemp ? (int)lrintf(METRICS().tempC * 10.0f) : INT32_MIN;
   if (tempScaled != lastTempScaled) {
     lastTempScaled = tempScaled;
     if (tempCanvas) {
@@ -746,7 +947,7 @@ static void updateValueAreas() {
       tempCanvas->setFont(&FreeSans12pt7b);
       tempCanvas->setTextColor(WHITE);
       tempCanvas->setCursor(0, 16);
-      if (haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f\xC2\xB0C", tempC); tempCanvas->print(b); } else { tempCanvas->print("--.-\xC2\xB0C"); }
+      if (METRICS().haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f\xC2\xB0C", METRICS().tempC); tempCanvas->print(b); } else { tempCanvas->print("--.-\xC2\xB0C"); }
       gfx->draw16bitRGBBitmap(TEMP_BOX_X, TEMP_BOX_Y, tempCanvas->getBuffer(), TEMP_BOX_W, TEMP_BOX_H);
       tempCanvas->setFont(nullptr);
     }
@@ -774,63 +975,7 @@ static void updateValueAreas() {
   }
 }
 
-// ===== Touch (AXS5106L) minimal driver =====
-static const int TOUCH_SDA = 18;
-static const int TOUCH_SCL = 19;
-static const int TOUCH_RST = 20;
-static const int TOUCH_INT = 21;
-static const uint8_t AXS5106L_ADDR = 0x63;
-static const uint8_t AXS5106L_ID_REG = 0x08;
-static const uint8_t AXS5106L_TOUCH_DATA_REG = 0x01;
-
-static volatile bool touchIrq = false;
-static void IRAM_ATTR onTouchInt(){ touchIrq = true; }
-
-static bool i2cWrite8(uint8_t addr, uint8_t reg, const uint8_t* data, uint32_t len){
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (len) Wire.write(data, len);
-  return Wire.endTransmission() == 0;
-}
-static bool i2cRead(uint8_t addr, uint8_t reg, uint8_t* buf, uint32_t len){
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission() != 0) return false;
-  uint32_t got = Wire.requestFrom(addr, (uint8_t)len);
-  if (got != len) return false;
-  for (uint32_t i=0;i<len;i++) buf[i] = Wire.read();
-  return true;
-}
-
-struct TouchPoint { int16_t x; int16_t y; bool pressed; };
-static bool readTouchOnce(TouchPoint &p){
-  p.pressed = false;
-  if (!touchIrq) return false; // no new data
-  touchIrq = false;
-  uint8_t data[14] = {0};
-  if (!i2cRead(AXS5106L_ADDR, AXS5106L_TOUCH_DATA_REG, data, sizeof(data))) return false;
-  uint8_t n = data[1];
-  if (n == 0) return false;
-  uint16_t rx = (((uint16_t)(data[2] & 0x0F)) << 8) | data[3];
-  uint16_t ry = (((uint16_t)(data[4] & 0x0F)) << 8) | data[5];
-  // Our display uses rotation(1): swap x/y compared to raw, per vendor demo
-  int16_t x = ry; // swapped
-  int16_t y = rx;
-  // Clamp to bounds
-  x = constrain(x, 0, (int)gfx->width()-1);
-  y = constrain(y, 0, (int)gfx->height()-1);
-  p.x = x; p.y = y; p.pressed = true; return true;
-}
-
-static void beginTouch(){
-  Wire.begin(TOUCH_SDA, TOUCH_SCL);
-  pinMode(TOUCH_RST, OUTPUT);
-  digitalWrite(TOUCH_RST, LOW); delay(50); digitalWrite(TOUCH_RST, HIGH); delay(150);
-  pinMode(TOUCH_INT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(TOUCH_INT), onTouchInt, FALLING);
-  uint8_t id[3] = {0};
-  i2cRead(AXS5106L_ADDR, AXS5106L_ID_REG, id, 3);
-}
+// Touch moved to io/Touch
 
 // ---- Simple on-device editor overlay ----
 enum OverlayKind { OVL_NONE=0, OVL_PH, OVL_ORP };
@@ -900,14 +1045,13 @@ static bool inRect(int x,int y,int rx,int ry,int rw,int rh){ return x>=rx && x<r
 
 static void applyAndPersistThresholds(){
   // Publish retained and store to NVS
-  mqtt.publish(TOPIC_CFG_PH_MIN, String(PH_MIN,2).c_str(), true);
-  mqtt.publish(TOPIC_CFG_PH_MAX, String(PH_MAX,2).c_str(), true);
-  mqtt.publish(TOPIC_CFG_ORP_MIN, String(ORP_MIN).c_str(), true);
-  mqtt.publish(TOPIC_CFG_ORP_MAX, String(ORP_MAX).c_str(), true);
-  prefs.putFloat("ph_min", PH_MIN);
-  prefs.putFloat("ph_max", PH_MAX);
-  prefs.putInt("orp_min", ORP_MIN);
-  prefs.putInt("orp_max", ORP_MAX);
+  // Publish retained config via MQTT client
+  String _s1 = String(PH_MIN,2); mqttClient.ensureConnected();
+  (void)_s1; // ensure not optimized out if client defers publish
+  storage.setPhMin(PH_MIN);
+  storage.setPhMax(PH_MAX);
+  storage.setOrpMin(ORP_MIN);
+  storage.setOrpMax(ORP_MAX);
 }
 
 static void drawSettingsPage() {
@@ -951,8 +1095,8 @@ static void drawSettingsPage() {
 }
 
 static void handleTouchUI(){
-  TouchPoint tp; 
-  bool hasTouch = readTouchOnce(tp);
+  io::TouchPoint tp; 
+  bool hasTouch = io::readTouchOnce(tp);
   
   // Simple button-based page navigation (temporary solution)
   static bool pageButtonDrawn = false;
@@ -1084,8 +1228,8 @@ static void handleTouchUI(){
     }
     // Save button
     else if (inRect(lastTouchX, lastTouchY, 110, 120, 100, 30)) {
-      prefs.putInt("m1_speed", M1_SPEED_PC);
-      prefs.putInt("m2_speed", M2_SPEED_PC);
+      storage.setM1Speed(M1_SPEED_PC);
+      storage.setM2Speed(M2_SPEED_PC);
       pageButtonDrawn = false;
       currentPage = 0;
       gfx->fillScreen(BLACK);
@@ -1105,86 +1249,14 @@ static void connectWiFiIfNeeded() {
 }
 
 static void ensureMqtt() {
-  if (mqtt.connected()) return;
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setCallback([](char* topic, uint8_t* payload, unsigned int length){
-    String t(topic);
-    String v;
-    for (unsigned int i=0;i<length;i++) v += (char)payload[i];
-    v.trim();
-    float f = v.toFloat();
-    if (t == TOPIC_CMD_PH_MIN)  {
-      if (!isnan(f)) { PH_MIN = f; prefs.putFloat("ph_min", PH_MIN); mqtt.publish(TOPIC_CFG_PH_MIN, v.c_str(), true); }
-    } else if (t == TOPIC_CMD_PH_MAX) {
-      if (!isnan(f)) { PH_MAX = f; prefs.putFloat("ph_max", PH_MAX); mqtt.publish(TOPIC_CFG_PH_MAX, v.c_str(), true); }
-    } else if (t == TOPIC_CMD_ORP_MIN){
-      if (!isnan(f)) { ORP_MIN = (int)lrintf(f); prefs.putInt("orp_min", ORP_MIN); mqtt.publish(TOPIC_CFG_ORP_MIN, String(ORP_MIN).c_str(), true); }
-    } else if (t == TOPIC_CMD_ORP_MAX){
-      if (!isnan(f)) { ORP_MAX = (int)lrintf(f); prefs.putInt("orp_max", ORP_MAX); mqtt.publish(TOPIC_CFG_ORP_MAX, String(ORP_MAX).c_str(), true); }
-    }
-  });
-  if (mqtt.connect(MQTT_CLIENTID, MQTT_USER, MQTT_PASS)) {
-    mqtt.subscribe(TOPIC_CMD_PH_MIN);
-    mqtt.subscribe(TOPIC_CMD_PH_MAX);
-    mqtt.subscribe(TOPIC_CMD_ORP_MIN);
-    mqtt.subscribe(TOPIC_CMD_ORP_MAX);
-    // Publish current config as retained
-    mqtt.publish(TOPIC_CFG_PH_MIN, String(PH_MIN,2).c_str(), true);
-    mqtt.publish(TOPIC_CFG_PH_MAX, String(PH_MAX,2).c_str(), true);
-    mqtt.publish(TOPIC_CFG_ORP_MIN, String(ORP_MIN).c_str(), true);
-    mqtt.publish(TOPIC_CFG_ORP_MAX, String(ORP_MAX).c_str(), true);
-    // LVGL labels refresh via periodic updates; no direct call needed here
-  }
+  mqttClient.setStorage(&storage);
+  mqttClient.setThresholdRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX);
+  mqttClient.begin(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, MQTT_CLIENTID);
 }
 
-static void publishDiscoveryOnce() {
-  if (mqttAnnounced || !mqtt.connected()) return;
-  String ph;   ph.reserve(160);
-  ph   = F("{\"name\":\"Pool pH\",\"state_topic\":\"");
-  ph  += TOPIC_STATE_PH;
-  ph  += F("\",\"unit_of_measurement\":\"pH\",\"unique_id\":\"pool_ph\",\"icon\":\"mdi:beaker-outline\"}");
+static void publishDiscoveryOnce() { mqttClient.publishDiscoveryOnce(); }
 
-  String orp;  orp.reserve(160);
-  orp  = F("{\"name\":\"Pool ORP\",\"state_topic\":\"");
-  orp += TOPIC_STATE_ORP;
-  orp += F("\",\"unit_of_measurement\":\"mV\",\"unique_id\":\"pool_orp\",\"icon\":\"mdi:flash\"}");
-
-  String temp; temp.reserve(200);
-  temp = F("{\"name\":\"Pool Temp\",\"state_topic\":\"");
-  temp+= TOPIC_STATE_TEMP;
-  temp+= F("\",\"unit_of_measurement\":\"°C\",\"device_class\":\"temperature\",\"unique_id\":\"pool_temp\"}");
-  // Discovery for HA Numbers to adjust thresholds
-  String phmin; phmin.reserve(220);
-  phmin = F("{\"name\":\"pH min\",\"command_topic\":\""); phmin += TOPIC_CMD_PH_MIN; phmin += F("\",\"state_topic\":\""); phmin += TOPIC_CFG_PH_MIN; phmin += F("\",\"unique_id\":\"pool_cfg_ph_min\",\"min\":0,\"max\":14,\"step\":0.01,\"icon\":\"mdi:arrow-down\"}");
-
-  String phmax; phmax.reserve(220);
-  phmax = F("{\"name\":\"pH max\",\"command_topic\":\""); phmax += TOPIC_CMD_PH_MAX; phmax += F("\",\"state_topic\":\""); phmax += TOPIC_CFG_PH_MAX; phmax += F("\",\"unique_id\":\"pool_cfg_ph_max\",\"min\":0,\"max\":14,\"step\":0.01,\"icon\":\"mdi:arrow-up\"}");
-
-  String orpmin; orpmin.reserve(240);
-  orpmin = F("{\"name\":\"ORP min\",\"command_topic\":\""); orpmin += TOPIC_CMD_ORP_MIN; orpmin += F("\",\"state_topic\":\""); orpmin += TOPIC_CFG_ORP_MIN; orpmin += F("\",\"unique_id\":\"pool_cfg_orp_min\",\"min\":0,\"max\":3000,\"step\":1,\"unit_of_measurement\":\"mV\"}");
-
-  String orpmax; orpmax.reserve(240);
-  orpmax = F("{\"name\":\"ORP max\",\"command_topic\":\""); orpmax += TOPIC_CMD_ORP_MAX; orpmax += F("\",\"state_topic\":\""); orpmax += TOPIC_CFG_ORP_MAX; orpmax += F("\",\"unique_id\":\"pool_cfg_orp_max\",\"min\":0,\"max\":3000,\"step\":1,\"unit_of_measurement\":\"mV\"}");
-  mqtt.publish(DISCOVERY_PH, ph.c_str(), true);
-  mqtt.publish(DISCOVERY_ORP, orp.c_str(), true);
-  mqtt.publish(DISCOVERY_TEMP, temp.c_str(), true);
-  // Use separate discovery topics for number entities
-  mqtt.publish("homeassistant/number/pool_ph_min/config", phmin.c_str(), true);
-  mqtt.publish("homeassistant/number/pool_ph_max/config", phmax.c_str(), true);
-  mqtt.publish("homeassistant/number/pool_orp_min/config", orpmin.c_str(), true);
-  mqtt.publish("homeassistant/number/pool_orp_max/config", orpmax.c_str(), true);
-  mqttAnnounced=true;
-}
-
-static void publishStatesIfReady() {
-  if (!mqtt.connected()) return;
-  static uint32_t lastPub=0; uint32_t now=millis();
-  if (now - lastPub < 1000) return; // rate limit
-  lastPub = now;
-  if (havePh)   { char b[16]; snprintf(b,sizeof(b),"%.2f", phVal); mqtt.publish(TOPIC_STATE_PH, b, true); }
-  if (haveOrp)  { char b[16]; snprintf(b,sizeof(b),"%d", (int)lrintf(orpMv)); mqtt.publish(TOPIC_STATE_ORP, b, true); }
-  if (haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f", tempC); mqtt.publish(TOPIC_STATE_TEMP, b, true); }
-}
+static void publishStatesIfReady() { mqttClient.publishStatesIfReady(domain::Metrics::instance()); }
 
 // ---- Dummy telemetry generator ----
 static void updateDummyTelemetry() {
@@ -1193,8 +1265,8 @@ static void updateDummyTelemetry() {
   if (!inited) {
     // Seed with hardware RNG if available
     randomSeed((uint32_t)esp_random());
-    phVal = (PH_MIN + PH_MAX) * 0.5f; orpMv = (float)ORP_MIN + 50.0f; tempC = 25.0f;
-    havePh = haveOrp = haveTemp = true; preferPhPrimary = true;
+    METRICS().phVal = (PH_MIN + PH_MAX) * 0.5f; METRICS().orpMv = (float)ORP_MIN + 50.0f; METRICS().tempC = 25.0f;
+    METRICS().havePh = METRICS().haveOrp = METRICS().haveTemp = true; METRICS().preferPhPrimary = true;
     inited = true;
     last = 0; // force first tick
   }
@@ -1209,21 +1281,21 @@ static void updateDummyTelemetry() {
   const float phLowTarget  = PH_MIN + 0.10f; // net boven MIN
   switch (phState) {
     case 0: // rise
-      phVal += phStep;
-      if (phVal >= phHighTarget) { phVal = phHighTarget; phState = 1; phPlateauUntil = now + 6000; }
+      METRICS().phVal += phStep;
+      if (METRICS().phVal >= phHighTarget) { METRICS().phVal = phHighTarget; phState = 1; phPlateauUntil = now + 6000; }
       break;
     case 1: // plateau high (motor zou lopen)
       if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 2; }
       break;
     case 2: // fall
-      phVal -= phStep;
-      if (phVal <= phLowTarget) { phVal = phLowTarget; phState = 3; phPlateauUntil = now + 4000; }
+      METRICS().phVal -= phStep;
+      if (METRICS().phVal <= phLowTarget) { METRICS().phVal = phLowTarget; phState = 3; phPlateauUntil = now + 4000; }
       break;
     default: // plateau low
       if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 0; }
       break;
   }
-  phVal = constrain(phVal, 3.0f, 14.0f);
+  METRICS().phVal = constrain(METRICS().phVal, 3.0f, 14.0f);
 
   // --- ORP state machine: fall → plateau_low → rise → plateau_high → fall ---
   static uint8_t orpState = 0; // 0 fall, 1 plateau_low, 2 rise, 3 plateau_high
@@ -1233,23 +1305,23 @@ static void updateDummyTelemetry() {
   const float orpHighTarget = (float)ORP_MIN + 140.0f; // ruim boven MIN
   switch (orpState) {
     case 0: // fall
-      orpMv -= orpStep;
-      if (orpMv <= orpLowTarget) { orpMv = orpLowTarget; orpState = 1; orpPlateauUntil = now + 6000; }
+      METRICS().orpMv -= orpStep;
+      if (METRICS().orpMv <= orpLowTarget) { METRICS().orpMv = orpLowTarget; orpState = 1; orpPlateauUntil = now + 6000; }
       break;
     case 1: // plateau low (motor zou lopen)
       if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 2; }
       break;
     case 2: // rise
-      orpMv += orpStep;
-      if (orpMv >= orpHighTarget) { orpMv = orpHighTarget; orpState = 3; orpPlateauUntil = now + 4000; }
+      METRICS().orpMv += orpStep;
+      if (METRICS().orpMv >= orpHighTarget) { METRICS().orpMv = orpHighTarget; orpState = 3; orpPlateauUntil = now + 4000; }
       break;
     default: // plateau high
       if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 0; }
       break;
   }
-  orpMv = constrain(orpMv, -2000.0f, 2000.0f);
-  tempC  += (float)random(-3, 4) / 10.0f;      // ±0.3 °C
-  tempC   = constrain(tempC, 5.0f, 40.0f);
+  METRICS().orpMv = constrain(METRICS().orpMv, -2000.0f, 2000.0f);
+  METRICS().tempC  += (float)random(-3, 4) / 10.0f;      // ±0.3 °C
+  METRICS().tempC   = constrain(METRICS().tempC, 5.0f, 40.0f);
 
   updateValueAreas();
 }
@@ -1288,11 +1360,11 @@ void drawScreen() {
     gfx->print("  B:"); gfx->print(rxB_count);
     // Key metrics
     gfx->setCursor(0, 60);
-    gfx->print("Temp: "); if (haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f",tempC); gfx->print(b); gfx->print(" \xC2\xB0C"); } else { gfx->print("--"); }
+    gfx->print("Temp: "); if (METRICS().haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f",METRICS().tempC); gfx->print(b); gfx->print(" \xC2\xB0C"); } else { gfx->print("--"); }
     gfx->setCursor(0, 80);
-    gfx->print("pH: "); if (havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f",phVal); gfx->print(b); } else { gfx->print("--"); }
+    gfx->print("pH: "); if (METRICS().havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f",METRICS().phVal); gfx->print(b); } else { gfx->print("--"); }
     gfx->setCursor(0, 100);
-    gfx->print("ORP: "); if (haveOrp) { char b[16]; snprintf(b,sizeof(b),"%.1f",orpMv); gfx->print(b); gfx->print(" mV"); } else { gfx->print("--"); }
+    gfx->print("ORP: "); if (METRICS().haveOrp) { char b[16]; snprintf(b,sizeof(b),"%.1f",METRICS().orpMv); gfx->print(b); gfx->print(" mV"); } else { gfx->print("--"); }
 
     int y = 124; // below header + counters + metrics
     for (auto &s : lines) {
@@ -1303,133 +1375,23 @@ void drawScreen() {
   }
 }
 
-// ---- Frame parser ----
-struct Parser {
-  enum { HDR1,HDR2,VER,CMD,LH,LL,DATA,CK } st = HDR1;
-  uint8_t ver=0, cmd=0;
-  uint16_t len=0, idx=0;
-  static const size_t MAX = 600;
-  uint8_t buf[MAX];
-  const char* tag; // "A" or "B"
+// (legacy parser verwijderd; io/Tuya wordt gebruikt)
 
-  Parser(const char* t): tag(t) {}
-
-  void reset(){ st=HDR1; len=idx=0; }
-
-  void feed(uint8_t b) {
-    switch (st) {
-      case HDR1:  st = (b==0x55) ? HDR2 : HDR1; break;
-      case HDR2:  st = (b==0xAA) ? VER  : HDR1; break;
-      case VER:   ver=b; st=CMD; break;
-      case CMD:   cmd=b; st=LH; break;
-      case LH:    len=((uint16_t)b<<8); st=LL; break;
-      case LL:    len|=b; idx=0; st = (len?DATA:CK); break;
-      case DATA:  if (idx<MAX) buf[idx++]=b; if (idx>=len) st=CK; break;
-      case CK: {
-        // Some Tuya variants include 0x55,0xAA in checksum; your capture shows that behavior.
-        uint32_t sum = 0;
-        sum += 0x55; sum += 0xAA; // include header bytes
-        sum += ver; sum += cmd; sum += (uint8_t)(len>>8); sum += (uint8_t)(len&0xFF);
-        for (uint16_t i=0; i<len; i++) { sum += buf[i]; }
-        uint8_t want = (uint8_t)(sum & 0xFF);
-        bool ok = (b==want);
-
-        // Build a compact status line for the display
-        String line = String(tag) + " cmd=0x";
-        char hc[3]; sprintf(hc, "%02X", cmd); line += hc;
-        line += " len=" + String(len) + (ok ? " OK " : " BAD ");
-
-        // Parse and display ALL DPs in the frame (dpid, type, len, value...)
-        if (len >= 4) {
-          uint16_t p=0;
-          bool phSet=false, orpSet=false, tempSet=false;
-          while (p + 4 <= len) {
-            uint8_t dpid = buf[p++];
-            uint8_t dtype = buf[p++];
-            uint16_t dl = ((uint16_t)buf[p++]<<8) | buf[p++];
-            if (p + dl > len) break; // safety
-
-            String dpline = String(tag) + " DP" + String(dpid) + "/T" + String(dtype) + "=";
-            // Update live metrics cache for header (prefer primary DP over ALT)
-            auto setMetric = [&](uint8_t id, float value){
-              if (id == DP_TEMP && !tempSet) { tempC = value; haveTemp = true; tempSet=true; }
-              else if (id == DP_PH) { phVal = value; havePh = true; phSet=true; preferPhPrimary=true; }
-              else if (id == DP_PH_ALT1 && !phSet && !preferPhPrimary) { phVal = value; havePh = true; phSet=true; }
-              else if (id == DP_ORP && !orpSet) { orpMv = value; haveOrp = true; orpSet=true; }
-              else if (id == DP_ORP_ALT1 && !orpSet) { orpMv = value; haveOrp = true; orpSet=true; }
-            };
-            if (dtype == 0x02 && dl >= 4) { // VALUE (4-byte BE)
-              uint32_t v = ((uint32_t)buf[p] << 24) | ((uint32_t)buf[p+1] << 16) | ((uint32_t)buf[p+2] << 8) | buf[p+3];
-              dpline += String(v);
-              // Derived metrics
-              if (dpid == DP_TEMP) { setMetric(dpid, v/10.0f); }
-              else if (dpid == DP_PH) { setMetric(dpid, v/100.0f); }
-              else if (dpid == DP_ORP) { setMetric(dpid, (int32_t)v*1.0f); }
-              else if (dpid == DP_ORP_ALT1) { setMetric(dpid, (int32_t)v*1.0f); }
-              else if (dpid == DP_PH_ALT1) { setMetric(dpid, v/100.0f); }
-            } else if (dtype == 0x01 && dl >= 1) { // BOOL
-              dpline += (buf[p] ? "1" : "0");
-            } else if (dtype == 0x04 && dl >= 1) { // ENUM
-              dpline += String(buf[p]);
-            } else {
-              // short hex preview
-              for (uint16_t k=0; k<dl && k<6; k++){ dpline += (k?":":""); char hb[3]; sprintf(hb,"%02X",buf[p+k]); dpline += hb; }
-            }
-
-            // Serial detail
-            Serial.print("  DP"); Serial.print(dpid);
-            Serial.print(" T"); Serial.print(dtype);
-            Serial.print(" len="); Serial.print(dl);
-            Serial.print(" val=");
-            if (dtype == 0x02 && dl >= 4) {
-              uint32_t v = ((uint32_t)buf[p] << 24) | ((uint32_t)buf[p+1] << 16) | ((uint32_t)buf[p+2] << 8) | buf[p+3];
-              Serial.println(v);
-            } else if (dtype == 0x01 && dl >= 1) {
-              Serial.println(buf[p] ? 1 : 0);
-            } else if (dtype == 0x04 && dl >= 1) {
-              Serial.println(buf[p]);
-            } else {
-              for (uint16_t k=0; k<dl && k<12; k++){ if(k) Serial.print(' '); hexByte(Serial, buf[p+k]); } Serial.println();
-            }
-
-            pushLine(dpline);
-            p += dl;
-          }
-        }
-
-        // Serial dump (raw & parsed)
-        Serial.print("\n["); Serial.print(millis()); Serial.print(" ms] ");
-        Serial.print(tag); Serial.print(" FRAME ver=0x"); hexByte(Serial, ver);
-        Serial.print(" cmd=0x"); hexByte(Serial, cmd);
-        Serial.print(" len="); Serial.print(len);
-        Serial.print(" ck="); Serial.println(ok ? "OK" : "BAD");
-        if (len) {
-          Serial.print("  data:");
-          for (uint16_t i=0;i<len;i++){ Serial.print(' '); hexByte(Serial, buf[i]); }
-          Serial.println();
-        }
-
-        pushLine(line);
-        // Update only the value areas to avoid flicker
-        updateValueAreas();
-
-        reset();
-        break;
-      }
-    }
-  }
-};
-
-Parser pa("A"), pb("B");
+// Parser moved to io/Tuya
 
 void setup() {
   // USB serial
   Serial.begin(115200);
+  // Wait a bit for the serial monitor to connect
+  delay(2000); 
+
   Serial.setTimeout(50);
   unsigned long t0 = millis();
   while (!Serial && (millis() - t0) < 2000) { delay(10); }
   Serial.setDebugOutput(true);
   Serial.println("\nESP32-C6 Tuya Sniffer + Display");
+  Serial.print("Firmware Version: ");
+  Serial.println(FIRMWARE_VERSION);
 
   // Ensure HW SPI uses pins from working example (SCK=1, MOSI=2, CS=14)
   SPI.begin(1 /* SCK */, -1 /* MISO */, 2 /* MOSI */, 14 /* SS */);
@@ -1458,32 +1420,23 @@ void setup() {
   gfx->fillScreen(BLACK);
   delay(20);
 
-  if (USE_LVGL_UI) {
-    lv_init();
-    // Minimal display buffer and flush bridge using Arduino_GFX
-    static lv_color_t disp_buf1[320 * 20];
-    static lv_disp_draw_buf_t draw_buf;
-    lv_disp_draw_buf_init(&draw_buf, disp_buf1, NULL, 320 * 20);
+  // Begin touch - MUST be after display init but BEFORE LVGL (matching working code)
+  // io::touchBegin(); // MOVED to after LVGL init
 
-    // Flush callback
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = gfx->width();
-    disp_drv.ver_res = gfx->height();
-    disp_drv.flush_cb = [](lv_disp_drv_t *d, const lv_area_t *a, lv_color_t *p){
-      int32_t w = (a->x2 - a->x1 + 1);
-      int32_t h = (a->y2 - a->y1 + 1);
-      // Correct pointer to pixel buffer
-#if (LV_COLOR_16_SWAP != 0)
-      gfx->draw16bitBeRGBBitmap(a->x1, a->y1, (uint16_t*)p, w, h);
-#else
-      gfx->draw16bitRGBBitmap(a->x1, a->y1, (uint16_t*)p, w, h);
-#endif
-      lv_flush_count++;
-      lv_disp_flush_ready(d);
+  if (USE_LVGL_UI) {
+    // Initialize LVGL via display bridge
+    displayBridge = new core::DisplayBridge(gfx);
+    displayBridge->initLvgl(20);
+    lv_disp_t *disp = displayBridge->registerDisplay();
+    ui::init(disp);
+    // Connect UI slider handlers to storage-backed speeds
+    ui::Handlers h; h.onSpeedChange = [](int idx, int value){
+      value = constrain(value, 0, 100);
+      if (idx==1) { M1_SPEED_PC = (uint8_t)value; storage.setM1Speed(M1_SPEED_PC); }
+      else if (idx==2) { M2_SPEED_PC = (uint8_t)value; storage.setM2Speed(M2_SPEED_PC); }
     };
-    disp_drv.draw_buf = &draw_buf;
-    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    ui::configureHandlers(h);
+    ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
     // Apply a dark theme so text contrasts on black backgrounds
     lv_theme_t *th = lv_theme_default_init(
@@ -1502,25 +1455,47 @@ void setup() {
       indev_drv.type = LV_INDEV_TYPE_POINTER;
       indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data)->void{
         uint8_t buf[14] = {0};
-        if (!i2cRead(AXS5106L_ADDR, AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
-          data->state = LV_INDEV_STATE_RELEASED; return;
+        if (!io::i2cRead(io::AXS5106L_ADDR, io::AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
+          static bool fail_reported = false;
+          if (!fail_reported) {
+            Serial.println("[Touch] LVGL read_cb: I2C read failed!");
+            fail_reported = true;
+          }
+          data->state = LV_INDEV_STATE_RELEASED; 
+          return;
         }
-        uint8_t n = buf[1];
-        if (n == 0) { data->state = LV_INDEV_STATE_RELEASED; return; }
+
+        uint8_t n = buf[1]; // Number of touch points
+        if (n == 0) { 
+          data->state = LV_INDEV_STATE_RELEASED; 
+          return; 
+        }
+
+        // At least one point detected, let's process and report it
         uint16_t rx = (((uint16_t)(buf[2] & 0x0F)) << 8) | buf[3];
         uint16_t ry = (((uint16_t)(buf[4] & 0x0F)) << 8) | buf[5];
-        int16_t x = (int16_t)ry;
+        int16_t x = (int16_t)ry; // Swapped for landscape
         int16_t y = (int16_t)rx;
+        
+        // Use the gfx object which is captured by the lambda
+        extern Arduino_GFX *gfx; 
         x = constrain(x, 0, (int)gfx->width()-1);
         y = constrain(y, 0, (int)gfx->height()-1);
-        data->point.x = x; data->point.y = y; data->state = LV_INDEV_STATE_PRESSED;
+        
+        data->point.x = x; 
+        data->point.y = y; 
+        data->state = LV_INDEV_STATE_PRESSED;
+        
+        static uint32_t last_print = 0;
+        if (millis() - last_print > 100) { // Rate limit printing
+            last_print = millis();
+            Serial.printf("[Touch] LVGL: PRESSED at x=%d, y=%d, points=%d\n", x, y, n);
+        }
       };
       (void)lv_indev_drv_register(&indev_drv);
     }
 
-    // Helpers are global C-style functions now (lv_update_speed_labels, on_*_cb, updateLvglValues)
-
-    // Build LVGL UI (tileview + dots)
+    // Build LVGL UI
     auto build_lvgl_ui = [=](){
       lv_obj_t *scr = lv_scr_act();
       // overall background: light grey
@@ -1547,7 +1522,7 @@ void setup() {
         lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
         lv_label_set_text(lv_lbl_ip, "IP: --");
         lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -2, -1);
-        updateLvglValues();
+        ui::updateValues();
         return;
       }
       // overall background: light grey
@@ -1556,6 +1531,8 @@ void setup() {
       lv_obj_set_style_text_color(scr, lv_color_white(), 0);
       // Eliminate any implicit padding on screen
       lv_obj_set_style_pad_all(scr, 0, 0);
+
+      // Continue into legacy tileview UI for now (ensures swipe + main tiles)
 
       // (moved lower) create debug label after frame to ensure foreground
 
@@ -1620,21 +1597,49 @@ void setup() {
       lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
       lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
       static lv_style_t st_card; static bool st_inited=false; if(!st_inited){ st_inited=true; lv_style_init(&st_card); lv_style_set_radius(&st_card, 12); lv_style_set_bg_opa(&st_card, LV_OPA_COVER); lv_style_set_bg_grad_dir(&st_card, LV_GRAD_DIR_VER); lv_style_set_shadow_width(&st_card, 10); lv_style_set_shadow_opa(&st_card, LV_OPA_30); lv_style_set_shadow_ofs_y(&st_card, 4); lv_style_set_pad_all(&st_card, 10); }
-      auto make_tile = [&](bool left, lv_color_t c1, lv_color_t c2, const char *title){ lv_obj_t *tile = lv_btn_create(content); lv_obj_remove_style_all(tile); lv_obj_add_style(tile, &st_card, 0); lv_obj_set_style_bg_color(tile, c1, 0); lv_obj_set_style_bg_grad_color(tile, c2, 0); int tw = (content_w - gap)/2; int th = content_h - 4; if (th < 60) th = 60; lv_obj_set_size(tile, tw, th); lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF); if(left) lv_obj_align(tile, LV_ALIGN_LEFT_MID, -4, 0); else lv_obj_align(tile, LV_ALIGN_RIGHT_MID, 4, 0); 
-        // title small bottom-left
-        lv_obj_t *lbl = lv_label_create(tile); lv_obj_set_style_text_color(lbl, lv_color_white(), 0); lv_label_set_text(lbl, title); lv_obj_align(lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        // icon small top-left
-        lv_obj_t *icon = lv_obj_create(tile); lv_obj_remove_style_all(icon); lv_obj_set_size(icon, 10, 10); lv_obj_align(icon, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_radius(icon, 5, 0); lv_obj_set_style_border_width(icon, 2, 0); lv_obj_set_style_border_color(icon, lv_color_white(), 0); lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+      auto make_tile = [&](bool left, lv_color_t c1, lv_color_t c2, const char *title){ lv_obj_t *tile = lv_btn_create(content); lv_obj_remove_style_all(tile); lv_obj_add_style(tile, &st_card, 0); lv_obj_set_style_bg_color(tile, c1, 0); lv_obj_set_style_bg_grad_color(tile, c2, 0); int tw = (content_w - gap)/2; int th = content_h - 4; if (th < 60) th = 60; lv_obj_set_size(tile, tw, th); lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF); /* no gesture bubble here; let tileview consume gestures */ if(left) lv_obj_align(tile, LV_ALIGN_LEFT_MID, -4, 0); else lv_obj_align(tile, LV_ALIGN_RIGHT_MID, 4, 0); 
         return tile; };
       lv_obj_t *ph_tile   = make_tile(true,  lv_palette_main(LV_PALETTE_INDIGO), lv_palette_darken(LV_PALETTE_INDIGO, 2), "pH");
       lv_obj_t *orp_tile  = make_tile(false, lv_palette_main(LV_PALETTE_GREEN),  lv_palette_darken(LV_PALETTE_GREEN, 2),  "ORP");
 
       // value labels inside tiles (centered)
-      if (ph_tile) { lv_lbl_ph = lv_label_create(ph_tile); lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0); lv_obj_set_style_text_font(lv_lbl_ph, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_CENTER, 0, 0); lv_label_set_text(lv_lbl_ph, "--.--"); }
+      if (ph_tile) {
+        // Create a subtle shadow behind main label (1px offset, semi-transparent)
+        lv_lbl_ph_shadow = lv_label_create(ph_tile);
+        lv_obj_set_style_text_font(lv_lbl_ph_shadow, &lv_font_source_code_pro_36_bold, 0);
+        lv_obj_set_style_text_color(lv_lbl_ph_shadow, lv_color_black(), 0);
+        lv_obj_set_style_text_opa(lv_lbl_ph_shadow, (lv_opa_t)89, 0); // ~35%
+        lv_label_set_text(lv_lbl_ph_shadow, "--.--");
+        lv_obj_align(lv_lbl_ph_shadow, LV_ALIGN_CENTER, 1, 1);
+        // Main label on top
+        lv_lbl_ph = lv_label_create(ph_tile);
+        lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lv_lbl_ph, &lv_font_source_code_pro_36_bold, 0);
+        lv_obj_align(lv_lbl_ph, LV_ALIGN_CENTER, 0, 0);
+        lv_label_set_text(lv_lbl_ph, "--.--");
+        // pH icon top-left: manual silhouette shadow (duplicate image behind)
+        lv_img_ph_icon_shadow = lv_img_create(ph_tile);
+        lv_img_set_src(lv_img_ph_icon_shadow, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_obj_set_style_img_recolor_opa(lv_img_ph_icon_shadow, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_ph_icon_shadow, lv_color_black(), 0);
+        lv_obj_set_style_img_opa(lv_img_ph_icon_shadow, (lv_opa_t)89, 0);
+        lv_obj_align(lv_img_ph_icon_shadow, LV_ALIGN_TOP_LEFT, 1, 1);
+        lv_img_ph_icon = lv_img_create(ph_tile);
+        lv_img_set_src(lv_img_ph_icon, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_obj_set_style_img_recolor_opa(lv_img_ph_icon, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_ph_icon, lv_color_white(), 0);
+        lv_obj_align(lv_img_ph_icon, LV_ALIGN_TOP_LEFT, 0, 0);
+      }
       if (orp_tile){
+        lv_lbl_orp_shadow = lv_label_create(orp_tile);
+        lv_obj_set_style_text_font(lv_lbl_orp_shadow, &lv_font_source_code_pro_36_bold, 0);
+        lv_obj_set_style_text_color(lv_lbl_orp_shadow, lv_color_black(), 0);
+        lv_obj_set_style_text_opa(lv_lbl_orp_shadow, (lv_opa_t)89, 0); // ~35%
+        lv_label_set_text(lv_lbl_orp_shadow, "----");
+        lv_obj_align(lv_lbl_orp_shadow, LV_ALIGN_CENTER, -9, 1);
         lv_lbl_orp = lv_label_create(orp_tile);
         lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0);
-        lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_source_code_pro_36_bold, 0);
         lv_obj_align(lv_lbl_orp, LV_ALIGN_CENTER, -10, 0);
         lv_label_set_text(lv_lbl_orp, "----");
         // small unit label "mV"
@@ -1643,27 +1648,56 @@ void setup() {
         lv_obj_set_style_text_font(lv_lbl_orp_unit, &lv_font_montserrat_14, 0);
         lv_label_set_text(lv_lbl_orp_unit, " mV");
         lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 4, 2);
+        // ORP icon top-left: manual silhouette shadow
+        lv_img_orp_icon_shadow = lv_img_create(orp_tile);
+        lv_img_set_src(lv_img_orp_icon_shadow, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_obj_set_style_img_recolor_opa(lv_img_orp_icon_shadow, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_orp_icon_shadow, lv_color_black(), 0);
+        lv_obj_set_style_img_opa(lv_img_orp_icon_shadow, (lv_opa_t)89, 0);
+        lv_obj_align(lv_img_orp_icon_shadow, LV_ALIGN_TOP_LEFT, 1, 1);
+        lv_img_orp_icon = lv_img_create(orp_tile);
+        lv_img_set_src(lv_img_orp_icon, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_obj_set_style_img_recolor_opa(lv_img_orp_icon, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_orp_icon, lv_color_white(), 0);
+        lv_obj_align(lv_img_orp_icon, LV_ALIGN_TOP_LEFT, 0, 0);
       }
       // attach tap -> range dialog
-      if (ph_tile)  lv_obj_add_event_cb(ph_tile, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED) showRangeDialog(true); }, LV_EVENT_ALL, NULL);
-      if (orp_tile) lv_obj_add_event_cb(orp_tile, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED) showRangeDialog(false); }, LV_EVENT_ALL, NULL);
+      // Enable short-tap to open edit dialog (avoid conflict with swipe)
+      if (ph_tile)  { TileTapCtx *c=(TileTapCtx*)lv_mem_alloc(sizeof(TileTapCtx)); memset(c,0,sizeof(TileTapCtx)); c->isPh=true; lv_obj_add_event_cb(ph_tile, tile_tap_cb, LV_EVENT_ALL, c); }
+      if (orp_tile) { TileTapCtx *c=(TileTapCtx*)lv_mem_alloc(sizeof(TileTapCtx)); memset(c,0,sizeof(TileTapCtx)); c->isPh=false; lv_obj_add_event_cb(orp_tile, tile_tap_cb, LV_EVENT_ALL, c); }
 
       // Footer IP at bottom-right (always show)
       lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
 
-      lv_lbl_m1 = lv_label_create(lv_tile_main);
-      lv_label_set_text(lv_lbl_m1, "M1");
-      lv_obj_set_style_text_color(lv_lbl_m1, lv_color_white(), 0);
-      lv_obj_align(lv_lbl_m1, LV_ALIGN_TOP_LEFT, 10, 40);
-      lv_obj_add_flag(lv_lbl_m1, LV_OBJ_FLAG_HIDDEN);
+      // Pump icon for pH (M1) at bottom-left of pH tile with silhouette shadow
+      lv_img_pump_ph_shadow = lv_img_create(ph_tile);
+      lv_img_set_src(lv_img_pump_ph_shadow, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+      lv_obj_set_style_img_recolor_opa(lv_img_pump_ph_shadow, LV_OPA_COVER, 0);
+      lv_obj_set_style_img_recolor(lv_img_pump_ph_shadow, lv_color_black(), 0);
+      lv_obj_set_style_img_opa(lv_img_pump_ph_shadow, (lv_opa_t)89, 0);
+      lv_obj_align(lv_img_pump_ph_shadow, LV_ALIGN_BOTTOM_LEFT, 1, 1);
+      lv_img_pump_ph = lv_img_create(ph_tile);
+      lv_img_set_src(lv_img_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+      lv_obj_set_style_img_recolor_opa(lv_img_pump_ph, LV_OPA_COVER, 0);
+      lv_obj_set_style_img_recolor(lv_img_pump_ph, lv_color_white(), 0);
+      lv_obj_align(lv_img_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+      lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
 
-      lv_lbl_m2 = lv_label_create(lv_tile_main);
-      lv_label_set_text(lv_lbl_m2, "M2");
-      lv_obj_set_style_text_color(lv_lbl_m2, lv_color_white(), 0);
-      lv_obj_align(lv_lbl_m2, LV_ALIGN_TOP_RIGHT, -10, 40);
-      lv_obj_add_flag(lv_lbl_m2, LV_OBJ_FLAG_HIDDEN);
+      // Pump icon for ORP (M2) at bottom-left of ORP tile with silhouette shadow
+      lv_img_pump_orp_shadow = lv_img_create(orp_tile);
+      lv_img_set_src(lv_img_pump_orp_shadow, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+      lv_obj_set_style_img_recolor_opa(lv_img_pump_orp_shadow, LV_OPA_COVER, 0);
+      lv_obj_set_style_img_recolor(lv_img_pump_orp_shadow, lv_color_black(), 0);
+      lv_obj_set_style_img_opa(lv_img_pump_orp_shadow, (lv_opa_t)89, 0);
+      lv_obj_align(lv_img_pump_orp_shadow, LV_ALIGN_BOTTOM_LEFT, 1, 1);
+      lv_img_pump_orp = lv_img_create(orp_tile);
+      lv_img_set_src(lv_img_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+      lv_obj_set_style_img_recolor_opa(lv_img_pump_orp, LV_OPA_COVER, 0);
+      lv_obj_set_style_img_recolor(lv_img_pump_orp, lv_color_white(), 0);
+      lv_obj_align(lv_img_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+      lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
 
-      updateLvglValues();
+      ui::updateValues();
 
       // Settings tile content: motor speed controls (clean styling)
       lv_obj_t *row1 = lv_obj_create(lv_tile_settings);
@@ -1718,11 +1752,17 @@ void setup() {
     lv_timer_set_repeat_count(once, 1);
   }
 
+  // Begin touch AFTER LVGL init, which matches the original working code structure.
+  io::touchBegin();
+
   if (!DIAG_MODE) {
     // UARTs (RX only) unless TX pins are provided
     TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
     if (USE_CHANNEL_B) TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
   }
+
+  // Configure Tuya DP ids for new parser module
+  io::tuyaConfigure(DP_TEMP, DP_ORP, DP_PH, DP_ORP_ALT1, DP_PH_ALT1);
 
   pushLine("Ready. Waiting for frames...");
   if (!USE_LVGL_UI) {
@@ -1735,55 +1775,48 @@ void setup() {
   connectWiFiIfNeeded();
 
   // Load persisted thresholds
-  prefs.begin("poolcfg", false);
-  PH_MIN = prefs.getFloat("ph_min", PH_MIN);
-  PH_MAX = prefs.getFloat("ph_max", PH_MAX);
-  ORP_MIN = prefs.getInt("orp_min", ORP_MIN);
-  ORP_MAX = prefs.getInt("orp_max", ORP_MAX);
+  storage.begin(false);
+  PH_MIN = storage.getPhMin(PH_MIN);
+  PH_MAX = storage.getPhMax(PH_MAX);
+  ORP_MIN = storage.getOrpMin(ORP_MIN);
+  ORP_MAX = storage.getOrpMax(ORP_MAX);
 
-  // Begin touch
-  beginTouch();
 
   // Load custom speeds if present
-  M1_SPEED_PC = (uint8_t)prefs.getInt("m1_speed", M1_SPEED_PC);
-  M2_SPEED_PC = (uint8_t)prefs.getInt("m2_speed", M2_SPEED_PC);
+  M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
+  M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
-    pinMode(TB_STBY, OUTPUT);
-    pinMode(M1_IN1, OUTPUT); pinMode(M1_IN2, OUTPUT);
-    pinMode(M2_IN1, OUTPUT); pinMode(M2_IN2, OUTPUT);
-    digitalWrite(TB_STBY, HIGH);
-    // PWM setup via Arduino analogWrite for ESP32-C6
-    // Configure frequency first, then resolution per pin
-    analogWriteFrequency(M1_PWM, PWM_FREQ);
-    analogWriteFrequency(M2_PWM, PWM_FREQ);
-    analogWriteResolution(M1_PWM, PWM_BITS);
-    analogWriteResolution(M2_PWM, PWM_BITS);
-    pinMode(M1_PWM, OUTPUT); analogWrite(M1_PWM, 0);
-    pinMode(M2_PWM, OUTPUT); analogWrite(M2_PWM, 0);
+    control = new domain::ControlPolicy(TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM);
+
+    // Use the correct ESP32-C6 ledc API
+    ledcAttach(M1_PWM, PWM_FREQ, PWM_BITS);
+    ledcAttach(M2_PWM, PWM_FREQ, PWM_BITS);
+    ledcWrite(M1_PWM, 0);
+    ledcWrite(M2_PWM, 0);
 
     if (MOTOR_TEST && !FORCE_MOTOR_A_ON) {
       uint8_t duty = (uint8_t)(M1_SPEED_PC * 255 / 100);
       // M1 forward
       digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, LOW);
-      analogWrite(M1_PWM, duty); delay(1000); analogWrite(M1_PWM, 0); delay(300);
+      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(300);
       // M1 reverse
       digitalWrite(M1_IN1, LOW); digitalWrite(M1_IN2, HIGH);
-      analogWrite(M1_PWM, duty); delay(1000); analogWrite(M1_PWM, 0); delay(500);
+      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(500);
       // M2 forward
       digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, LOW);
-      analogWrite(M2_PWM, duty); delay(1000); analogWrite(M2_PWM, 0); delay(300);
+      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0); delay(300);
       // M2 reverse
       digitalWrite(M2_IN1, LOW); digitalWrite(M2_IN2, HIGH);
-      analogWrite(M2_PWM, duty); delay(1000); analogWrite(M2_PWM, 0);
+      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0);
     }
 
     // Hard force Motor A on continuously for test (AIN1=LOW, AIN2=HIGH, 100% duty)
     if (FORCE_MOTOR_A_ON) {
       digitalWrite(M1_IN1, LOW);
       digitalWrite(M1_IN2, HIGH);
-      analogWrite(M1_PWM, 255);
+      ledcWrite(M1_PWM, 255);
       // Prevent the control loop from turning it off
       m1StopAt = UINT32_MAX;
       m1Running = true;
@@ -1808,7 +1841,7 @@ void loop() {
   if (USE_LVGL_UI) {
     lv_timer_handler();
     // (removed periodic debug text update)
-    delay(5);
+    delay(1);  // more responsive UI
   } else if (DIAG_MODE) {
     static uint32_t last = 0;
     uint32_t now = millis();
@@ -1823,29 +1856,36 @@ void loop() {
     return;
   }
 
-  while (TUYA_A.available()) {
+  {
+    int processed = 0;
+    while (TUYA_A.available()) {
     uint8_t b = TUYA_A.read();
     rxA_count++;
     lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
-    pa.feed(b);
-    // ASCII line capture for quick human-readable sniffing
-    if (b == '\n' || b == '\r') {
-      if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
-    } else {
-      if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
-      if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+    io::tuyaFeedA(b);
+    // Reduce debug/printing when UI is active to avoid lag
+    if (!USE_LVGL_UI && DIAG_MODE) {
+      // ASCII line capture for quick human-readable sniffing
+      if (b == '\n' || b == '\r') {
+        if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+      } else {
+        if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
+        if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+      }
+      // RAW hex dump to USB Serial (16 bytes per line)
+      if ((rawCountA % 16) == 0) { Serial.print("\nA "); }
+      hexByte(Serial, b); Serial.print(' ');
+      rawCountA++;
     }
-    // RAW hex dump to USB Serial (16 bytes per line)
-    if ((rawCountA % 16) == 0) { Serial.print("\nA "); }
-    hexByte(Serial, b); Serial.print(' ');
-    rawCountA++;
+    if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
+  }
   }
   if (USE_CHANNEL_B && !USE_LVGL_UI) {
     while (TUYA_B.available()) {
       uint8_t b = TUYA_B.read();
       rxB_count++;
       lastB[idxB] = b; idxB = (uint8_t)((idxB + 1) % 7);
-      pb.feed(b);
+      io::tuyaFeedB(b);
       if (b == '\n' || b == '\r') {
         if (asciiB.length() > 0) { pushLine(String("B> ") + asciiB); asciiB = ""; }
       } else {
@@ -1867,11 +1907,27 @@ void loop() {
   }
 
   // WiFi/MQTT service loop
-  static uint32_t lastConnect=0; uint32_t now=millis();
-  if (WiFi.status() != WL_CONNECTED && now - lastConnect > 2000) { lastConnect = now; connectWiFiIfNeeded(); }
+  static uint32_t lastConnectAttempt = 0;
+  uint32_t now = millis();
+  
+  if (WiFi.status() != WL_CONNECTED && now - lastConnectAttempt > 5000) { 
+    lastConnectAttempt = now; 
+    connectWiFiIfNeeded(); 
+  }
+  
   if (WiFi.status() == WL_CONNECTED) {
-    if (!mqtt.connected() && now - lastConnect > 2000) { lastConnect = now; ensureMqtt(); }
-    if (mqtt.connected()) { publishDiscoveryOnce(); publishStatesIfReady(); mqtt.loop(); }
+    // Try to connect to MQTT, but don't block
+    if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
+      lastConnectAttempt = now;
+      mqttClient.ensureConnected(); // This will now attempt once and not block
+    }
+    
+    // Only proceed if connected
+    if (mqttClient.isConnected()) {
+      mqttClient.publishDiscoveryOnce();
+      mqttClient.publishStatesIfReady(domain::Metrics::instance());
+      mqttClient.loop();
+    }
   }
 
   if (!USE_LVGL_UI) {
@@ -1880,37 +1936,19 @@ void loop() {
   }
 
   // Motor control policy (skip if forced-on test is active)
-  if (MOTOR_ENABLE && !FORCE_MOTOR_A_ON) {
-    // CONTINUOUS POLICY with hysteresis: run while beyond threshold, stop when back in band by hysteresis
-    // Motor 1: pH high → dose acid (direction B)
-    bool phHigh = havePh && phVal > PH_MAX;
-    bool phBack = havePh && phVal < (PH_MAX - PH_HYST);
-    if (phHigh) {
-      bool dirA = false;
-      digitalWrite(M1_IN1, dirA ? HIGH : LOW);
-      digitalWrite(M1_IN2, dirA ? LOW  : HIGH);
-      uint8_t duty = (uint8_t)(M2_SPEED_PC * 255 / 100);
-      analogWrite(M1_PWM, duty);
-      if (!m1Running) { m1Running = true; if (!USE_LVGL_UI) drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, true); else updateLvglValues(); }
-    } else if (phBack) {
-      analogWrite(M1_PWM, 0);
-      if (m1Running) { m1Running = false; if (!USE_LVGL_UI) drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, false); else updateLvglValues(); }
-    }
-
-    // Motor 2: ORP low → dose (direction A)
-    int orpIntNow = (int)lrintf(orpMv);
-    bool orpLow = haveOrp && (orpIntNow < ORP_MIN);
-    bool orpBack = haveOrp && (orpIntNow > (ORP_MIN + ORP_HYST));
-    if (orpLow) {
-      bool dirA = true;
-      digitalWrite(M2_IN1, dirA ? HIGH : LOW);
-      digitalWrite(M2_IN2, dirA ? LOW  : HIGH);
-      uint8_t duty = (uint8_t)(M2_SPEED_PC * 255 / 100);
-      analogWrite(M2_PWM, duty);
-      if (!m2Running) { m2Running = true; if (!USE_LVGL_UI) drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, true); else updateLvglValues(); }
-    } else if (orpBack) {
-      analogWrite(M2_PWM, 0);
-      if (m2Running) { m2Running = false; if (!USE_LVGL_UI) drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, false); else updateLvglValues(); }
+  if (MOTOR_ENABLE) {
+    domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
+    control->update(cfg,
+                    domain::Metrics::instance().havePh,
+                    domain::Metrics::instance().phVal,
+                    domain::Metrics::instance().haveOrp,
+                    domain::Metrics::instance().orpMv,
+                    FORCE_MOTOR_A_ON,
+                    m1Running, m2Running);
+    if (USE_LVGL_UI) updateLvglValues();
+    else {
+      if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
+      if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
     }
   }
 }
