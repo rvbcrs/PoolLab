@@ -28,6 +28,11 @@ public:
   void setM1Speed(int v);
   void setM2Speed(int v);
 
+  // Connectivity mode
+  enum Mode { MODE_WIFI_MQTT = 0, MODE_ZIGBEE = 1 };
+  Mode getMode(Mode def) const;
+  void setMode(Mode m);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

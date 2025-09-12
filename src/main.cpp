@@ -27,9 +27,36 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
+#include <esp_log.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
+#if defined(FORCE_ZIGBEE) || __has_include(<Zigbee.h>)
+#include <Zigbee.h>
+#include <ep/ZigbeeTempSensor.h>
+#include <ep/ZigbeeAnalog.h>
+#include <esp_zigbee_secur.h>
+#include <esp_zigbee_core.h>
+static ZigbeeTempSensor zbTempSensor(10);
+static ZigbeeAnalog      zbPh(11);
+static ZigbeeAnalog      zbOrp(12);
+static bool zbStarted = false;
+static uint32_t zbCommissionUntilMs = 0;
+static bool zbScanRequested = false;
+static bool zbMaskAdjusted = false;
+static uint32_t zbLastScanMs = 0;
+static uint32_t zbCommissionStartMs = 0;
+static bool zbMaskExpanded = false;
+// Writable thresholds via Zigbee (Analog Output)
+static ZigbeeAnalog      zbPhMin(13);
+static ZigbeeAnalog      zbPhMax(14);
+static ZigbeeAnalog      zbOrpMin(15);
+static ZigbeeAnalog      zbOrpMax(16);
+static Preferences zbPrefs;
+static bool wifiOff = false;
+static const char *ZB_PREF_NS = "poollab";
+static const char *ZB_PREF_PAIR = "zb_pair"; // bool flag to start pairing on next boot
+#endif
 // Core modules
 #include "core/Storage.h"
 #include "core/DisplayBridge.h"
@@ -39,6 +66,7 @@
 #include "io/MqttClient.h"
 #include "io/Touch.h"
 #include "io/Tuya.h"
+#include "io/ZigbeeClient.h"
 #include "ui/UI.h"
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
@@ -122,6 +150,7 @@ static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_lbl_m1 = nullptr; // motor1 indicator
 static lv_obj_t *lv_lbl_m2 = nullptr; // motor2 indicator
+static lv_obj_t *lv_zb_modal = nullptr; // zigbee commissioning modal
 
 // Settings widgets
 static lv_obj_t *lv_lbl_speed1 = nullptr;
@@ -166,7 +195,7 @@ static void tile_tap_cb(lv_event_t *e){
 }
 
 // ---- TB6612FNG motor driver (optional dosing pumps) ----
-static const bool MOTOR_ENABLE = true; // set false to disable all motor control
+static const bool MOTOR_ENABLE = false; // disable motor control to free BOOT pin GPIO9
 static const bool MOTOR_TEST   = true; // jog both motors at boot to verify wiring
 // Force Motor A continuously on (test). Set true for hard-on at 100% duty.
 static const bool FORCE_MOTOR_A_ON = false;
@@ -222,19 +251,41 @@ static core::Storage storage("poolcfg");
 static core::DisplayBridge *displayBridge = nullptr;
 static domain::ControlPolicy *control = nullptr;
 static io::MqttClient mqttClient;
+static io::ZigbeeClient zigbee;
+static core::Storage::Mode runMode = core::Storage::MODE_ZIGBEE;
+// --- Button for Zigbee commissioning (monitor both common BOOT pins)
+static const int BTN_PIN1 = 9;  // ESP32-C6 DevKit(C/M) BOOT is typically GPIO9 (active low)
+static const int BTN_PIN2 = 0;  // Some boards expose GPIO0 as BOOT (active low)
+// If BOOT is not wired on this board, fall back to GPIO0 only
+static bool btnPrev = false;     // debounced/stable state
+static uint32_t btnPressMs = 0;  // moment stable press started
+static bool btnRawPrev = false;  // immediate/raw read
+static bool btnStable = false;   // debounced state
+static uint32_t btnLastChangeMs = 0; // last raw change timestamp
 
 // WiFi event logging
+static bool wifiConnecting = false;
+static uint32_t lastWiFiAttemptMs = 0;
+
 static void setupWiFiEvents() {
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
     switch (event) {
       case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-        Serial.println("[WiFi] Connected to AP");
+        ESP_LOGI("WiFi", "Connected to AP");
+        wifiConnecting = false;
         break;
       case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-        Serial.print("[WiFi] Got IP: "); Serial.println(WiFi.localIP());
+        ESP_LOGI("WiFi", "Got IP: %s", WiFi.localIP().toString().c_str());
+        wifiConnecting = false;
         break;
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-        Serial.print("[WiFi] Disconnected, reason="); Serial.println((int)info.wifi_sta_disconnected.reason);
+        ESP_LOGI("WiFi", "Disconnected, reason=%d", (int)info.wifi_sta_disconnected.reason);
+        wifiConnecting = false;
+        // Immediate reconnect if not in Zigbee commissioning
+        if (!wifiOff) {
+          delay(100);
+          WiFi.reconnect();
+        }
         break;
       default: break;
     }
@@ -712,6 +763,160 @@ static void showRangeDialog(bool isPh){
     }
   }, LV_EVENT_ALL, NULL);
 }
+
+static void showZigbeeCommissioningModal(uint32_t seconds){
+  if (!USE_LVGL_UI) { ESP_LOGI("ZB", "Commissioning started"); return; }
+  if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
+  if (lv_tv) lv_obj_clear_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *dlg = lv_obj_create(modal);
+  lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40);
+  lv_obj_center(dlg);
+  lv_obj_set_style_radius(dlg, 10, 0);
+  lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg);
+  lv_label_set_text(title, "Zigbee commissioning");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+  lv_obj_t *spinner = lv_spinner_create(dlg, 1000, 60);
+  lv_obj_set_size(spinner, 28, 28);
+  lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_t *msg = lv_label_create(dlg);
+  static uint32_t zb_modal_deadline = 0;
+  zb_modal_deadline = millis() + seconds * 1000UL;
+  char b[48]; snprintf(b, sizeof(b), "Pairing... %us", (unsigned)seconds);
+  lv_label_set_text(msg, b);
+  lv_obj_align(msg, LV_ALIGN_CENTER, 0, 22);
+  // Timer to update countdown every second
+  lv_timer_t *ct = lv_timer_create([](lv_timer_t *tm){
+    if (!lv_zb_modal) { lv_timer_del(tm); return; }
+    uint32_t now = millis();
+    uint32_t remain = (now >= zb_modal_deadline) ? 0 : (zb_modal_deadline - now + 999) / 1000;
+    lv_obj_t *label = (lv_obj_t *)tm->user_data;
+    if (label) {
+      char bb[48]; snprintf(bb, sizeof(bb), "Pairing... %us", (unsigned)remain);
+      lv_label_set_text(label, bb);
+    }
+    if (remain == 0) { lv_timer_del(tm); }
+  }, 1000, msg);
+
+  lv_obj_add_event_cb(modal, [](lv_event_t *e){
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+      if (lv_tv) lv_obj_add_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+      lv_zb_modal = nullptr;
+    }
+  }, LV_EVENT_ALL, NULL);
+  lv_zb_modal = modal;
+}
+
+// Simple modal to instruct user to hold BOOT for 3s to start pairing
+static void showZigbeeHoldToPairModal(){
+  if (!USE_LVGL_UI) { ESP_LOGI("ZB", "Hold BOOT 3s to start pairing"); return; }
+  if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
+  if (lv_tv) lv_obj_clear_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *dlg = lv_obj_create(modal);
+  lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40);
+  lv_obj_center(dlg);
+  lv_obj_set_style_radius(dlg, 10, 0);
+  lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg);
+  lv_label_set_text(title, "Hold BOOT 3s to start Zigbee pairing");
+  lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+  lv_obj_add_event_cb(modal, [](lv_event_t *e){
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+      if (lv_tv) lv_obj_add_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
+      lv_zb_modal = nullptr;
+    }
+  }, LV_EVENT_ALL, NULL);
+  lv_zb_modal = modal;
+  // Auto-close hint after 1500 ms
+  lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){
+    (void)tm;
+    if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; }
+  }, 1500, NULL);
+  lv_timer_set_repeat_count(t, 1);
+}
+
+#if __has_include(<Zigbee.h>)
+static void zb_start_and_commission(uint8_t seconds){
+  if (!zbStarted) {
+    // Register endpoints and start stack
+    ESP_LOGI("ZB", "Commissioning: preparing endpoints");
+    zbTempSensor.setManufacturerAndModel("PoolLab", "PoolLab-ED");
+    zbTempSensor.setMinMaxValue(0, 60);
+    zbPh.addAnalogInput();
+    zbOrp.addAnalogInput();
+    // Add writable threshold endpoints (Analog Output) and callbacks
+    // Temporarily omit writable outputs during commissioning to simplify joining
+    Zigbee.setRxOnWhenIdle(true);
+    // Allow all standard channels (11-26). We will prefer 11 in active scans below.
+    // Prefer coordinator channel 11 first; we'll expand to all channels if needed
+    Zigbee.setPrimaryChannelMask(1u << 11);
+    Zigbee.setScanDuration(4); // max
+    Zigbee.setTimeout(120000);
+    Zigbee.addEndpoint(&zbTempSensor);
+    Zigbee.addEndpoint(&zbPh);
+    Zigbee.addEndpoint(&zbOrp);
+    // Leave only sensors for initial join
+    // Select device role at compile time; default to End Device to avoid asserts
+    #if defined(ZIGBEE_MODE_ROUTER) || defined(ZB_ROLE_ROUTER) || defined(ZIGBEE_ROUTER_DEFAULT) || defined(ZIGBEE_MODE_ZCZR)
+      ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, ROUTER, erase NVS)");
+      // Make sure TC link key exchange is not required when joining centralized networks
+      esp_zb_secur_link_key_exchange_required_set(false);
+      bool ok = Zigbee.begin(ZIGBEE_ROUTER, true);
+      // Boost TX power to improve joining reliability
+      esp_zb_set_tx_power(20);
+    #else
+      ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, END_DEVICE, erase NVS)");
+      bool ok = Zigbee.begin(ZIGBEE_END_DEVICE, true);
+    #endif
+    ESP_LOGI("ZB", "begin() -> %s", ok ? "OK" : "FAIL");
+    (void)ok;
+    // Configure reporting and push initial values
+    zbTempSensor.setReporting(1, 0, 1);
+    zbPh.setAnalogInputReporting(0, 30, 0.01f);
+    zbOrp.setAnalogInputReporting(0, 30, 5.0f);
+    float initT = METRICS().haveTemp ? METRICS().tempC : 25.0f;
+    float initPh = METRICS().havePh ? METRICS().phVal : 7.00f;
+    float initOrp = METRICS().haveOrp ? METRICS().orpMv : 300.0f;
+    zbTempSensor.setTemperature(initT);
+    zbTempSensor.reportTemperature();
+    zbPh.setAnalogInput(initPh);
+    zbPh.reportAnalogInput();
+    zbOrp.setAnalogInput(initOrp);
+    zbOrp.reportAnalogInput();
+    // Publish current thresholds to writable outputs
+    // Thresholds will be exposed later via outputs; skip during join
+    zbStarted = true;
+  }
+  // Track commissioning window
+  zbCommissionUntilMs = millis() + (uint32_t)seconds * 1000UL;
+  zbCommissionStartMs = millis();
+  zbMaskExpanded = false;
+}
+#endif
 
 // ---- Simple vector icons (drawn with primitives) ----
 static void drawDropletIcon(Arduino_GFX *gfx, int x, int y, uint16_t color) {
@@ -1243,9 +1448,18 @@ static void handleTouchUI(){
 
 static void connectWiFiIfNeeded() {
   if (WiFi.status() == WL_CONNECTED) return;
+  if (wifiConnecting) return; // avoid spamming connect while connecting
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("pool-sniffer-c6");
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  ESP_LOGI("WiFi", "Connecting to '%s'...", WIFI_SSID);
+  WiFi.disconnect(true, true);
+  delay(50);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  wifiConnecting = true;
+  lastWiFiAttemptMs = millis();
 }
 
 static void ensureMqtt() {
@@ -1380,18 +1594,18 @@ void drawScreen() {
 // Parser moved to io/Tuya
 
 void setup() {
-  // USB serial
+  // USB serial (do not block UI waiting for monitor)
   Serial.begin(115200);
-  // Wait a bit for the serial monitor to connect
-  delay(2000); 
-
+  delay(100);
   Serial.setTimeout(50);
-  unsigned long t0 = millis();
-  while (!Serial && (millis() - t0) < 2000) { delay(10); }
-  Serial.setDebugOutput(true);
-  Serial.println("\nESP32-C6 Tuya Sniffer + Display");
-  Serial.print("Firmware Version: ");
-  Serial.println(FIRMWARE_VERSION);
+  // Ensure IDF logs are visible
+  esp_log_level_set("*", ESP_LOG_INFO);
+  // Silence very verbose I2C low-level noise
+  esp_log_level_set("esp32-hal-i2c-ng", ESP_LOG_WARN);
+  esp_log_level_set("ZB", ESP_LOG_INFO);
+  ESP_LOGI("BOOT", "Boot start");
+  // Avoid enabling debug output to USB CDC to prevent any hidden blocking
+  // Serial.setDebugOutput(true);
 
   // Ensure HW SPI uses pins from working example (SCK=1, MOSI=2, CS=14)
   SPI.begin(1 /* SCK */, -1 /* MISO */, 2 /* MOSI */, 14 /* SS */);
@@ -1401,16 +1615,16 @@ void setup() {
   
   // Remove broad BL scan to avoid toggling reserved pins
 
-  // Hardware reset pulse on LCD reset pin (GPIO22)
+  // Hardware reset pulse on LCD reset pin (GPIO22) — restore original timings
   pinMode(22, OUTPUT);
   digitalWrite(22, LOW);
-  delay(20);
+  delay(10);
   digitalWrite(22, HIGH);
   delay(120);
 
-  // LCD init
+  // LCD init (force begin twice in case of cold start without USB host)
   if (!gfx->begin()) {
-    Serial.println("LCD begin() failed");
+    ESP_LOGW("LCD", "begin() failed");
   } else {
     // Apply vendor init sequence and set rotation (landscape)
     lcd_reg_init();
@@ -1435,6 +1649,20 @@ void setup() {
       if (idx==1) { M1_SPEED_PC = (uint8_t)value; storage.setM1Speed(M1_SPEED_PC); }
       else if (idx==2) { M2_SPEED_PC = (uint8_t)value; storage.setM2Speed(M2_SPEED_PC); }
     };
+    h.onModeToggle = [](bool zigbee){
+      runMode = zigbee ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+      storage.setMode(runMode);
+      if (runMode == core::Storage::MODE_ZIGBEE) {
+        // Pause MQTT & WiFi until commissioning window ends or user switches back
+        if (WiFi.isConnected()) WiFi.disconnect(true, true);
+        WiFi.mode(WIFI_OFF);
+        wifiOff = true;
+      } else {
+        WiFi.mode(WIFI_STA);
+        wifiOff = false;
+        connectWiFiIfNeeded();
+      }
+    };
     ui::configureHandlers(h);
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
@@ -1458,7 +1686,7 @@ void setup() {
         if (!io::i2cRead(io::AXS5106L_ADDR, io::AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
           static bool fail_reported = false;
           if (!fail_reported) {
-            Serial.println("[Touch] LVGL read_cb: I2C read failed!");
+            ESP_LOGI("TOUCH", "LVGL read_cb: I2C read failed!");
             fail_reported = true;
           }
           data->state = LV_INDEV_STATE_RELEASED; 
@@ -1489,7 +1717,7 @@ void setup() {
         static uint32_t last_print = 0;
         if (millis() - last_print > 100) { // Rate limit printing
             last_print = millis();
-            Serial.printf("[Touch] LVGL: PRESSED at x=%d, y=%d, points=%d\n", x, y, n);
+            ESP_LOGI("TOUCH", "LVGL: PRESSED at x=%d, y=%d, points=%d", x, y, n);
         }
       };
       (void)lv_indev_drv_register(&indev_drv);
@@ -1730,7 +1958,10 @@ void setup() {
       lv_obj_t *btn2p = lv_btn_create(row2); lv_obj_set_size(btn2p, 36, 32); lv_obj_align(btn2p, LV_ALIGN_RIGHT_MID, -20, 0); lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn2p), "+");
 
       // Save button
-      lv_obj_t *btnSave = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnSave, 100, 34); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_MID, 0, -16); lv_obj_add_event_cb(btnSave, on_speed_save_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btnSave), "Save");
+      lv_obj_t *btnSave = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnSave, 100, 34); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_MID, -56, -16); lv_obj_add_event_cb(btnSave, on_speed_save_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btnSave), "Save");
+      // Pair Zigbee button
+      lv_obj_t *btnPair = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnPair, 120, 34); lv_obj_align(btnPair, LV_ALIGN_BOTTOM_MID, 84, -16); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee");
+      lv_obj_add_event_cb(btnPair, [](lv_event_t *e){ (void)e; showZigbeeCommissioningModal(60); ESP_LOGI("ZB", "Manual commissioning (60s)"); zigbee.startCommissioning(60); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
@@ -1752,8 +1983,40 @@ void setup() {
     lv_timer_set_repeat_count(once, 1);
   }
 
-  // Begin touch AFTER LVGL init, which matches the original working code structure.
+  // Begin touch AFTER LVGL init
   io::touchBegin();
+  // If touch is noisy at boot it can stall UI. Add a short debounce warmup.
+  delay(50);
+
+  // Init buttons (BOOT) with pull-up and debounce state
+  pinMode(BTN_PIN1, INPUT_PULLUP);
+  // Initialize button state to avoid false long-press at boot
+  bool rawNow = (digitalRead(BTN_PIN1) == LOW);
+  btnPrev = btnStable = btnRawPrev = rawNow;
+  btnPressMs = 0; btnLastChangeMs = millis();
+
+  // Init Zigbee client only (no stack start yet). If pairing flag present, reboot path will start Zigbee.
+  io::ZigbeeConfig zcfg{};
+  zigbee.begin(zcfg);
+  #if __has_include(<Zigbee.h>)
+  zbPrefs.begin(ZB_PREF_NS, true);
+  bool doPair = zbPrefs.getBool(ZB_PREF_PAIR, false);
+  zbPrefs.end();
+  ESP_LOGI("ZB", "Commissioning flag: %d", doPair ? 1 : 0);
+  if (doPair) {
+    // Clear flag and start pairing flow on clean boot
+    zbPrefs.begin(ZB_PREF_NS, false);
+    zbPrefs.putBool(ZB_PREF_PAIR, false);
+    zbPrefs.end();
+    // Schakel WiFi uit vóór de Zigbee stack start om radio-contentie te voorkomen
+    if (WiFi.isConnected()) WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    wifiOff = true;
+    ESP_LOGI("ZB", "WiFi disabled for commissioning");
+    ESP_LOGI("ZB", "Starting commissioning flow (steering, 120s)");
+    zb_start_and_commission(120);
+  }
+  #endif
 
   if (!DIAG_MODE) {
     // UARTs (RX only) unless TX pins are provided
@@ -1772,7 +2035,10 @@ void setup() {
 
   // WiFi + MQTT
   setupWiFiEvents();
-  connectWiFiIfNeeded();
+  if (!wifiOff) {
+    ESP_LOGI("WiFi", "Boot: WiFi STA starting");
+    connectWiFiIfNeeded();
+  }
 
   // Load persisted thresholds
   storage.begin(false);
@@ -1780,7 +2046,8 @@ void setup() {
   PH_MAX = storage.getPhMax(PH_MAX);
   ORP_MIN = storage.getOrpMin(ORP_MIN);
   ORP_MAX = storage.getOrpMax(ORP_MAX);
-
+  runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+  if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
   // Load custom speeds if present
   M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
@@ -1847,7 +2114,7 @@ void loop() {
     uint32_t now = millis();
     if (now - last > 1000) {
       last = now;
-      Serial.print("[DIAG] millis="); Serial.println(now);
+      ESP_LOGI("DIAG", "millis=%u", (unsigned)now);
       // visual heartbeat on screen border
       static bool toggle = false; toggle = !toggle;
       uint16_t c = toggle ? YELLOW : CYAN;
@@ -1855,6 +2122,51 @@ void loop() {
     }
     return;
   }
+
+  // --- Button long-press detection for Zigbee commissioning ---
+  // Debounce raw state (15ms)
+  bool rawNow = (digitalRead(BTN_PIN1) == LOW);
+  uint32_t nowMs = millis();
+  if (rawNow != btnRawPrev) { btnRawPrev = rawNow; btnLastChangeMs = nowMs; }
+  if ((nowMs - btnLastChangeMs) >= 15) { btnStable = rawNow; }
+
+  bool btnNow = btnStable;
+  if (btnNow && !btnPrev) {
+    btnPressMs = nowMs;
+    ESP_LOGI("ZB", "Button pressed");
+    // Show hint immediately on press to confirm UI feedback
+    showZigbeeHoldToPairModal();
+  }
+  if (!btnNow && btnPrev) {
+    uint32_t held = btnPressMs ? (nowMs - btnPressMs) : 0;
+    btnPressMs = 0;
+    ESP_LOGI("ZB", "Button released");
+    // Require 3s+ hold to start commissioning; show hint modal for shorter presses
+    if (held >= 3000) {
+      // Start commissioning immediately (no reboot)
+      showZigbeeCommissioningModal(120);
+      ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
+      // Force Zigbee mode during commissioning
+      runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
+      if (WiFi.isConnected()) WiFi.disconnect(true, true);
+      WiFi.mode(WIFI_OFF);
+      wifiOff = true;
+      zb_start_and_commission(120);
+    } else if (held >= 100 && held < 3000) {
+      showZigbeeHoldToPairModal();
+    }
+  }
+  btnPrev = btnNow;
+
+  // If commissioning finished, optionally restore WiFi
+  #if __has_include(<Zigbee.h>)
+  if (wifiOff && zbStarted && (zbCommissionUntilMs && millis() > zbCommissionUntilMs)) {
+    ESP_LOGI("ZB", "Commissioning window ended; restoring WiFi");
+    WiFi.mode(WIFI_STA);
+    connectWiFiIfNeeded();
+    wifiOff = false;
+  }
+  #endif
 
   {
     int processed = 0;
@@ -1873,8 +2185,7 @@ void loop() {
         if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
       }
       // RAW hex dump to USB Serial (16 bytes per line)
-      if ((rawCountA % 16) == 0) { Serial.print("\nA "); }
-      hexByte(Serial, b); Serial.print(' ');
+      if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
       rawCountA++;
     }
     if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
@@ -1893,8 +2204,7 @@ void loop() {
         if (asciiB.length() >= MAX_LINE_CHARS) { pushLine(String("B> ") + asciiB); asciiB = ""; }
       }
       // RAW hex dump to USB Serial (16 bytes per line)
-      if ((rawCountB % 16) == 0) { Serial.print("\nB "); }
-      hexByte(Serial, b); Serial.print(' ');
+      if ((rawCountB % 16) == 0) { /* skip noisy raw */ }
       rawCountB++;
     }
   }
@@ -1909,24 +2219,31 @@ void loop() {
   // WiFi/MQTT service loop
   static uint32_t lastConnectAttempt = 0;
   uint32_t now = millis();
-  
-  if (WiFi.status() != WL_CONNECTED && now - lastConnectAttempt > 5000) { 
-    lastConnectAttempt = now; 
-    connectWiFiIfNeeded(); 
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    // Try to connect to MQTT, but don't block
-    if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
-      lastConnectAttempt = now;
-      mqttClient.ensureConnected(); // This will now attempt once and not block
-    }
-    
-    // Only proceed if connected
-    if (mqttClient.isConnected()) {
-      mqttClient.publishDiscoveryOnce();
-      mqttClient.publishStatesIfReady(domain::Metrics::instance());
-      mqttClient.loop();
+  if (!wifiOff) {
+    if (runMode == core::Storage::MODE_WIFI_MQTT) {
+      if (WiFi.status() != WL_CONNECTED) {
+        if (!wifiConnecting && now - lastConnectAttempt > 5000) {
+          lastConnectAttempt = now;
+          connectWiFiIfNeeded();
+        }
+        if (wifiConnecting && now - lastWiFiAttemptMs > 10000) {
+          ESP_LOGI("WiFi", "Retry connect (stuck)");
+          WiFi.disconnect(true, true);
+          delay(50);
+          wifiConnecting = false;
+        }
+      }
+      if (WiFi.status() == WL_CONNECTED) {
+        if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
+          lastConnectAttempt = now;
+          mqttClient.ensureConnected();
+        }
+        if (mqttClient.isConnected()) {
+          mqttClient.publishDiscoveryOnce();
+          mqttClient.publishStatesIfReady(domain::Metrics::instance());
+          mqttClient.loop();
+        }
+      }
     }
   }
 
@@ -1949,6 +2266,37 @@ void loop() {
     else {
       if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
       if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
+    }
+  }
+
+  // Zigbee periodic reporting (Arduino Zigbee runs internally; no explicit loop needed)
+  static uint32_t lastZbReport = 0;
+  if (now - lastZbReport > 2000) {
+    lastZbReport = now;
+    #if __has_include(<Zigbee.h>)
+    if (zbStarted) {
+      if (domain::Metrics::instance().havePh)   zbPh.setAnalogInput(domain::Metrics::instance().phVal);
+      if (domain::Metrics::instance().haveOrp)  zbOrp.setAnalogInput((float)domain::Metrics::instance().orpMv);
+      if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
+      // Opportunistic re-steering if not yet connected
+      #if __has_include(<Zigbee.h>)
+      if (!Zigbee.connected()) {
+        // After ~20s without join, expand channel mask from 11 to all standard channels once
+        uint32_t now2 = millis();
+        if (!zbMaskExpanded && (now2 - zbCommissionStartMs) > 20000) {
+          ESP_LOGI("ZB", "Expanding channel mask to all channels (fallback)");
+          Zigbee.setPrimaryChannelMask(0x07FFF800);
+          zbMaskExpanded = true;
+        }
+      }
+      #endif
+    }
+    #endif
+    // Auto-close commissioning modal when commissioning ends
+    if (lv_zb_modal && zbCommissionUntilMs && millis() > zbCommissionUntilMs) {
+      lv_obj_del(lv_zb_modal);
+      lv_zb_modal = nullptr;
+      zbCommissionUntilMs = 0;
     }
   }
 }

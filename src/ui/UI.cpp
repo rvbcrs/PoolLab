@@ -15,6 +15,7 @@ static lv_obj_t *lv_slider_m1 = nullptr;
 static lv_obj_t *lv_slider_m2 = nullptr;
 static uint8_t initial_m1=60, initial_m2=60;
 static Handlers handlers;
+static bool initial_mode_zigbee = true;
 
 void init(lv_disp_t* disp){ (void)disp; }
 
@@ -42,13 +43,22 @@ void build(bool safeBaseline){
   lv_lbl_ip = lv_label_create(scr); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
 
   // Settings section with sliders (compact, bovenaan)
-  lv_obj_t *panel = lv_obj_create(scr); lv_obj_set_size(panel, lv_obj_get_width(scr)-20, 70); lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 8);
+  lv_obj_t *panel = lv_obj_create(scr); lv_obj_set_size(panel, lv_obj_get_width(scr)-20, 106); lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 8);
   lv_obj_set_style_bg_opa(panel, LV_OPA_20, 0);
   lv_obj_set_style_pad_all(panel, 6, 0);
-  lv_obj_t *lblm1 = lv_label_create(panel); lv_label_set_text(lblm1, "pH Motor %"); lv_obj_align(lblm1, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_slider_m1 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m1, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m1, LV_ALIGN_TOP_RIGHT, -50, 0); lv_slider_set_range(lv_slider_m1, 0, 100); lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
-  lv_obj_t *lblm2 = lv_label_create(panel); lv_label_set_text(lblm2, "ORP Motor %"); lv_obj_align(lblm2, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  lv_slider_m2 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m2, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m2, LV_ALIGN_BOTTOM_RIGHT, -50, 0); lv_slider_set_range(lv_slider_m2, 0, 100); lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
+
+  // Mode toggle (Zigbee vs WiFi/MQTT)
+  lv_obj_t *lblMode = lv_label_create(panel); lv_label_set_text(lblMode, "Mode:"); lv_obj_align(lblMode, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_t *swMode = lv_switch_create(panel); lv_obj_align(swMode, LV_ALIGN_TOP_RIGHT, -10, 0);
+  if (initial_mode_zigbee) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
+  if (handlers.onModeToggle) {
+    lv_obj_add_event_cb(swMode, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED); handlers.onModeToggle(zig);} }, LV_EVENT_ALL, NULL);
+  }
+
+  lv_obj_t *lblm1 = lv_label_create(panel); lv_label_set_text(lblm1, "pH Motor %"); lv_obj_align(lblm1, LV_ALIGN_LEFT_MID, 0, 14);
+  lv_slider_m1 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m1, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m1, LV_ALIGN_LEFT_MID, 100, 14); lv_slider_set_range(lv_slider_m1, 0, 100); lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
+  lv_obj_t *lblm2 = lv_label_create(panel); lv_label_set_text(lblm2, "ORP Motor %"); lv_obj_align(lblm2, LV_ALIGN_LEFT_MID, 0, 44);
+  lv_slider_m2 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m2, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m2, LV_ALIGN_LEFT_MID, 100, 44); lv_slider_set_range(lv_slider_m2, 0, 100); lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
   if (handlers.onSpeedChange) {
     lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(1,v);} }, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(2,v);} }, LV_EVENT_ALL, NULL);
@@ -64,6 +74,7 @@ void updateValues(){
 
 void configureHandlers(const Handlers &h){ handlers = h; }
 void setInitialSpeeds(uint8_t m1, uint8_t m2){ initial_m1=m1; initial_m2=m2; }
+void setInitialMode(bool zigbee){ initial_mode_zigbee = zigbee; }
 
 
 } // namespace ui

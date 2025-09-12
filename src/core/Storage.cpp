@@ -23,6 +23,14 @@ int Storage::getM2Speed(int def) const { return _prefs.getInt("m2_speed", def); 
 void Storage::setM1Speed(int v) { _prefs.putInt("m1_speed", v); }
 void Storage::setM2Speed(int v) { _prefs.putInt("m2_speed", v); }
 
+Storage::Mode Storage::getMode(Mode def) const {
+  int v = _prefs.getInt("mode", static_cast<int>(def));
+  return (v == static_cast<int>(MODE_ZIGBEE)) ? MODE_ZIGBEE : MODE_WIFI_MQTT;
+}
+void Storage::setMode(Mode m) {
+  _prefs.putInt("mode", static_cast<int>(m));
+}
+
 } // namespace core
 
 
