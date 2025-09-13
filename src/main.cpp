@@ -41,6 +41,9 @@
 // Use Analog Input for pH and ORP (correct semantics); ZHA needs a quirk to label nicely
 #include <esp_zigbee_secur.h>
 #include <esp_zigbee_core.h>
+static inline bool zb_is_joined(){
+  return esp_zb_bdb_dev_joined();
+}
 static ZigbeeTempSensor zbTempSensor(10);
 // Prefer standard HA clusters where possible for best ZHA compatibility
 static ZigbeeFlowSensor  zbPh(11);
@@ -65,7 +68,11 @@ static Preferences zbPrefs;
 static bool wifiOff = false;
 static const char *ZB_PREF_NS = "poollab";
 static const char *ZB_PREF_PAIR = "zb_pair"; // bool flag to start pairing on next boot
+static const char *ZB_PREF_BOUND = "zb_bound"; // bool flag: device has joined a network before
 #endif
+// Global boot timestamp for UI grace periods
+static uint32_t APP_BOOT_MS = 0;
+
 // Core modules
 #include "core/Storage.h"
 #include "core/DisplayBridge.h"
@@ -561,7 +568,9 @@ static void updateLvglValues(){
     }
     if (lv_img_link) {
       #if __has_include(<Zigbee.h>)
-      if (Zigbee.connected() || zbEverJoined) {
+      bool connected_now = Zigbee.connected();
+      bool joined_now = zb_is_joined();
+      if (connected_now && joined_now) {
         lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
       } else {
         lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
@@ -1632,6 +1641,7 @@ void setup() {
   esp_log_level_set("esp32-hal-i2c-ng", ESP_LOG_WARN);
   esp_log_level_set("ZB", ESP_LOG_INFO);
   ESP_LOGI("BOOT", "Boot start");
+  APP_BOOT_MS = millis();
   // Avoid enabling debug output to USB CDC to prevent any hidden blocking
   // Serial.setDebugOutput(true);
 
@@ -2084,8 +2094,10 @@ void setup() {
   #if __has_include(<Zigbee.h>)
   zbPrefs.begin(ZB_PREF_NS, true);
   bool doPair = zbPrefs.getBool(ZB_PREF_PAIR, false);
+  zbEverJoined = zbPrefs.getBool(ZB_PREF_BOUND, false);
   zbPrefs.end();
   ESP_LOGI("ZB", "Commissioning flag: %d", doPair ? 1 : 0);
+  ESP_LOGI("ZB", "Zigbee bound flag: %d", zbEverJoined ? 1 : 0);
   if (doPair) {
     // Clear flag and start pairing flow on clean boot
     zbPrefs.begin(ZB_PREF_NS, false);
@@ -2418,14 +2430,18 @@ void loop() {
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
       // Opportunistic re-steering if not yet connected
       #if __has_include(<Zigbee.h>)
-      if (Zigbee.connected()) {
-        zbEverJoined = true;
-        // Joined: close commissioning modal if still visible
-        if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; zbCommissionUntilMs = 0; }
+      bool connected_now = Zigbee.connected();
+      bool joined_now = zb_is_joined();
+      if (connected_now && joined_now) {
+        lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      } else {
+        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
       }
+      #else
+      lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      #endif
       #endif
     }
-    #endif
     // Auto-close commissioning modal when commissioning ends
     if (lv_zb_modal && zbCommissionUntilMs && millis() > zbCommissionUntilMs) {
       lv_obj_del(lv_zb_modal);
