@@ -178,6 +178,8 @@ static lv_obj_t *lv_zb_modal = nullptr; // zigbee commissioning modal
 // Settings widgets
 static lv_obj_t *lv_lbl_speed1 = nullptr;
 static lv_obj_t *lv_lbl_speed2 = nullptr;
+static lv_obj_t *lv_sl_speed1 = nullptr;
+static lv_obj_t *lv_sl_speed2 = nullptr;
 
 // Forward declarations for LVGL helper functions (definitions are below metrics/globals)
 static void lv_update_speed_labels();
@@ -488,10 +490,10 @@ static void lv_update_speed_labels(){
   if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
   if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
 }
-static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; lv_update_speed_labels(); }
-static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; lv_update_speed_labels(); }
-static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; lv_update_speed_labels(); }
-static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; lv_update_speed_labels(); }
+static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
 static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); }
 
 // Alert margins and border thickness for near/exceed thresholds (used by LVGL updater)
@@ -954,6 +956,47 @@ static void zb_start_and_commission(uint8_t seconds){
   zbMaskExpanded = false;
 }
 #endif
+
+static void zb_start_joined(){
+  if (zbStarted) return;
+  ESP_LOGI("ZB", "Start Zigbee (joined mode, no commissioning)");
+  // Prepare endpoints identical to commissioning, but don't erase NVS
+  zbTempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
+  zbTempSensor.setMinMaxValue(0, 60);
+  zbPh.setManufacturerAndModel("PoolLab", "Pool pH");
+  zbPh.setMinMaxValue(0.0f, 14.0f);
+  zbOrp.setManufacturerAndModel("PoolLab", "Pool ORP");
+  zbOrp.setMinMaxValue(-2000, 2000);
+  // Writable thresholds
+  zbPhMin.addAnalogOutput();
+  zbPhMax.addAnalogOutput();
+  zbOrpMin.addAnalogOutput();
+  zbOrpMax.addAnalogOutput();
+  zbPhMin.onAnalogOutputChange([](float v){ zbPhMinValue = v; zbPhMinPending = true; });
+  zbPhMax.onAnalogOutputChange([](float v){ zbPhMaxValue = v; zbPhMaxPending = true; });
+  zbOrpMin.onAnalogOutputChange([](float v){ zbOrpMinValue = v; zbOrpMinPending = true; });
+  zbOrpMax.onAnalogOutputChange([](float v){ zbOrpMaxValue = v; zbOrpMaxPending = true; });
+  Zigbee.setRxOnWhenIdle(true);
+  // Broad channel mask; device will use stored network params
+  Zigbee.setPrimaryChannelMask(0x07FFF800);
+  Zigbee.setScanDuration(3);
+  Zigbee.setTimeout(120000);
+  Zigbee.addEndpoint(&zbTempSensor);
+  Zigbee.addEndpoint(&zbPh);
+  Zigbee.addEndpoint(&zbOrp);
+  Zigbee.addEndpoint(&zbPhMin);
+  Zigbee.addEndpoint(&zbPhMax);
+  Zigbee.addEndpoint(&zbOrpMin);
+  Zigbee.addEndpoint(&zbOrpMax);
+  ZigbeeEP::allowMultipleBinding(true);
+  bool ok = Zigbee.begin(ZIGBEE_ROUTER, false /* erase_nvs */);
+  esp_zb_set_tx_power(20);
+  ESP_LOGI("ZB", "begin(joined) -> %s", ok ? "OK" : "FAIL");
+  zbTempSensor.setReporting(1, 0, 1);
+  zbPh.setReporting(0, 30, 0.01f);
+  zbOrp.setReporting(0, 30, 5);
+  zbStarted = true;
+}
 
 // ---- Simple vector icons (drawn with primitives) ----
 static void drawDropletIcon(Arduino_GFX *gfx, int x, int y, uint16_t color) {
@@ -1840,8 +1883,8 @@ void setup() {
       lv_obj_set_style_text_color(lv_tile_main, lv_color_white(), 0);
       lv_obj_set_style_bg_opa(lv_tile_settings, LV_OPA_TRANSP, 0);
       lv_obj_set_style_pad_all(lv_tile_settings, 0, 0);
-      lv_obj_clear_flag(lv_tile_settings, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_set_scrollbar_mode(lv_tile_settings, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_set_scroll_dir(lv_tile_settings, LV_DIR_VER);
+      lv_obj_set_scrollbar_mode(lv_tile_settings, LV_SCROLLBAR_MODE_AUTO);
       lv_obj_set_style_text_color(lv_tile_settings, lv_color_white(), 0);
 
       // Main tile content: transparent background, white text
@@ -1990,70 +2033,71 @@ void setup() {
 
       ui::updateValues();
 
-      // Settings tile content: motor speed controls (clean styling)
-      // Mode toggle row (Zigbee vs WiFi/MQTT)
-      lv_obj_t *row0 = lv_obj_create(lv_tile_settings);
-      lv_obj_remove_style_all(row0);
-      lv_obj_set_size(row0, lv_obj_get_width(lv_tile_settings)-20, 40);
-      lv_obj_align(row0, LV_ALIGN_TOP_MID, 0, 16);
-      lv_obj_set_style_bg_color(row0, lv_palette_darken(LV_PALETTE_GREY,2), 0);
-      lv_obj_set_style_bg_opa(row0, LV_OPA_30, 0);
-      lv_obj_set_style_pad_all(row0, 6, 0);
-      lv_obj_clear_flag(row0, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_set_scrollbar_mode(row0, LV_SCROLLBAR_MODE_OFF);
-      lv_obj_t *lblMode = lv_label_create(row0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_align(lblMode, LV_ALIGN_LEFT_MID, 0, 0);
-      lv_obj_t *swMode = lv_switch_create(row0); lv_obj_set_size(swMode, 50, 24); lv_obj_align(swMode, LV_ALIGN_RIGHT_MID, -8, 0);
-      if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
-      lv_obj_add_event_cb(swMode, [](lv_event_t *e){
-        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
-        bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-        runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-        storage.setMode(runMode);
-        if (runMode == core::Storage::MODE_ZIGBEE) {
-          if (WiFi.isConnected()) WiFi.disconnect(true, true);
-          WiFi.mode(WIFI_OFF);
-          wifiOff = true;
-        } else {
-          WiFi.mode(WIFI_STA);
-          wifiOff = false;
-          connectWiFiIfNeeded();
-          ensureMqtt();
-        }
-      }, LV_EVENT_ALL, NULL);
+      // Settings tile content: simple vertical layout (container to isolate coords)
+      lv_obj_t *settings = lv_obj_create(lv_tile_settings);
+      lv_obj_remove_style_all(settings);
+      lv_obj_set_width(settings, lv_obj_get_width(lv_tile_settings)-8);
+      lv_obj_set_height(settings, LV_SIZE_CONTENT);
+      lv_obj_align(settings, LV_ALIGN_TOP_MID, 0, 6);
+      lv_obj_set_style_bg_opa(settings, LV_OPA_TRANSP, 0);
+      lv_obj_set_flex_flow(settings, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(settings, 14, 0);
+      lv_obj_set_style_pad_column(settings, 10, 0);
 
-      lv_obj_t *row1 = lv_obj_create(lv_tile_settings);
-      lv_obj_remove_style_all(row1);
-      lv_obj_set_size(row1, lv_obj_get_width(lv_tile_settings)-20, 40);
-      lv_obj_align(row1, LV_ALIGN_TOP_MID, 0, 62);
-      lv_obj_set_style_bg_color(row1, lv_palette_darken(LV_PALETTE_GREY,2), 0);
-      lv_obj_set_style_bg_opa(row1, LV_OPA_30, 0);
-      lv_obj_set_style_pad_all(row1, 6, 0);
-      lv_obj_clear_flag(row1, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_set_scrollbar_mode(row1, LV_SCROLLBAR_MODE_OFF);
+      // Section: Algemeen
+      lv_obj_t *sec_general = lv_obj_create(settings);
+      lv_obj_remove_style_all(sec_general);
+      lv_obj_set_width(sec_general, LV_PCT(100));
+      lv_obj_set_height(sec_general, LV_SIZE_CONTENT);
+      lv_obj_set_style_bg_color(sec_general, lv_palette_lighten(LV_PALETTE_GREY,2), 0);
+      lv_obj_set_style_bg_opa(sec_general, LV_OPA_20, 0);
+      lv_obj_set_style_pad_all(sec_general, 6, 0);
+      lv_obj_set_style_pad_row(sec_general, 10, 0);
+      lv_obj_set_flex_flow(sec_general, LV_FLEX_FLOW_COLUMN);
+      // Title
+      lv_obj_t *title_general = lv_label_create(sec_general); lv_obj_set_style_text_color(title_general, lv_color_black(), 0); lv_label_set_text(title_general, "Algemeen");
+      // Row: mode
+      lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
+      lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_set_flex_grow(lblMode, 1);
+      lv_obj_t *swMode = lv_switch_create(row_mode); lv_obj_set_size(swMode, 50, 24); if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
+      lv_obj_add_event_cb(swMode, [](lv_event_t *e){ if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return; bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED); runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT; storage.setMode(runMode); if (runMode == core::Storage::MODE_ZIGBEE) { if (WiFi.isConnected()) WiFi.disconnect(true, true); WiFi.mode(WIFI_OFF); wifiOff = true; } else { WiFi.mode(WIFI_STA); wifiOff = false; connectWiFiIfNeeded(); ensureMqtt(); } }, LV_EVENT_ALL, NULL);
+      // Row: Pair button (right)
+      lv_obj_t *row_pair = lv_obj_create(sec_general); lv_obj_remove_style_all(row_pair); lv_obj_set_width(row_pair, LV_PCT(100)); lv_obj_set_height(row_pair, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_pair, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_pair, 12, 0);
+      lv_obj_t *spacer = lv_obj_create(row_pair); lv_obj_remove_style_all(spacer); lv_obj_set_width(spacer, LV_PCT(100)); lv_obj_set_height(spacer, 1); lv_obj_set_flex_grow(spacer, 1);
+      lv_obj_t *btnPair = lv_btn_create(row_pair); lv_obj_set_size(btnPair, 120, 30); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee"); lv_obj_add_event_cb(btnPair, [](lv_event_t *e){ (void)e; showZigbeeCommissioningModal(60); ESP_LOGI("ZB", "Manual commissioning (60s)"); zigbee.startCommissioning(60); }, LV_EVENT_CLICKED, NULL);
 
-      lv_obj_t *lbl1 = lv_label_create(row1); lv_label_set_text(lbl1, "pH Motor Speed"); lv_obj_align(lbl1, LV_ALIGN_LEFT_MID, 0, 0);
-      lv_obj_t *btn1m = lv_btn_create(row1); lv_obj_set_size(btn1m, 36, 32); lv_obj_align(btn1m, LV_ALIGN_RIGHT_MID, -120, 0); lv_obj_add_event_cb(btn1m, on_ph_minus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn1m), "-");
-      lv_lbl_speed1 = lv_label_create(row1); lv_label_set_text(lv_lbl_speed1, "--%"); lv_obj_align(lv_lbl_speed1, LV_ALIGN_RIGHT_MID, -70, 0);
-      lv_obj_t *btn1p = lv_btn_create(row1); lv_obj_set_size(btn1p, 36, 32); lv_obj_align(btn1p, LV_ALIGN_RIGHT_MID, -20, 0); lv_obj_add_event_cb(btn1p, on_ph_plus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn1p), "+");
+      // Section: Pumps
+      lv_obj_t *sec_pumps = lv_obj_create(settings);
+      lv_obj_remove_style_all(sec_pumps);
+      lv_obj_set_width(sec_pumps, LV_PCT(100));
+      lv_obj_set_height(sec_pumps, LV_SIZE_CONTENT);
+      lv_obj_set_style_bg_color(sec_pumps, lv_palette_lighten(LV_PALETTE_GREY,2), 0);
+      lv_obj_set_style_bg_opa(sec_pumps, LV_OPA_20, 0);
+      lv_obj_set_style_pad_all(sec_pumps, 8, 0);
+      lv_obj_set_style_pad_row(sec_pumps, 12, 0);
+      lv_obj_set_flex_flow(sec_pumps, LV_FLEX_FLOW_COLUMN);
+      lv_obj_t *title_pumps = lv_label_create(sec_pumps); lv_obj_set_style_text_color(title_pumps, lv_color_black(), 0); lv_label_set_text(title_pumps, "Pumps");
+      // Row: pH
+      lv_obj_t *row_ph = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_ph); lv_obj_set_width(row_ph, LV_PCT(100)); lv_obj_set_height(row_ph, 36); lv_obj_set_flex_flow(row_ph, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_ph, 12, 0); lv_obj_set_style_pad_ver(row_ph, 6, 0);
+      lv_obj_t *lbl1 = lv_label_create(row_ph); lv_obj_set_style_text_color(lbl1, lv_color_black(), 0); lv_label_set_text(lbl1, "pH Speed");
+      lv_sl_speed1 = lv_slider_create(row_ph); lv_obj_set_height(lv_sl_speed1, 12); lv_obj_set_flex_grow(lv_sl_speed1, 1); lv_obj_set_style_width(lv_sl_speed1, 14, LV_PART_KNOB); lv_obj_set_style_height(lv_sl_speed1, 14, LV_PART_KNOB); lv_slider_set_range(lv_sl_speed1, 0, 100); lv_slider_set_value(lv_sl_speed1, M1_SPEED_PC, LV_ANIM_OFF);
+      lv_lbl_speed1 = lv_label_create(row_ph); lv_obj_set_style_text_color(lv_lbl_speed1, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
+      lv_obj_t *btn1m = lv_btn_create(row_ph); lv_obj_set_size(btn1m, 28, 24); { lv_obj_t *t = lv_label_create(btn1m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn1m, on_ph_minus_cb, LV_EVENT_CLICKED, NULL);
+      lv_obj_t *btn1p = lv_btn_create(row_ph); lv_obj_set_size(btn1p, 28, 24); { lv_obj_t *t = lv_label_create(btn1p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn1p, on_ph_plus_cb, LV_EVENT_CLICKED, NULL);
+      lv_obj_add_event_cb(lv_sl_speed1, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M1_SPEED_PC = (uint8_t)v; storage.setM1Speed(M1_SPEED_PC); if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC); }, LV_EVENT_ALL, NULL);
+      // Row: ORP
+      lv_obj_t *row_orp = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_orp); lv_obj_set_width(row_orp, LV_PCT(100)); lv_obj_set_height(row_orp, 36); lv_obj_set_flex_flow(row_orp, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_orp, 12, 0); lv_obj_set_style_pad_ver(row_orp, 6, 0);
+      lv_obj_t *lbl2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lbl2, lv_color_black(), 0); lv_label_set_text(lbl2, "ORP Speed");
+      lv_sl_speed2 = lv_slider_create(row_orp); lv_obj_set_height(lv_sl_speed2, 12); lv_obj_set_flex_grow(lv_sl_speed2, 1); lv_obj_set_style_width(lv_sl_speed2, 14, LV_PART_KNOB); lv_obj_set_style_height(lv_sl_speed2, 14, LV_PART_KNOB); lv_slider_set_range(lv_sl_speed2, 0, 100); lv_slider_set_value(lv_sl_speed2, M2_SPEED_PC, LV_ANIM_OFF);
+      lv_lbl_speed2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lv_lbl_speed2, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
+      lv_obj_t *btn2m = lv_btn_create(row_orp); lv_obj_set_size(btn2m, 28, 24); { lv_obj_t *t = lv_label_create(btn2m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL);
+      lv_obj_t *btn2p = lv_btn_create(row_orp); lv_obj_set_size(btn2p, 28, 24); { lv_obj_t *t = lv_label_create(btn2p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL);
+      lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
 
-      lv_obj_t *row2 = lv_obj_create(lv_tile_settings);
-      lv_obj_remove_style_all(row2);
-      lv_obj_set_size(row2, lv_obj_get_width(lv_tile_settings)-20, 40);
-      lv_obj_align(row2, LV_ALIGN_TOP_MID, 0, 116);
-      lv_obj_set_style_bg_color(row2, lv_palette_darken(LV_PALETTE_GREY,2), 0);
-      lv_obj_set_style_bg_opa(row2, LV_OPA_30, 0);
-      lv_obj_set_style_pad_all(row2, 6, 0);
-      lv_obj_clear_flag(row2, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_set_scrollbar_mode(row2, LV_SCROLLBAR_MODE_OFF);
-      lv_obj_t *lbl2 = lv_label_create(row2); lv_label_set_text(lbl2, "ORP Motor Speed"); lv_obj_align(lbl2, LV_ALIGN_LEFT_MID, 0, 0);
-      lv_obj_t *btn2m = lv_btn_create(row2); lv_obj_set_size(btn2m, 36, 32); lv_obj_align(btn2m, LV_ALIGN_RIGHT_MID, -120, 0); lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn2m), "-");
-      lv_lbl_speed2 = lv_label_create(row2); lv_label_set_text(lv_lbl_speed2, "--%"); lv_obj_align(lv_lbl_speed2, LV_ALIGN_RIGHT_MID, -70, 0);
-      lv_obj_t *btn2p = lv_btn_create(row2); lv_obj_set_size(btn2p, 36, 32); lv_obj_align(btn2p, LV_ALIGN_RIGHT_MID, -20, 0); lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btn2p), "+");
-
-      // Save button
-      lv_obj_t *btnSave = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnSave, 100, 34); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_MID, -56, -16); lv_obj_add_event_cb(btnSave, on_speed_save_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btnSave), "Save");
+      // Save button (place further down so content can scroll)
+      //lv_obj_t *btnSave = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnSave, 100, 34); lv_obj_align(btnSave, LV_ALIGN_TOP_MID, -56, 170); lv_obj_add_event_cb(btnSave, on_speed_save_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btnSave), "Save");
       // Pair Zigbee button
-      lv_obj_t *btnPair = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnPair, 120, 34); lv_obj_align(btnPair, LV_ALIGN_BOTTOM_MID, 84, -16); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee");
+      //lv_obj_t *btnPair = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnPair, 120, 34); lv_obj_align(btnPair, LV_ALIGN_TOP_MID, 84, 170); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee");
       lv_obj_add_event_cb(btnPair, [](lv_event_t *e){ (void)e; showZigbeeCommissioningModal(60); ESP_LOGI("ZB", "Manual commissioning (60s)"); zigbee.startCommissioning(60); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
@@ -2141,6 +2185,12 @@ void setup() {
     WiFi.mode(WIFI_OFF);
     wifiOff = true;
     ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
+    // If we were previously joined, start Zigbee stack immediately
+    #if __has_include(<Zigbee.h>)
+    if (zbEverJoined) {
+      zb_start_joined();
+    }
+    #endif
   }
 
   // Load persisted thresholds
