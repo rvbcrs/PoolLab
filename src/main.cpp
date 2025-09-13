@@ -33,15 +33,18 @@
 #include <Fonts/FreeSans9pt7b.h>
 #if defined(FORCE_ZIGBEE) || __has_include(<Zigbee.h>)
 #include <Zigbee.h>
+#include <ZigbeeEP.h>
 #include <ep/ZigbeeTempSensor.h>
 #include <ep/ZigbeeAnalog.h>
+#include <ep/ZigbeeFlowSensor.h>
+#include <ep/ZigbeePressureSensor.h>
 // Use Analog Input for pH and ORP (correct semantics); ZHA needs a quirk to label nicely
 #include <esp_zigbee_secur.h>
 #include <esp_zigbee_core.h>
 static ZigbeeTempSensor zbTempSensor(10);
 // Prefer standard HA clusters where possible for best ZHA compatibility
-static ZigbeeAnalog      zbPh(11);
-static ZigbeeAnalog      zbOrp(12);
+static ZigbeeFlowSensor  zbPh(11);
+static ZigbeePressureSensor zbOrp(12);
 static bool zbStarted = false;
 static uint32_t zbCommissionUntilMs = 0;
 static bool zbScanRequested = false;
@@ -903,11 +906,11 @@ static void zb_start_and_commission(uint8_t seconds){
     ESP_LOGI("ZB", "Commissioning: preparing endpoints");
     zbTempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
     zbTempSensor.setMinMaxValue(0, 60);
-    // Configure Analog Input endpoints for pH and ORP
-    zbPh.addAnalogInput();
-    zbOrp.addAnalogInput();
+    // Configure Flow/Pressure endpoints for pH and ORP (ZHA-friendly)
     zbPh.setManufacturerAndModel("PoolLab", "Pool pH");
+    zbPh.setMinMaxValue(0.0f, 14.0f);
     zbOrp.setManufacturerAndModel("PoolLab", "Pool ORP");
+    zbOrp.setMinMaxValue(-2000, 2000);
     // Writable thresholds (Analog Output)
     zbPhMin.addAnalogOutput();
     zbPhMax.addAnalogOutput();
@@ -919,7 +922,7 @@ static void zb_start_and_commission(uint8_t seconds){
     zbOrpMin.onAnalogOutputChange([](float v){ zbOrpMinValue = v; zbOrpMinPending = true; });
     zbOrpMax.onAnalogOutputChange([](float v){ zbOrpMaxValue = v; zbOrpMaxPending = true; });
     Zigbee.setRxOnWhenIdle(true);
-    // Prefer ZHA channel 11 first; we'll expand after ~20s if not joined
+    // Start on coordinator channel 11; we'll expand to all channels after ~20s if needed
     Zigbee.setPrimaryChannelMask(1u << 11);
     Zigbee.setScanDuration(4); // max
     Zigbee.setTimeout(120000);
@@ -930,25 +933,20 @@ static void zb_start_and_commission(uint8_t seconds){
     Zigbee.addEndpoint(&zbPhMax);
     Zigbee.addEndpoint(&zbOrpMin);
     Zigbee.addEndpoint(&zbOrpMax);
-    // Select device role at compile time; default to End Device to avoid asserts
-    #if defined(ZIGBEE_MODE_ROUTER) || defined(ZB_ROLE_ROUTER) || defined(ZIGBEE_ROUTER_DEFAULT) || defined(ZIGBEE_MODE_ZCZR)
-      ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, ROUTER, erase NVS)");
-      // Make sure TC link key exchange is not required when joining centralized networks
-      esp_zb_secur_link_key_exchange_required_set(false);
-      bool ok = Zigbee.begin(ZIGBEE_ROUTER, true);
-      // Boost TX power to improve joining reliability
-      esp_zb_set_tx_power(20);
-    #else
-      ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, END_DEVICE, erase NVS)");
-      bool ok = Zigbee.begin(ZIGBEE_END_DEVICE, true);
-    #endif
+    // Allow multiple binding records; useful for ZHA reconfigure
+    ZigbeeEP::allowMultipleBinding(true);
+    // Router mode with maximum TX power
+    ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, ROUTER, erase NVS)");
+    bool ok = Zigbee.begin(ZIGBEE_ROUTER, true);
+    // Boost 802.15.4 TX power for better range/link margin
+    esp_zb_set_tx_power(20);
     ESP_LOGI("ZB", "begin() -> %s", ok ? "OK" : "FAIL");
     (void)ok;
     // Configure reporting and push initial values
     zbTempSensor.setReporting(1, 0, 1);
     // Ensure pH/ORP report at least every 30s and on small changes
-    zbPh.setAnalogInputReporting(0, 30, 0.01f);
-    zbOrp.setAnalogInputReporting(0, 30, 5.0f);
+    zbPh.setReporting(0, 30, 0.01f);
+    zbOrp.setReporting(0, 30, 5);
     float initT = METRICS().haveTemp ? METRICS().tempC : 25.0f;
     float initPh = METRICS().havePh ? METRICS().phVal : 7.00f;
     int16_t initOrp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
@@ -958,11 +956,11 @@ static void zb_start_and_commission(uint8_t seconds){
     lv_timer_t *zb_ai_init = lv_timer_create([](lv_timer_t *tm){
       (void)tm;
       float ph = METRICS().havePh ? METRICS().phVal : 7.00f;
-      float orp = METRICS().haveOrp ? (float)METRICS().orpMv : 300.0f;
-      zbPh.setAnalogInput(ph);
-      zbPh.reportAnalogInput();
-      zbOrp.setAnalogInput(orp);
-      zbOrp.reportAnalogInput();
+      int16_t orp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
+      zbPh.setFlow(ph);
+      zbPh.report();
+      zbOrp.setPressure(orp);
+      zbOrp.report();
     }, 2000, NULL);
     lv_timer_set_repeat_count(zb_ai_init, 1);
     // Writable outputs use default values; user can set them from ZHA
@@ -2432,8 +2430,8 @@ void loop() {
       if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; storage.setPhMax(PH_MAX); }
       if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); storage.setOrpMin(ORP_MIN); }
       if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); storage.setOrpMax(ORP_MAX); }
-      if (domain::Metrics::instance().havePh)   zbPh.setAnalogInput(domain::Metrics::instance().phVal);
-      if (domain::Metrics::instance().haveOrp)  zbOrp.setAnalogInput((float)domain::Metrics::instance().orpMv);
+      if (domain::Metrics::instance().havePh)   zbPh.setFlow(domain::Metrics::instance().phVal);
+      if (domain::Metrics::instance().haveOrp)  zbOrp.setPressure((int16_t)lrintf(domain::Metrics::instance().orpMv));
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
       // Opportunistic re-steering if not yet connected
       #if __has_include(<Zigbee.h>)
