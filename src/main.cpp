@@ -52,6 +52,7 @@ static bool zbMaskAdjusted = false;
 static uint32_t zbLastScanMs = 0;
 static uint32_t zbCommissionStartMs = 0;
 static bool zbMaskExpanded = false;
+static bool zbEverJoined = false; // becomes true once Zigbee.connected() observed
 // Writable thresholds via Zigbee (Analog Output)
 static ZigbeeAnalog      zbPhMin(13);
 static ZigbeeAnalog      zbPhMax(14);
@@ -82,6 +83,8 @@ extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 extern "C" const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 extern "C" const lv_img_dsc_t link_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 extern "C" const lv_img_dsc_t link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+extern "C" const lv_img_dsc_t link_16dp_999999_FILL0_wght400_GRAD0_opsz20;
+extern "C" const lv_img_dsc_t link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20;
 
 #define FIRMWARE_VERSION __DATE__ " " __TIME__
 
@@ -541,47 +544,33 @@ static void updateLvglValues(){
       lv_obj_clear_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN);
     }
   } else {
+    // Zigbee mode: hide IP, show link/link_off
+    if (lv_lbl_ip) { lv_obj_add_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN); }
     if (!lv_img_link) {
-      // Create link icon directly on the screen so it doesn't block inputs
+      // Lazily create if not yet created (robust against init order)
       lv_img_link = lv_img_create(lv_scr_act());
-      // default to link_off so it's visible immediately
-      lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
-      lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
-      lv_img_set_zoom(lv_img_link, 128);
-      // Ensure visible and on top
-      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_move_foreground(lv_img_link);
-      // Recolor to black and full opacity for contrast on light background
+      lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
+      // native size (no zoom)
+      // lv_img_set_zoom(lv_img_link, 256);
       lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
       lv_obj_set_style_img_recolor(lv_img_link, lv_color_black(), 0);
       lv_obj_set_style_img_opa(lv_img_link, LV_OPA_COVER, 0);
-      // Debug label to confirm overlay is visible
-      if (!lv_lbl_link_dbg) {
-        lv_lbl_link_dbg = lv_label_create(lv_scr_act());
-        lv_label_set_text(lv_lbl_link_dbg, "ZB");
-        lv_obj_set_style_text_color(lv_lbl_link_dbg, lv_color_black(), 0);
-        lv_obj_align(lv_lbl_link_dbg, LV_ALIGN_BOTTOM_RIGHT, -40, -4);
-        lv_obj_move_foreground(lv_lbl_link_dbg);
-      }
-      // UI: link icon created (silent)
-    } else {
-      // Ensure icon stays on the active screen and in foreground
-      lv_obj_set_parent(lv_img_link, lv_scr_act());
-      lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
-      lv_obj_move_foreground(lv_img_link);
-      if (lv_lbl_link_dbg) lv_obj_move_foreground(lv_lbl_link_dbg);
-    }
-    // In Zigbee mode always hide IP label; show link_on/off depending on connection
-    if (lv_lbl_ip) { lv_obj_add_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN); }
-    if (lv_img_link) {
-      if (Zigbee.connected()) {
-        lv_img_set_src(lv_img_link, &link_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
-      } else {
-        lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
-      }
       lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
       lv_obj_move_foreground(lv_img_link);
-      // UI: link icon state updated (silent)
+    }
+    if (lv_img_link) {
+      #if __has_include(<Zigbee.h>)
+      if (Zigbee.connected() || zbEverJoined) {
+        lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      } else {
+        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      }
+      #else
+      lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      #endif
+      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(lv_img_link);
     }
   }
 }
@@ -1941,14 +1930,20 @@ void setup() {
       // Footer IP at bottom-right
       lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
 
-      // Prepare link icon on same parent; keep hidden unless Zigbee mode wants it
+      // Bottom-left temperature label
+      lv_lbl_temp = lv_label_create(lv_tile_main);
+      lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(lv_lbl_temp, lv_color_black(), 0);
+      lv_label_set_text(lv_lbl_temp, "--.- C");
+      lv_obj_align(lv_lbl_temp, LV_ALIGN_BOTTOM_LEFT, 18, -1);
+
+      // Prepare link icon on root screen; start hidden, will be controlled by mode
       if (!lv_img_link) {
-        lv_img_link = lv_img_create(lv_tile_main);
-        lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_img_link = lv_img_create(lv_scr_act());
+        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
         lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
-        lv_img_set_zoom(lv_img_link, 128); // ~16-20px from 40px asset
         lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
-        lv_obj_set_style_img_recolor(lv_img_link, lv_color_black(), 0);
+        lv_obj_set_style_img_recolor(lv_img_link, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
         lv_obj_set_style_img_opa(lv_img_link, LV_OPA_COVER, 0);
         lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
       }
@@ -2424,6 +2419,7 @@ void loop() {
       // Opportunistic re-steering if not yet connected
       #if __has_include(<Zigbee.h>)
       if (Zigbee.connected()) {
+        zbEverJoined = true;
         // Joined: close commissioning modal if still visible
         if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; zbCommissionUntilMs = 0; }
       }
