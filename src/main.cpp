@@ -542,18 +542,8 @@ static void updateLvglValues(){
     }
   } else {
     if (!lv_img_link) {
-      // Create on a dedicated overlay container pinned to screen edges
-      if (!lv_link_wrap) {
-        lv_link_wrap = lv_obj_create(lv_scr_act());
-        lv_obj_remove_style_all(lv_link_wrap);
-        lv_obj_set_size(lv_link_wrap, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
-        lv_obj_set_pos(lv_link_wrap, 0, 0);
-        lv_obj_set_style_bg_opa(lv_link_wrap, LV_OPA_TRANSP, 0);
-        lv_obj_clear_flag(lv_link_wrap, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scrollbar_mode(lv_link_wrap, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_move_foreground(lv_link_wrap);
-      }
-      lv_img_link = lv_img_create(lv_link_wrap);
+      // Create link icon directly on the screen so it doesn't block inputs
+      lv_img_link = lv_img_create(lv_scr_act());
       // default to link_off so it's visible immediately
       lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
       lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
@@ -567,7 +557,7 @@ static void updateLvglValues(){
       lv_obj_set_style_img_opa(lv_img_link, LV_OPA_COVER, 0);
       // Debug label to confirm overlay is visible
       if (!lv_lbl_link_dbg) {
-        lv_lbl_link_dbg = lv_label_create(lv_link_wrap);
+        lv_lbl_link_dbg = lv_label_create(lv_scr_act());
         lv_label_set_text(lv_lbl_link_dbg, "ZB");
         lv_obj_set_style_text_color(lv_lbl_link_dbg, lv_color_black(), 0);
         lv_obj_align(lv_lbl_link_dbg, LV_ALIGN_BOTTOM_RIGHT, -40, -4);
@@ -575,21 +565,10 @@ static void updateLvglValues(){
       }
       // UI: link icon created (silent)
     } else {
-      // Ensure wrapper exists and is foreground
-      if (!lv_link_wrap) {
-        lv_link_wrap = lv_obj_create(lv_scr_act());
-        lv_obj_remove_style_all(lv_link_wrap);
-        lv_obj_set_size(lv_link_wrap, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
-        lv_obj_set_pos(lv_link_wrap, 0, 0);
-        lv_obj_set_style_bg_opa(lv_link_wrap, LV_OPA_TRANSP, 0);
-        lv_obj_clear_flag(lv_link_wrap, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scrollbar_mode(lv_link_wrap, LV_SCROLLBAR_MODE_OFF);
-      }
-      if (lv_obj_get_parent(lv_img_link) != lv_link_wrap) {
-        lv_obj_set_parent(lv_img_link, lv_link_wrap);
-      }
+      // Ensure icon stays on the active screen and in foreground
+      lv_obj_set_parent(lv_img_link, lv_scr_act());
       lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
-      lv_obj_move_foreground(lv_link_wrap);
+      lv_obj_move_foreground(lv_img_link);
       if (lv_lbl_link_dbg) lv_obj_move_foreground(lv_lbl_link_dbg);
     }
     // In Zigbee mode always hide IP label; show link_on/off depending on connection
@@ -952,6 +931,11 @@ static void zb_start_and_commission(uint8_t seconds){
     int16_t initOrp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
     zbTempSensor.setTemperature(initT);
     zbTempSensor.reportTemperature();
+    // Push initial pH/ORP immediately so ZHA entities become available fast
+    zbPh.setFlow(initPh);
+    zbPh.report();
+    zbOrp.setPressure(initOrp);
+    zbOrp.report();
     // Post initial values after a longer delay to avoid race during interview
     lv_timer_t *zb_ai_init = lv_timer_create([](lv_timer_t *tm){
       (void)tm;
@@ -1763,8 +1747,12 @@ void setup() {
         
         // Use the gfx object which is captured by the lambda
         extern Arduino_GFX *gfx; 
-        x = constrain(x, 0, (int)gfx->width()-1);
-        y = constrain(y, 0, (int)gfx->height()-1);
+        // Clamp to LVGL display resolution (avoid Arduino_GFX rotation mismatch)
+        lv_disp_t *disp_local = lv_disp_get_default();
+        int hor = disp_local ? (int)lv_disp_get_hor_res(disp_local) : 320;
+        int ver = disp_local ? (int)lv_disp_get_ver_res(disp_local) : 172;
+        x = constrain(x, 0, hor - 1);
+        y = constrain(y, 0, ver - 1);
         
         data->point.x = x; 
         data->point.y = y; 
