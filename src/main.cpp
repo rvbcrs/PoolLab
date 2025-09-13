@@ -35,9 +35,11 @@
 #include <Zigbee.h>
 #include <ep/ZigbeeTempSensor.h>
 #include <ep/ZigbeeAnalog.h>
+// Use Analog Input for pH and ORP (correct semantics); ZHA needs a quirk to label nicely
 #include <esp_zigbee_secur.h>
 #include <esp_zigbee_core.h>
 static ZigbeeTempSensor zbTempSensor(10);
+// Prefer standard HA clusters where possible for best ZHA compatibility
 static ZigbeeAnalog      zbPh(11);
 static ZigbeeAnalog      zbOrp(12);
 static bool zbStarted = false;
@@ -52,6 +54,9 @@ static ZigbeeAnalog      zbPhMin(13);
 static ZigbeeAnalog      zbPhMax(14);
 static ZigbeeAnalog      zbOrpMin(15);
 static ZigbeeAnalog      zbOrpMax(16);
+// Defer AO writes from ZCL context to main loop to avoid reentrancy during interview
+static volatile bool zbPhMinPending = false, zbPhMaxPending = false, zbOrpMinPending = false, zbOrpMaxPending = false;
+static volatile float zbPhMinValue = 0, zbPhMaxValue = 0, zbOrpMinValue = 0, zbOrpMaxValue = 0;
 static Preferences zbPrefs;
 static bool wifiOff = false;
 static const char *ZB_PREF_NS = "poollab";
@@ -72,6 +77,8 @@ static const char *ZB_PREF_PAIR = "zb_pair"; // bool flag to start pairing on ne
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
 extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 extern "C" const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+extern "C" const lv_img_dsc_t link_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+extern "C" const lv_img_dsc_t link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 
 #define FIRMWARE_VERSION __DATE__ " " __TIME__
 
@@ -148,6 +155,9 @@ static lv_obj_t *lv_img_orp_icon_shadow = nullptr;
 static lv_obj_t *lv_img_pump_ph_shadow = nullptr;
 static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
+static lv_obj_t *lv_img_link = nullptr;
+static lv_obj_t *lv_link_wrap = nullptr;
+static lv_obj_t *lv_lbl_link_dbg = nullptr;
 static lv_obj_t *lv_lbl_m1 = nullptr; // motor1 indicator
 static lv_obj_t *lv_lbl_m2 = nullptr; // motor2 indicator
 static lv_obj_t *lv_zb_modal = nullptr; // zigbee commissioning modal
@@ -253,6 +263,8 @@ static domain::ControlPolicy *control = nullptr;
 static io::MqttClient mqttClient;
 static io::ZigbeeClient zigbee;
 static core::Storage::Mode runMode = core::Storage::MODE_ZIGBEE;
+static core::Storage::Mode savedMode = core::Storage::MODE_ZIGBEE;
+static bool modeForced = false;
 // --- Button for Zigbee commissioning (monitor both common BOOT pins)
 static const int BTN_PIN1 = 9;  // ESP32-C6 DevKit(C/M) BOOT is typically GPIO9 (active low)
 static const int BTN_PIN2 = 0;  // Some boards expose GPIO0 as BOOT (active low)
@@ -499,7 +511,7 @@ static void updateLvglValues(){
       lv_label_set_text(lv_lbl_orp, "----");
       if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
     }
-    // Color by thresholds for ORP (red out-of-range, orange near limit, else white)
+    // Color by thresholds for ORP
     lv_color_t orpColor = lv_color_white();
     if (METRICS().haveOrp) {
       int v = (int)lrintf(METRICS().orpMv);
@@ -511,59 +523,84 @@ static void updateLvglValues(){
     }
     lv_obj_set_style_text_color(lv_lbl_orp, orpColor, 0);
     if (lv_lbl_orp_unit) lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0);
-    // Mirror text into shadow layer
     if (lv_lbl_orp_shadow) lv_label_set_text(lv_lbl_orp_shadow, lv_label_get_text(lv_lbl_orp));
   }
   if (lv_lbl_temp) {
     if (METRICS().haveTemp) { char b[24]; snprintf(b, sizeof(b), "%.1f C", (double)METRICS().tempC); lv_label_set_text(lv_lbl_temp, b); }
     else lv_label_set_text(lv_lbl_temp, "--.- C");
   }
-  if (lv_lbl_ip) {
-    String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
-    char b[48]; snprintf(b, sizeof(b), "IP: %s", ip.c_str()); lv_label_set_text(lv_lbl_ip, b);
-  }
-  if (lv_img_pump_ph) {
-    if (m1Running) {
-      lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
-      if (lv_img_pump_ph_shadow) lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+  // Bottom-right: show IP in WiFi/MQTT mode; show link icon when Zigbee connected in Zigbee mode
+  if (runMode == core::Storage::MODE_WIFI_MQTT) {
+    if (lv_img_link) { lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_lbl_ip) {
+      String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
+      char b[48]; snprintf(b, sizeof(b), "IP: %s", ip.c_str()); lv_label_set_text(lv_lbl_ip, b);
+      lv_obj_clear_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN);
+    }
+  } else {
+    if (!lv_img_link) {
+      // Create on a dedicated overlay container pinned to screen edges
+      if (!lv_link_wrap) {
+        lv_link_wrap = lv_obj_create(lv_scr_act());
+        lv_obj_remove_style_all(lv_link_wrap);
+        lv_obj_set_size(lv_link_wrap, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+        lv_obj_set_pos(lv_link_wrap, 0, 0);
+        lv_obj_set_style_bg_opa(lv_link_wrap, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(lv_link_wrap, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(lv_link_wrap, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_move_foreground(lv_link_wrap);
+      }
+      lv_img_link = lv_img_create(lv_link_wrap);
+      // default to link_off so it's visible immediately
+      lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+      lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
+      lv_img_set_zoom(lv_img_link, 128);
+      // Ensure visible and on top
+      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(lv_img_link);
+      // Recolor to black and full opacity for contrast on light background
+      lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
+      lv_obj_set_style_img_recolor(lv_img_link, lv_color_black(), 0);
+      lv_obj_set_style_img_opa(lv_img_link, LV_OPA_COVER, 0);
+      // Debug label to confirm overlay is visible
+      if (!lv_lbl_link_dbg) {
+        lv_lbl_link_dbg = lv_label_create(lv_link_wrap);
+        lv_label_set_text(lv_lbl_link_dbg, "ZB");
+        lv_obj_set_style_text_color(lv_lbl_link_dbg, lv_color_black(), 0);
+        lv_obj_align(lv_lbl_link_dbg, LV_ALIGN_BOTTOM_RIGHT, -40, -4);
+        lv_obj_move_foreground(lv_lbl_link_dbg);
+      }
+      // UI: link icon created (silent)
     } else {
-      lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
-      if (lv_img_pump_ph_shadow) lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+      // Ensure wrapper exists and is foreground
+      if (!lv_link_wrap) {
+        lv_link_wrap = lv_obj_create(lv_scr_act());
+        lv_obj_remove_style_all(lv_link_wrap);
+        lv_obj_set_size(lv_link_wrap, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+        lv_obj_set_pos(lv_link_wrap, 0, 0);
+        lv_obj_set_style_bg_opa(lv_link_wrap, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(lv_link_wrap, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(lv_link_wrap, LV_SCROLLBAR_MODE_OFF);
+      }
+      if (lv_obj_get_parent(lv_img_link) != lv_link_wrap) {
+        lv_obj_set_parent(lv_img_link, lv_link_wrap);
+      }
+      lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
+      lv_obj_move_foreground(lv_link_wrap);
+      if (lv_lbl_link_dbg) lv_obj_move_foreground(lv_lbl_link_dbg);
     }
-  }
-  if (lv_img_pump_orp) {
-    if (m2Running) {
-      lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
-      if (lv_img_pump_orp_shadow) lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
-      if (lv_img_pump_orp_shadow) lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+    // In Zigbee mode always hide IP label; show link_on/off depending on connection
+    if (lv_lbl_ip) { lv_obj_add_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_img_link) {
+      if (Zigbee.connected()) {
+        lv_img_set_src(lv_img_link, &link_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+      } else {
+        lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+      }
+      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(lv_img_link);
+      // UI: link icon state updated (silent)
     }
-  }
-
-  // Card background color by status
-  if (lv_card_ph) {
-    lv_color_t base = lv_palette_main(LV_PALETTE_BLUE);
-    if (METRICS().havePh) {
-      bool below = METRICS().phVal < PH_MIN; bool above = METRICS().phVal > PH_MAX;
-      bool warn = (!below && !above) && (METRICS().phVal <= PH_MIN + WARN_MARGIN_PH || METRICS().phVal >= PH_MAX - WARN_MARGIN_PH);
-      base = below || above ? lv_palette_main(LV_PALETTE_RED) : (warn ? lv_palette_main(LV_PALETTE_ORANGE) : lv_palette_main(LV_PALETTE_BLUE));
-    }
-    lv_obj_set_style_bg_color(lv_card_ph, base, 0);
-  }
-  if (lv_card_orp) {
-    lv_color_t base = lv_palette_main(LV_PALETTE_RED);
-    if (METRICS().haveOrp) {
-      int v = (int)lrintf(METRICS().orpMv);
-      bool low = v < ORP_MIN; bool high = v > ORP_MAX;
-      bool warn = (!low && !high) && (v <= ORP_MIN + WARN_MARGIN_ORP || v >= ORP_MAX - WARN_MARGIN_ORP);
-      base = low || high ? lv_palette_main(LV_PALETTE_RED) : (warn ? lv_palette_main(LV_PALETTE_ORANGE) : lv_palette_main(LV_PALETTE_GREEN));
-    }
-    lv_obj_set_style_bg_color(lv_card_orp, base, 0);
-  }
-  if (lv_card_temp) {
-    lv_color_t base = lv_palette_main(LV_PALETTE_GREEN);
-    lv_obj_set_style_bg_color(lv_card_temp, base, 0);
   }
 }
 
@@ -864,22 +901,35 @@ static void zb_start_and_commission(uint8_t seconds){
   if (!zbStarted) {
     // Register endpoints and start stack
     ESP_LOGI("ZB", "Commissioning: preparing endpoints");
-    zbTempSensor.setManufacturerAndModel("PoolLab", "PoolLab-ED");
+    zbTempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
     zbTempSensor.setMinMaxValue(0, 60);
+    // Configure Analog Input endpoints for pH and ORP
     zbPh.addAnalogInput();
     zbOrp.addAnalogInput();
-    // Add writable threshold endpoints (Analog Output) and callbacks
-    // Temporarily omit writable outputs during commissioning to simplify joining
+    zbPh.setManufacturerAndModel("PoolLab", "Pool pH");
+    zbOrp.setManufacturerAndModel("PoolLab", "Pool ORP");
+    // Writable thresholds (Analog Output)
+    zbPhMin.addAnalogOutput();
+    zbPhMax.addAnalogOutput();
+    zbOrpMin.addAnalogOutput();
+    zbOrpMax.addAnalogOutput();
+    // Defer writes to main loop to avoid blocking ZCL thread during interview
+    zbPhMin.onAnalogOutputChange([](float v){ zbPhMinValue = v; zbPhMinPending = true; });
+    zbPhMax.onAnalogOutputChange([](float v){ zbPhMaxValue = v; zbPhMaxPending = true; });
+    zbOrpMin.onAnalogOutputChange([](float v){ zbOrpMinValue = v; zbOrpMinPending = true; });
+    zbOrpMax.onAnalogOutputChange([](float v){ zbOrpMaxValue = v; zbOrpMaxPending = true; });
     Zigbee.setRxOnWhenIdle(true);
-    // Allow all standard channels (11-26). We will prefer 11 in active scans below.
-    // Prefer coordinator channel 11 first; we'll expand to all channels if needed
+    // Prefer ZHA channel 11 first; we'll expand after ~20s if not joined
     Zigbee.setPrimaryChannelMask(1u << 11);
     Zigbee.setScanDuration(4); // max
     Zigbee.setTimeout(120000);
     Zigbee.addEndpoint(&zbTempSensor);
     Zigbee.addEndpoint(&zbPh);
     Zigbee.addEndpoint(&zbOrp);
-    // Leave only sensors for initial join
+    Zigbee.addEndpoint(&zbPhMin);
+    Zigbee.addEndpoint(&zbPhMax);
+    Zigbee.addEndpoint(&zbOrpMin);
+    Zigbee.addEndpoint(&zbOrpMax);
     // Select device role at compile time; default to End Device to avoid asserts
     #if defined(ZIGBEE_MODE_ROUTER) || defined(ZB_ROLE_ROUTER) || defined(ZIGBEE_ROUTER_DEFAULT) || defined(ZIGBEE_MODE_ZCZR)
       ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, ROUTER, erase NVS)");
@@ -896,19 +946,26 @@ static void zb_start_and_commission(uint8_t seconds){
     (void)ok;
     // Configure reporting and push initial values
     zbTempSensor.setReporting(1, 0, 1);
+    // Ensure pH/ORP report at least every 30s and on small changes
     zbPh.setAnalogInputReporting(0, 30, 0.01f);
     zbOrp.setAnalogInputReporting(0, 30, 5.0f);
     float initT = METRICS().haveTemp ? METRICS().tempC : 25.0f;
     float initPh = METRICS().havePh ? METRICS().phVal : 7.00f;
-    float initOrp = METRICS().haveOrp ? METRICS().orpMv : 300.0f;
+    int16_t initOrp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
     zbTempSensor.setTemperature(initT);
     zbTempSensor.reportTemperature();
-    zbPh.setAnalogInput(initPh);
-    zbPh.reportAnalogInput();
-    zbOrp.setAnalogInput(initOrp);
-    zbOrp.reportAnalogInput();
-    // Publish current thresholds to writable outputs
-    // Thresholds will be exposed later via outputs; skip during join
+    // Post initial values after a longer delay to avoid race during interview
+    lv_timer_t *zb_ai_init = lv_timer_create([](lv_timer_t *tm){
+      (void)tm;
+      float ph = METRICS().havePh ? METRICS().phVal : 7.00f;
+      float orp = METRICS().haveOrp ? (float)METRICS().orpMv : 300.0f;
+      zbPh.setAnalogInput(ph);
+      zbPh.reportAnalogInput();
+      zbOrp.setAnalogInput(orp);
+      zbOrp.reportAnalogInput();
+    }, 2000, NULL);
+    lv_timer_set_repeat_count(zb_ai_init, 1);
+    // Writable outputs use default values; user can set them from ZHA
     zbStarted = true;
   }
   // Track commissioning window
@@ -1661,6 +1718,7 @@ void setup() {
         WiFi.mode(WIFI_STA);
         wifiOff = false;
         connectWiFiIfNeeded();
+        ensureMqtt();
       }
     };
     ui::configureHandlers(h);
@@ -1894,8 +1952,20 @@ void setup() {
       if (ph_tile)  { TileTapCtx *c=(TileTapCtx*)lv_mem_alloc(sizeof(TileTapCtx)); memset(c,0,sizeof(TileTapCtx)); c->isPh=true; lv_obj_add_event_cb(ph_tile, tile_tap_cb, LV_EVENT_ALL, c); }
       if (orp_tile) { TileTapCtx *c=(TileTapCtx*)lv_mem_alloc(sizeof(TileTapCtx)); memset(c,0,sizeof(TileTapCtx)); c->isPh=false; lv_obj_add_event_cb(orp_tile, tile_tap_cb, LV_EVENT_ALL, c); }
 
-      // Footer IP at bottom-right (always show)
+      // Footer IP at bottom-right
       lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
+
+      // Prepare link icon on same parent; keep hidden unless Zigbee mode wants it
+      if (!lv_img_link) {
+        lv_img_link = lv_img_create(lv_tile_main);
+        lv_img_set_src(lv_img_link, &link_off_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
+        lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -14, -1);
+        lv_img_set_zoom(lv_img_link, 128); // ~16-20px from 40px asset
+        lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_link, lv_color_black(), 0);
+        lv_obj_set_style_img_opa(lv_img_link, LV_OPA_COVER, 0);
+        lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      }
 
       // Pump icon for pH (M1) at bottom-left of pH tile with silhouette shadow
       lv_img_pump_ph_shadow = lv_img_create(ph_tile);
@@ -1910,6 +1980,7 @@ void setup() {
       lv_obj_set_style_img_recolor(lv_img_pump_ph, lv_color_white(), 0);
       lv_obj_align(lv_img_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
 
       // Pump icon for ORP (M2) at bottom-left of ORP tile with silhouette shadow
       lv_img_pump_orp_shadow = lv_img_create(orp_tile);
@@ -1924,14 +1995,45 @@ void setup() {
       lv_obj_set_style_img_recolor(lv_img_pump_orp, lv_color_white(), 0);
       lv_obj_align(lv_img_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
 
       ui::updateValues();
 
       // Settings tile content: motor speed controls (clean styling)
+      // Mode toggle row (Zigbee vs WiFi/MQTT)
+      lv_obj_t *row0 = lv_obj_create(lv_tile_settings);
+      lv_obj_remove_style_all(row0);
+      lv_obj_set_size(row0, lv_obj_get_width(lv_tile_settings)-20, 40);
+      lv_obj_align(row0, LV_ALIGN_TOP_MID, 0, 16);
+      lv_obj_set_style_bg_color(row0, lv_palette_darken(LV_PALETTE_GREY,2), 0);
+      lv_obj_set_style_bg_opa(row0, LV_OPA_30, 0);
+      lv_obj_set_style_pad_all(row0, 6, 0);
+      lv_obj_clear_flag(row0, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_set_scrollbar_mode(row0, LV_SCROLLBAR_MODE_OFF);
+      lv_obj_t *lblMode = lv_label_create(row0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_align(lblMode, LV_ALIGN_LEFT_MID, 0, 0);
+      lv_obj_t *swMode = lv_switch_create(row0); lv_obj_set_size(swMode, 50, 24); lv_obj_align(swMode, LV_ALIGN_RIGHT_MID, -8, 0);
+      if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
+      lv_obj_add_event_cb(swMode, [](lv_event_t *e){
+        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+        bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+        storage.setMode(runMode);
+        if (runMode == core::Storage::MODE_ZIGBEE) {
+          if (WiFi.isConnected()) WiFi.disconnect(true, true);
+          WiFi.mode(WIFI_OFF);
+          wifiOff = true;
+        } else {
+          WiFi.mode(WIFI_STA);
+          wifiOff = false;
+          connectWiFiIfNeeded();
+          ensureMqtt();
+        }
+      }, LV_EVENT_ALL, NULL);
+
       lv_obj_t *row1 = lv_obj_create(lv_tile_settings);
       lv_obj_remove_style_all(row1);
       lv_obj_set_size(row1, lv_obj_get_width(lv_tile_settings)-20, 40);
-      lv_obj_align(row1, LV_ALIGN_TOP_MID, 0, 16);
+      lv_obj_align(row1, LV_ALIGN_TOP_MID, 0, 62);
       lv_obj_set_style_bg_color(row1, lv_palette_darken(LV_PALETTE_GREY,2), 0);
       lv_obj_set_style_bg_opa(row1, LV_OPA_30, 0);
       lv_obj_set_style_pad_all(row1, 6, 0);
@@ -1946,7 +2048,7 @@ void setup() {
       lv_obj_t *row2 = lv_obj_create(lv_tile_settings);
       lv_obj_remove_style_all(row2);
       lv_obj_set_size(row2, lv_obj_get_width(lv_tile_settings)-20, 40);
-      lv_obj_align(row2, LV_ALIGN_TOP_MID, 0, 70);
+      lv_obj_align(row2, LV_ALIGN_TOP_MID, 0, 116);
       lv_obj_set_style_bg_color(row2, lv_palette_darken(LV_PALETTE_GREY,2), 0);
       lv_obj_set_style_bg_opa(row2, LV_OPA_30, 0);
       lv_obj_set_style_pad_all(row2, 6, 0);
@@ -2035,9 +2137,17 @@ void setup() {
 
   // WiFi + MQTT
   setupWiFiEvents();
-  if (!wifiOff) {
+  // Start or stop WiFi based on saved mode at boot
+  if (runMode == core::Storage::MODE_WIFI_MQTT) {
+    WiFi.mode(WIFI_STA);
+    wifiOff = false;
     ESP_LOGI("WiFi", "Boot: WiFi STA starting");
     connectWiFiIfNeeded();
+    ensureMqtt();
+  } else {
+    WiFi.mode(WIFI_OFF);
+    wifiOff = true;
+    ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
   }
 
   // Load persisted thresholds
@@ -2047,6 +2157,7 @@ void setup() {
   ORP_MIN = storage.getOrpMin(ORP_MIN);
   ORP_MAX = storage.getOrpMax(ORP_MAX);
   runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+  savedMode = runMode;
   if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
   // Load custom speeds if present
@@ -2109,6 +2220,20 @@ void loop() {
     lv_timer_handler();
     // (removed periodic debug text update)
     delay(1);  // more responsive UI
+    // Ensure UI reflects latest values/icon states even without motors enabled
+    updateLvglValues();
+    if (!MOTOR_ENABLE) {
+      bool phActive = METRICS().havePh && (METRICS().phVal < PH_MIN || METRICS().phVal > PH_MAX);
+      bool orpActive = METRICS().haveOrp && ((int)lrintf(METRICS().orpMv) < ORP_MIN || (int)lrintf(METRICS().orpMv) > ORP_MAX);
+      if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
+        if (phActive) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
+        else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
+      }
+      if (lv_img_pump_orp && lv_img_pump_orp_shadow) {
+        if (orpActive) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
+        else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
+      }
+    }
   } else if (DIAG_MODE) {
     static uint32_t last = 0;
     uint32_t now = millis();
@@ -2147,6 +2272,8 @@ void loop() {
       showZigbeeCommissioningModal(120);
       ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
       // Force Zigbee mode during commissioning
+      savedMode = runMode;
+      modeForced = true;
       runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
       if (WiFi.isConnected()) WiFi.disconnect(true, true);
       WiFi.mode(WIFI_OFF);
@@ -2161,10 +2288,25 @@ void loop() {
   // If commissioning finished, optionally restore WiFi
   #if __has_include(<Zigbee.h>)
   if (wifiOff && zbStarted && (zbCommissionUntilMs && millis() > zbCommissionUntilMs)) {
-    ESP_LOGI("ZB", "Commissioning window ended; restoring WiFi");
-    WiFi.mode(WIFI_STA);
-    connectWiFiIfNeeded();
-    wifiOff = false;
+    ESP_LOGI("ZB", "Commissioning window ended");
+    if (modeForced) {
+      // Restore user's previous mode selection
+      runMode = savedMode;
+      storage.setMode(runMode);
+      modeForced = false;
+    }
+    if (runMode == core::Storage::MODE_WIFI_MQTT) {
+      ESP_LOGI("WiFi", "Restoring WiFi STA (WiFi/MQTT mode)");
+      WiFi.mode(WIFI_STA);
+      wifiOff = false;
+      connectWiFiIfNeeded();
+      ensureMqtt();
+    } else {
+      // Remain in Zigbee-only mode; keep WiFi fully off
+      WiFi.mode(WIFI_OFF);
+      wifiOff = true;
+      ESP_LOGI("WiFi", "Remain OFF (Zigbee mode)");
+    }
   }
   #endif
 
@@ -2262,8 +2404,18 @@ void loop() {
                     domain::Metrics::instance().orpMv,
                     FORCE_MOTOR_A_ON,
                     m1Running, m2Running);
-    if (USE_LVGL_UI) updateLvglValues();
-    else {
+    if (USE_LVGL_UI) {
+      updateLvglValues();
+      // Toggle pump icons visibility
+      if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
+        if (m1Running) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
+        else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
+      }
+      if (lv_img_pump_orp && lv_img_pump_orp_shadow) {
+        if (m2Running) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
+        else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
+      }
+    } else {
       if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
       if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
     }
@@ -2275,19 +2427,19 @@ void loop() {
     lastZbReport = now;
     #if __has_include(<Zigbee.h>)
     if (zbStarted) {
+      // Apply deferred AO changes safely in app thread context
+      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; storage.setPhMin(PH_MIN); }
+      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; storage.setPhMax(PH_MAX); }
+      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); storage.setOrpMin(ORP_MIN); }
+      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); storage.setOrpMax(ORP_MAX); }
       if (domain::Metrics::instance().havePh)   zbPh.setAnalogInput(domain::Metrics::instance().phVal);
       if (domain::Metrics::instance().haveOrp)  zbOrp.setAnalogInput((float)domain::Metrics::instance().orpMv);
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
       // Opportunistic re-steering if not yet connected
       #if __has_include(<Zigbee.h>)
-      if (!Zigbee.connected()) {
-        // After ~20s without join, expand channel mask from 11 to all standard channels once
-        uint32_t now2 = millis();
-        if (!zbMaskExpanded && (now2 - zbCommissionStartMs) > 20000) {
-          ESP_LOGI("ZB", "Expanding channel mask to all channels (fallback)");
-          Zigbee.setPrimaryChannelMask(0x07FFF800);
-          zbMaskExpanded = true;
-        }
+      if (Zigbee.connected()) {
+        // Joined: close commissioning modal if still visible
+        if (lv_zb_modal) { lv_obj_del(lv_zb_modal); lv_zb_modal = nullptr; zbCommissionUntilMs = 0; }
       }
       #endif
     }
