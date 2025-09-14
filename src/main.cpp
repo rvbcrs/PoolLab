@@ -187,6 +187,7 @@ static void on_ph_minus_cb(lv_event_t *e);
 static void on_ph_plus_cb(lv_event_t *e);
 static void on_orp_minus_cb(lv_event_t *e);
 static void on_orp_plus_cb(lv_event_t *e);
+static void on_all_off_cb(lv_event_t *e);
 static void on_speed_save_cb(lv_event_t *e);
 static void updateLvglValues();
 static void showRangeDialog(bool isPh);
@@ -255,6 +256,7 @@ static const int PWM_BITS = 8;     // 0..255
 static uint32_t m1StopAt = 0, m2StopAt = 0;
 static uint32_t m1CoolUntil = 0, m2CoolUntil = 0;
 static bool m1Running = false, m2Running = false;
+static bool emergencyStop = false; // when true, force both motors off until reboot or future clear
 // Hysteresis for continuous control (no burst/cooldown)
 static const float PH_HYST = 0.05f;   // stop when pH < (PH_MAX - PH_HYST)
 static const int   ORP_HYST = 20;     // stop when ORP > (ORP_MIN + ORP_HYST)
@@ -494,6 +496,29 @@ static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED
 static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
 static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
 static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_all_off_cb(lv_event_t *e){
+  (void)e;
+  // Immediate stop of both motors (emergency)
+  emergencyStop = true;
+  m1Running = false; m2Running = false;
+  if (MOTOR_ENABLE) {
+    // Disable driver and outputs
+    digitalWrite(TB_STBY, LOW);
+    digitalWrite(M1_IN1, LOW);
+    digitalWrite(M1_IN2, LOW);
+    digitalWrite(M2_IN1, LOW);
+    digitalWrite(M2_IN2, LOW);
+    ledcWrite(M1_PWM, 0);
+    ledcWrite(M2_PWM, 0);
+  }
+  // Hide pump icons if present
+  if (USE_LVGL_UI) {
+    if (lv_img_pump_ph) { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_img_pump_ph_shadow) { lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_img_pump_orp) { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_img_pump_orp_shadow) { lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
+  }
+}
 static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); }
 
 // Alert margins and border thickness for near/exceed thresholds (used by LVGL updater)
@@ -1526,20 +1551,25 @@ static void handleTouchUI(){
   } // End of touch release handling
 }
 
-static void connectWiFiIfNeeded() {
-  if (WiFi.status() == WL_CONNECTED) return;
-  if (wifiConnecting) return; // avoid spamming connect while connecting
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname("pool-sniffer-c6");
+static void wifiStaHardRestart(){
   WiFi.persistent(false);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-  ESP_LOGI("WiFi", "Connecting to '%s'...", WIFI_SSID);
   WiFi.disconnect(true, true);
-  delay(50);
+  WiFi.mode(WIFI_OFF);
+  delay(150);
+  WiFi.mode(WIFI_STA);
+  ESP_LOGI("WiFi", "Connecting to '%s'...", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   wifiConnecting = true;
   lastWiFiAttemptMs = millis();
+}
+
+static void connectWiFiIfNeeded() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  if (wifiConnecting) return; // avoid spamming connect while connecting
+  WiFi.setHostname("pool-sniffer-c6");
+  wifiStaHardRestart();
 }
 
 static void ensureMqtt() {
@@ -1724,6 +1754,16 @@ void setup() {
     displayBridge->initLvgl(20);
     lv_disp_t *disp = displayBridge->registerDisplay();
     ui::init(disp);
+    // Load persisted configuration early so UI defaults and startup mode are correct
+    storage.begin(false);
+    PH_MIN = storage.getPhMin(PH_MIN);
+    PH_MAX = storage.getPhMax(PH_MAX);
+    ORP_MIN = storage.getOrpMin(ORP_MIN);
+    ORP_MAX = storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    savedMode = runMode;
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
       value = constrain(value, 0, 100);
@@ -1738,9 +1778,16 @@ void setup() {
         if (WiFi.isConnected()) WiFi.disconnect(true, true);
         WiFi.mode(WIFI_OFF);
         wifiOff = true;
+        // Stop Zigbee if not started via joined/commissioning, then (re)start joined if we were bound
+        #if __has_include(<Zigbee.h>)
+        if (!zbStarted && zbEverJoined) {
+          zb_start_joined();
+        }
+        #endif
       } else {
-        WiFi.mode(WIFI_STA);
+        // Switch to WiFi/MQTT: keep Zigbee stack quiescent
         wifiOff = false;
+        WiFi.mode(WIFI_STA);
         connectWiFiIfNeeded();
         ensureMqtt();
       }
@@ -2044,7 +2091,7 @@ void setup() {
       lv_obj_set_style_pad_row(settings, 14, 0);
       lv_obj_set_style_pad_column(settings, 10, 0);
 
-      // Section: Algemeen
+      // Section: General
       lv_obj_t *sec_general = lv_obj_create(settings);
       lv_obj_remove_style_all(sec_general);
       lv_obj_set_width(sec_general, LV_PCT(100));
@@ -2055,7 +2102,7 @@ void setup() {
       lv_obj_set_style_pad_row(sec_general, 10, 0);
       lv_obj_set_flex_flow(sec_general, LV_FLEX_FLOW_COLUMN);
       // Title
-      lv_obj_t *title_general = lv_label_create(sec_general); lv_obj_set_style_text_color(title_general, lv_color_black(), 0); lv_label_set_text(title_general, "Algemeen");
+      lv_obj_t *title_general = lv_label_create(sec_general); lv_obj_set_style_text_color(title_general, lv_color_black(), 0); lv_label_set_text(title_general, "General");
       // Row: mode
       lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
       lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_set_flex_grow(lblMode, 1);
@@ -2093,6 +2140,11 @@ void setup() {
       lv_obj_t *btn2m = lv_btn_create(row_orp); lv_obj_set_size(btn2m, 28, 24); { lv_obj_t *t = lv_label_create(btn2m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_t *btn2p = lv_btn_create(row_orp); lv_obj_set_size(btn2p, 28, 24); { lv_obj_t *t = lv_label_create(btn2p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
+
+      // Row: ALL OFF emergency button
+      lv_obj_t *row_off = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_off); lv_obj_set_width(row_off, LV_PCT(100)); lv_obj_set_height(row_off, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_off, LV_FLEX_FLOW_ROW);
+      lv_obj_t *sp = lv_obj_create(row_off); lv_obj_remove_style_all(sp); lv_obj_set_width(sp, LV_PCT(100)); lv_obj_set_height(sp, 1); lv_obj_set_flex_grow(sp, 1);
+      lv_obj_t *btnAllOff = lv_btn_create(row_off); lv_obj_set_size(btnAllOff, 110, 28); lv_obj_set_style_bg_color(btnAllOff, lv_palette_main(LV_PALETTE_RED), 0); lv_obj_set_style_bg_opa(btnAllOff, LV_OPA_COVER, 0); lv_label_set_text(lv_label_create(btnAllOff), "ALL OFF"); lv_obj_add_event_cb(btnAllOff, on_all_off_cb, LV_EVENT_CLICKED, NULL);
 
       // Save button (place further down so content can scroll)
       //lv_obj_t *btnSave = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnSave, 100, 34); lv_obj_align(btnSave, LV_ALIGN_TOP_MID, -56, 170); lv_obj_add_event_cb(btnSave, on_speed_save_cb, LV_EVENT_CLICKED, NULL); lv_label_set_text(lv_label_create(btnSave), "Save");
@@ -2171,41 +2223,48 @@ void setup() {
   drawStaticUI();
   updateValueAreas();
   }
+  // Load persisted configuration early when not using LVGL UI (so boot mode is honored)
+  if (!USE_LVGL_UI) {
+    storage.begin(false);
+    PH_MIN = storage.getPhMin(PH_MIN);
+    PH_MAX = storage.getPhMax(PH_MAX);
+    ORP_MIN = storage.getOrpMin(ORP_MIN);
+    ORP_MAX = storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    savedMode = runMode;
+  }
 
   // WiFi + MQTT
   setupWiFiEvents();
-  // Start or stop WiFi based on saved mode at boot
-  if (runMode == core::Storage::MODE_WIFI_MQTT) {
-    WiFi.mode(WIFI_STA);
-    wifiOff = false;
-    ESP_LOGI("WiFi", "Boot: WiFi STA starting");
-    connectWiFiIfNeeded();
-    ensureMqtt();
-  } else {
-    WiFi.mode(WIFI_OFF);
-    wifiOff = true;
-    ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
-    // If we were previously joined, start Zigbee stack immediately
-    #if __has_include(<Zigbee.h>)
-    if (zbEverJoined) {
-      zb_start_joined();
+  // Start or stop WiFi based on saved mode at boot (respect prior forced-off, e.g. commissioning)
+  if (!wifiOff) {
+    if (runMode == core::Storage::MODE_WIFI_MQTT) {
+      WiFi.mode(WIFI_STA);
+      wifiOff = false;
+      ESP_LOGI("WiFi", "Boot: WiFi STA starting");
+      connectWiFiIfNeeded();
+      ensureMqtt();
+    } else {
+      WiFi.mode(WIFI_OFF);
+      wifiOff = true;
+      ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
+      // If we were previously joined, start Zigbee stack immediately
+      #if __has_include(<Zigbee.h>)
+      if (zbEverJoined) {
+        zb_start_joined();
+      }
+      #endif
     }
-    #endif
   }
 
-  // Load persisted thresholds
-  storage.begin(false);
-  PH_MIN = storage.getPhMin(PH_MIN);
-  PH_MAX = storage.getPhMax(PH_MAX);
-  ORP_MIN = storage.getOrpMin(ORP_MIN);
-  ORP_MAX = storage.getOrpMax(ORP_MAX);
-  runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
-  savedMode = runMode;
   if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
   // Load custom speeds if present
   M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
   M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+  if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
@@ -2411,11 +2470,9 @@ void loop() {
           lastConnectAttempt = now;
           connectWiFiIfNeeded();
         }
-        if (wifiConnecting && now - lastWiFiAttemptMs > 10000) {
-          ESP_LOGI("WiFi", "Retry connect (stuck)");
-          WiFi.disconnect(true, true);
-          delay(50);
-          wifiConnecting = false;
+        if (wifiConnecting && now - lastWiFiAttemptMs > 12000) {
+          ESP_LOGI("WiFi", "Retry connect (hard restart)");
+          wifiStaHardRestart();
         }
       }
       if (WiFi.status() == WL_CONNECTED) {
@@ -2440,13 +2497,21 @@ void loop() {
   // Motor control policy (skip if forced-on test is active)
   if (MOTOR_ENABLE) {
     domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
-    control->update(cfg,
-                    domain::Metrics::instance().havePh,
-                    domain::Metrics::instance().phVal,
-                    domain::Metrics::instance().haveOrp,
-                    domain::Metrics::instance().orpMv,
-                    FORCE_MOTOR_A_ON,
-                    m1Running, m2Running);
+    if (!emergencyStop) {
+      control->update(cfg,
+                      domain::Metrics::instance().havePh,
+                      domain::Metrics::instance().phVal,
+                      domain::Metrics::instance().haveOrp,
+                      domain::Metrics::instance().orpMv,
+                      (bool)(FORCE_MOTOR_A_ON && !emergencyStop),
+                      m1Running, m2Running);
+    } else {
+      // Keep motors off
+      digitalWrite(TB_STBY, LOW);
+      ledcWrite(M1_PWM, 0);
+      ledcWrite(M2_PWM, 0);
+      m1Running = false; m2Running = false;
+    }
     if (USE_LVGL_UI) {
       updateLvglValues();
       // Toggle pump icons visibility
