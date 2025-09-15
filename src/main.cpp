@@ -86,6 +86,7 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
 #include "ui/UI.h"
+#include "io/WebUI.h"
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
 extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
@@ -282,6 +283,7 @@ static domain::ControlPolicy *control = nullptr;
 static io::MqttClient mqttClient;
 static io::ZigbeeClient zigbee;
 static io::CaptivePortal portal;
+static io::WebUI webui;
 static core::Storage::Mode runMode = core::Storage::MODE_ZIGBEE;
 static core::Storage::Mode savedMode = core::Storage::MODE_ZIGBEE;
 static bool modeForced = false;
@@ -318,6 +320,10 @@ static void setupWiFiEvents() {
           ArduinoOTA.setHostname(host);
         }
         ArduinoOTA.begin();
+        // Start Web UI when we are online
+        webui.setStorage(&storage);
+        webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC);
+        if (!webui.isActive()) webui.begin();
         wifiFailCount = 0;
         if (portal.isActive()) portal.stop();
         break;
@@ -1606,6 +1612,30 @@ static void ensureMqtt() {
 static void publishDiscoveryOnce() { mqttClient.publishDiscoveryOnce(); }
 
 static void publishStatesIfReady() { mqttClient.publishStatesIfReady(domain::Metrics::instance()); }
+extern "C" void requestModeChange(int mode){
+  // mode: 1 = Zigbee, 0 = WiFi
+  runMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+  storage.setMode(runMode);
+  if (runMode == core::Storage::MODE_ZIGBEE) {
+    if (WiFi.isConnected()) WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    wifiOff = true;
+    #if __has_include(<Zigbee.h>)
+    if (!zbStarted) {
+      if (zbEverJoined) zb_start_joined(); else showZigbeeHoldToPairModal();
+    }
+    #endif
+  } else {
+    wifiOff = false;
+    WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
+    WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+    #if __has_include(<Zigbee.h>)
+    if (zbStarted) { ESP.restart(); }
+    #endif
+    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); } }
+    else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiStaHardRestart(); ensureMqtt(); }
+  }
+}
 
 // ---- Dummy telemetry generator ----
 static void updateDummyTelemetry() {
@@ -2573,6 +2603,12 @@ void loop() {
   if (DUMMY_MODE) {
     updateDummyTelemetry();
   }
+  // Push live updates to WebUI websockets periodically
+  static uint32_t lastWebPush=0;
+  if (WiFi.status()==WL_CONNECTED && nowMs - lastWebPush > 1000) {
+    lastWebPush = nowMs;
+    if (webui.isActive()) webui.broadcastMetrics();
+  }
 
   // WiFi/MQTT service loop
   static uint32_t lastConnectAttempt = 0;
@@ -2646,6 +2682,7 @@ void loop() {
   // OTA + captive portal services
   if (WiFi.status() == WL_CONNECTED) {
     ArduinoOTA.handle();
+    if (webui.isActive()) webui.loop();
   }
   if (portal.isActive()) {
     portal.loop();

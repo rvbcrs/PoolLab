@@ -56,7 +56,7 @@ Notities
 
 ### OTA (Over‑the‑Air updates)
 - OTA wordt automatisch geactiveerd nadat het device een IP heeft gekregen.
-- Hostnaam: `pool-sniffer-c6`. Upload via PlatformIO “Upload using network” of een OTA‑tool compatible met ArduinoOTA.
+- Hostnaam: `poollab-XXXXXX` (laatste 3 bytes van chip‑ID). Upload via PlatformIO “Upload using network” of een OTA‑tool compatible met ArduinoOTA.
 
 ### Modi en persistentie
 - De UI‑schakelaar roept `storage.setMode(...)` aan en schakelt direct radios:
@@ -79,6 +79,14 @@ Notities
   - `pool/cmd/ph_max`  ↔ `pool/cfg/ph_max`
   - `pool/cmd/orp_min` ↔ `pool/cfg/orp_min`
   - `pool/cmd/orp_max` ↔ `pool/cfg/orp_max`
+
+### WebUI (via WiFi)
+- Home: tegels in donkere LVGL‑stijl met live updates (WebSocket) voor pH, ORP en Temp.
+- Settings: Mode (Zigbee/WiFi), pH min/max, ORP min/max, motor‑snelheden; opslaan → NVS + directe applicatie.
+- URLs:
+  - `http://<ip>/`
+  - `http://<ip>/settings`
+  - WebSocket op poort 81 (client wordt automatisch geopend door de homepage).
 
 ### Projectstructuur (belangrijkste componenten)
 - `src/main.cpp`: Orkestratie. UI‑handlers, bootvolgorde, WiFi/MQTT, Zigbee‑commissioning, Tuya‑feed, periodieke publish.
