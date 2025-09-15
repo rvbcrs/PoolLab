@@ -10,7 +10,12 @@ void CaptivePortal::beginAP(const String &apSsid){
   if (_active) return;
   // Keep STA available so we can connect after saving creds, but stay in AP if not set
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(apSsid.c_str());
+  String ssid = apSsid;
+  uint64_t chipid = ESP.getEfuseMac();
+  char suffix[16];
+  snprintf(suffix, sizeof(suffix), "-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+  ssid += suffix;
+  WiFi.softAP(ssid.c_str());
   delay(100);
   _dns.start(DNS_PORT, "*", WiFi.softAPIP());
   setupRoutes();

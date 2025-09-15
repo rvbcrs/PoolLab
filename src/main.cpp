@@ -311,7 +311,12 @@ static void setupWiFiEvents() {
         ESP_LOGI("WiFi", "Got IP: %s", WiFi.localIP().toString().c_str());
         wifiConnecting = false;
         // Start OTA once we are on the network
-        ArduinoOTA.setHostname("pool-sniffer-c6");
+        {
+          uint64_t chipid = ESP.getEfuseMac();
+          char host[32];
+          snprintf(host, sizeof(host), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+          ArduinoOTA.setHostname(host);
+        }
         ArduinoOTA.begin();
         wifiFailCount = 0;
         if (portal.isActive()) portal.stop();
@@ -2175,7 +2180,26 @@ void setup() {
       // Row: Pair button (right)
       lv_obj_t *row_pair = lv_obj_create(sec_general); lv_obj_remove_style_all(row_pair); lv_obj_set_width(row_pair, LV_PCT(100)); lv_obj_set_height(row_pair, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_pair, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_pair, 12, 0);
       lv_obj_t *spacer = lv_obj_create(row_pair); lv_obj_remove_style_all(spacer); lv_obj_set_width(spacer, LV_PCT(100)); lv_obj_set_height(spacer, 1); lv_obj_set_flex_grow(spacer, 1);
-      lv_obj_t *btnPair = lv_btn_create(row_pair); lv_obj_set_size(btnPair, 120, 30); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee"); lv_obj_add_event_cb(btnPair, [](lv_event_t *e){ (void)e; showZigbeeCommissioningModal(60); ESP_LOGI("ZB", "Manual commissioning (60s)"); zigbee.startCommissioning(60); }, LV_EVENT_CLICKED, NULL);
+      lv_obj_t *btnPair = lv_btn_create(row_pair); lv_obj_set_size(btnPair, 120, 30);
+      // Style + label based on bound state
+      if (zbEverJoined) { lv_obj_set_style_bg_color(btnPair, lv_palette_main(LV_PALETTE_RED), 0); lv_label_set_text(lv_label_create(btnPair), "UNPAIR"); }
+      else { lv_label_set_text(lv_label_create(btnPair), "PAIR"); }
+      lv_obj_add_event_cb(btnPair, [](lv_event_t *e){
+        if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+        #if __has_include(<Zigbee.h>)
+        if (zbEverJoined) {
+          // Perform a Zigbee factory reset (will reboot)
+          ESP_LOGI("ZB", "Unpair requested -> factory reset Zigbee");
+          Zigbee.factoryReset(true);
+        } else {
+          showZigbeeCommissioningModal(60);
+          ESP_LOGI("ZB", "Manual commissioning (60s)");
+          zigbee.startCommissioning(60);
+        }
+        #else
+        (void)e;
+        #endif
+      }, LV_EVENT_ALL, NULL);
 
       // Section: Pumps
       lv_obj_t *sec_pumps = lv_obj_create(settings);
