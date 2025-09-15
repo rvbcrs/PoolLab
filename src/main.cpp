@@ -25,6 +25,7 @@
 #include <lvgl.h>
 #include <Adafruit_GFX.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <esp_log.h>
@@ -83,6 +84,7 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/Touch.h"
 #include "io/Tuya.h"
 #include "io/ZigbeeClient.h"
+#include "io/CaptivePortal.h"
 #include "ui/UI.h"
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
@@ -265,8 +267,8 @@ static const int   ORP_HYST = 20;     // stop when ORP > (ORP_MIN + ORP_HYST)
 
 // (helpers moved below metrics and prefs)
 // ---- WiFi + MQTT (Home Assistant via Mosquitto) ----
-static const char* WIFI_SSID     = "ABERSONPLEIN-IoT";
-static const char* WIFI_PASSWORD = "ramonvanbruggen";
+static String WIFI_SSID     = "";
+static String WIFI_PASSWORD = "";
 static const char* MQTT_HOST     = "192.168.0.248"; // or broker IP
 static const uint16_t MQTT_PORT  = 1883;
 static const char* MQTT_USER     = "mqqt";  // optional
@@ -279,6 +281,7 @@ static core::DisplayBridge *displayBridge = nullptr;
 static domain::ControlPolicy *control = nullptr;
 static io::MqttClient mqttClient;
 static io::ZigbeeClient zigbee;
+static io::CaptivePortal portal;
 static core::Storage::Mode runMode = core::Storage::MODE_ZIGBEE;
 static core::Storage::Mode savedMode = core::Storage::MODE_ZIGBEE;
 static bool modeForced = false;
@@ -295,6 +298,7 @@ static uint32_t btnLastChangeMs = 0; // last raw change timestamp
 // WiFi event logging
 static bool wifiConnecting = false;
 static uint32_t lastWiFiAttemptMs = 0;
+static uint8_t wifiFailCount = 0;
 
 static void setupWiFiEvents() {
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
@@ -306,14 +310,25 @@ static void setupWiFiEvents() {
       case ARDUINO_EVENT_WIFI_STA_GOT_IP:
         ESP_LOGI("WiFi", "Got IP: %s", WiFi.localIP().toString().c_str());
         wifiConnecting = false;
+        // Start OTA once we are on the network
+        ArduinoOTA.setHostname("pool-sniffer-c6");
+        ArduinoOTA.begin();
+        wifiFailCount = 0;
+        if (portal.isActive()) portal.stop();
         break;
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
         ESP_LOGI("WiFi", "Disconnected, reason=%d", (int)info.wifi_sta_disconnected.reason);
         wifiConnecting = false;
+        wifiFailCount++;
         // Immediate reconnect if not in Zigbee commissioning
-        if (!wifiOff) {
+        if (!wifiOff && !portal.isActive()) {
           delay(100);
           WiFi.reconnect();
+        }
+        // Start captive portal after several failures
+        if (!wifiOff && runMode == core::Storage::MODE_WIFI_MQTT && wifiFailCount >= 5 && !portal.isActive()) {
+          portal.setStorage(&storage);
+          portal.beginAP("PoolLab-Setup");
         }
         break;
       default: break;
@@ -1559,8 +1574,8 @@ static void wifiStaHardRestart(){
   WiFi.mode(WIFI_OFF);
   delay(150);
   WiFi.mode(WIFI_STA);
-  ESP_LOGI("WiFi", "Connecting to '%s'...", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  ESP_LOGI("WiFi", "Connecting to '%s'...", WIFI_SSID.c_str());
+  WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
   wifiConnecting = true;
   lastWiFiAttemptMs = millis();
 }
@@ -1569,6 +1584,11 @@ static void connectWiFiIfNeeded() {
   if (WiFi.status() == WL_CONNECTED) return;
   if (wifiConnecting) return; // avoid spamming connect while connecting
   WiFi.setHostname("pool-sniffer-c6");
+  // Only attempt connect if SSID is present; else launch portal
+  if (WIFI_SSID.length() == 0) {
+    if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }
+    return;
+  }
   wifiStaHardRestart();
 }
 
@@ -2107,7 +2127,51 @@ void setup() {
       lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
       lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_set_flex_grow(lblMode, 1);
       lv_obj_t *swMode = lv_switch_create(row_mode); lv_obj_set_size(swMode, 50, 24); if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
-      lv_obj_add_event_cb(swMode, [](lv_event_t *e){ if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return; bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED); runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT; storage.setMode(runMode); if (runMode == core::Storage::MODE_ZIGBEE) { if (WiFi.isConnected()) WiFi.disconnect(true, true); WiFi.mode(WIFI_OFF); wifiOff = true; } else { WiFi.mode(WIFI_STA); wifiOff = false; connectWiFiIfNeeded(); ensureMqtt(); } }, LV_EVENT_ALL, NULL);
+      lv_obj_add_event_cb(swMode, [](lv_event_t *e){
+        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+        bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+        storage.setMode(runMode);
+        if (runMode == core::Storage::MODE_ZIGBEE) {
+          // Switch radios: stop WiFi and start Zigbee immediately if already joined
+          if (WiFi.isConnected()) WiFi.disconnect(true, true);
+          WiFi.mode(WIFI_OFF);
+          wifiOff = true;
+          #if __has_include(<Zigbee.h>)
+          if (!zbStarted) {
+            if (zbEverJoined) zb_start_joined();
+            else {
+              // If never joined, prompt the user to press BOOT for commissioning
+              showZigbeeHoldToPairModal();
+            }
+          }
+          #endif
+        } else {
+          // Switch to WiFi/MQTT immediately
+          wifiOff = false;
+          // Load latest creds from NVS
+          WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
+          WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+          // If Zigbee stack is running, perform a quick reboot to release radio cleanly
+          #if __has_include(<Zigbee.h>)
+          if (zbStarted) {
+            ESP_LOGI("WiFi", "Switching from Zigbee->WiFi: scheduling reboot for clean radio handover");
+            delay(100);
+            ESP.restart();
+          }
+          #endif
+          if (WIFI_SSID.length() == 0) {
+            // No creds → start captive portal
+            if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }
+          } else {
+            // Ensure portal is stopped and bring up STA now
+            if (portal.isActive()) portal.stop();
+            WiFi.mode(WIFI_STA);
+            wifiStaHardRestart();
+            ensureMqtt();
+          }
+        }
+      }, LV_EVENT_ALL, NULL);
       // Row: Pair button (right)
       lv_obj_t *row_pair = lv_obj_create(sec_general); lv_obj_remove_style_all(row_pair); lv_obj_set_width(row_pair, LV_PCT(100)); lv_obj_set_height(row_pair, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_pair, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_pair, 12, 0);
       lv_obj_t *spacer = lv_obj_create(row_pair); lv_obj_remove_style_all(spacer); lv_obj_set_width(spacer, LV_PCT(100)); lv_obj_set_height(spacer, 1); lv_obj_set_flex_grow(spacer, 1);
@@ -2151,6 +2215,22 @@ void setup() {
       // Pair Zigbee button
       //lv_obj_t *btnPair = lv_btn_create(lv_tile_settings); lv_obj_set_size(btnPair, 120, 34); lv_obj_align(btnPair, LV_ALIGN_TOP_MID, 84, 170); lv_label_set_text(lv_label_create(btnPair), "Pair Zigbee");
       lv_obj_add_event_cb(btnPair, [](lv_event_t *e){ (void)e; showZigbeeCommissioningModal(60); ESP_LOGI("ZB", "Manual commissioning (60s)"); zigbee.startCommissioning(60); }, LV_EVENT_CLICKED, NULL);
+
+      // Section: Network
+      lv_obj_t *sec_net = lv_obj_create(settings);
+      lv_obj_remove_style_all(sec_net);
+      lv_obj_set_width(sec_net, LV_PCT(100));
+      lv_obj_set_height(sec_net, LV_SIZE_CONTENT);
+      lv_obj_set_style_bg_color(sec_net, lv_palette_lighten(LV_PALETTE_GREY,2), 0);
+      lv_obj_set_style_bg_opa(sec_net, LV_OPA_20, 0);
+      lv_obj_set_style_pad_all(sec_net, 8, 0);
+      lv_obj_set_style_pad_row(sec_net, 12, 0);
+      lv_obj_set_flex_flow(sec_net, LV_FLEX_FLOW_COLUMN);
+      lv_obj_t *title_net = lv_label_create(sec_net); lv_obj_set_style_text_color(title_net, lv_color_black(), 0); lv_label_set_text(title_net, "Network");
+      lv_obj_t *row_net = lv_obj_create(sec_net); lv_obj_remove_style_all(row_net); lv_obj_set_width(row_net, LV_PCT(100)); lv_obj_set_height(row_net, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_net, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_net, 12, 0);
+      lv_obj_t *lblNet = lv_label_create(row_net); lv_obj_set_style_text_color(lblNet, lv_color_black(), 0); lv_label_set_text(lblNet, "WiFi setup portal"); lv_obj_set_flex_grow(lblNet, 1);
+      lv_obj_t *btnCfgWifi = lv_btn_create(row_net); lv_obj_set_size(btnCfgWifi, 120, 28); lv_label_set_text(lv_label_create(btnCfgWifi), "Configure WiFi");
+      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
@@ -2241,11 +2321,21 @@ void setup() {
   // Start or stop WiFi based on saved mode at boot (respect prior forced-off, e.g. commissioning)
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
-      WiFi.mode(WIFI_STA);
-      wifiOff = false;
-      ESP_LOGI("WiFi", "Boot: WiFi STA starting");
-      connectWiFiIfNeeded();
-      ensureMqtt();
+      // Load persisted WiFi creds first so we can decide between STA vs captive portal
+      WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
+      WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+      if (WIFI_SSID.length() == 0) {
+        wifiOff = false;
+        ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
+        portal.setStorage(&storage);
+        portal.beginAP("PoolLab-Setup");
+      } else {
+        WiFi.mode(WIFI_STA);
+        wifiOff = false;
+        ESP_LOGI("WiFi", "Boot: WiFi STA starting");
+        connectWiFiIfNeeded();
+        ensureMqtt();
+      }
     } else {
       WiFi.mode(WIFI_OFF);
       wifiOff = true;
@@ -2527,6 +2617,14 @@ void loop() {
       if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
       if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
     }
+  }
+
+  // OTA + captive portal services
+  if (WiFi.status() == WL_CONNECTED) {
+    ArduinoOTA.handle();
+  }
+  if (portal.isActive()) {
+    portal.loop();
   }
 
   // Zigbee periodic reporting (Arduino Zigbee runs internally; no explicit loop needed)

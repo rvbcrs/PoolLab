@@ -33,6 +33,12 @@ public:
   Mode getMode(Mode def) const;
   void setMode(Mode m);
 
+  // WiFi credentials
+  String getWifiSsid(const String &def = "") const;
+  String getWifiPass(const String &def = "") const;
+  void setWifiSsid(const String &v);
+  void setWifiPass(const String &v);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

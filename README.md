@@ -47,9 +47,16 @@ Notities
   - Upload: `pio run -t upload -e esp32-c6-devkitc-1`
 
 ### Configuratie (WiFi/MQTT)
-Pas in `src/main.cpp` de volgende constanten aan:
-- `WIFI_SSID`, `WIFI_PASSWORD`
-- `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS`, `MQTT_CLIENTID`
+- WiFi via captive portal (aanbevolen):
+  - Bij lege WiFi‑gegevens of na meerdere mislukte connect‑pogingen start automatisch een AP `PoolLab-Setup`.
+  - Verbind met dat AP en open een willekeurige URL; het formulier “WiFi setup” verschijnt. Vul SSID/wachtwoord in en kies Save & Reboot.
+  - De gegevens worden in NVS opgeslagen en bij boot gebruikt. Handmatig starten kan via Settings → Network → Configure WiFi.
+- MQTT in `src/main.cpp` (handmatig aanpassen indien nodig):
+  - `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS`, `MQTT_CLIENTID`
+
+### OTA (Over‑the‑Air updates)
+- OTA wordt automatisch geactiveerd nadat het device een IP heeft gekregen.
+- Hostnaam: `pool-sniffer-c6`. Upload via PlatformIO “Upload using network” of een OTA‑tool compatible met ArduinoOTA.
 
 ### Modi en persistentie
 - De UI‑schakelaar roept `storage.setMode(...)` aan en schakelt direct radios:

@@ -31,6 +31,19 @@ void Storage::setMode(Mode m) {
   _prefs.putInt("mode", static_cast<int>(m));
 }
 
+String Storage::getWifiSsid(const String &def) const {
+  return _prefs.getString("wifi_ssid", def);
+}
+String Storage::getWifiPass(const String &def) const {
+  return _prefs.getString("wifi_pass", def);
+}
+void Storage::setWifiSsid(const String &v) {
+  _prefs.putString("wifi_ssid", v);
+}
+void Storage::setWifiPass(const String &v) {
+  _prefs.putString("wifi_pass", v);
+}
+
 } // namespace core
 
 
