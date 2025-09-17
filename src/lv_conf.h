@@ -2,9 +2,21 @@
 #define LV_CONF_H
 
 #define LV_COLOR_DEPTH 16
+#if defined(BOARD_ESP32S3_35)
+// AXS15231B BSP uses big-endian RGB565 → swap 16-bit color bytes for correct colors
+#define LV_COLOR_16_SWAP 1
+#else
+#define LV_COLOR_16_SWAP 0
+#endif
+#if defined(BOARD_ESP32S3_35)
+// S3 uses BSP lvgl_port tick (calls lv_tick_inc), so use default LVGL tick
+#define LV_TICK_CUSTOM 0
+#else
+// C6 and others: use Arduino millis() as LVGL tick source
 #define LV_TICK_CUSTOM 1
 #define LV_TICK_CUSTOM_INCLUDE "Arduino.h"
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())
+#endif
 
 #define LV_USE_LOG 0
 

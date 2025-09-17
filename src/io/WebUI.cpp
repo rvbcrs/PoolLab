@@ -52,9 +52,11 @@ void WebUI::handleSettings(){
   String html; sendStyleHeader(html);
   html += F("<div class='card'><h3>Settings</h3>");
   html += F("<form method='POST' action='/api/save'>");
-  // Network mode
-  core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_ZIGBEE) : core::Storage::MODE_ZIGBEE;
-  html += F("<label>Mode</label><div class='row'><select name='mode'><option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option><option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option></select></div>");
+  // Network mode (only if Zigbee compiled in)
+  #if HAS_ZIGBEE
+    core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_ZIGBEE) : core::Storage::MODE_ZIGBEE;
+    html += F("<label>Mode</label><div class='row'><select name='mode'><option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option><option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option></select></div>");
+  #endif
   // Thresholds
   html += F("<label>pH Min</label><input name='ph_min' value='"); html += _phMin? fmtFloat(*_phMin,2) : String(6.80f); html += F("'>");
   html += F("<label>pH Max</label><input name='ph_max' value='"); html += _phMax? fmtFloat(*_phMax,2) : String(7.60f); html += F("'>");
@@ -99,11 +101,13 @@ void WebUI::handleApiSave(){
   if (_http.hasArg("m2") && _m2 && _storage) {
     int v = parseIntOr(_http.arg("m2"), *_m2); v = constrain(v,0,100); *_m2 = (uint8_t)v; _storage->setM2Speed(*_m2);
   }
+  #if HAS_ZIGBEE
   if (_http.hasArg("mode") && _storage) {
     String m = _http.arg("mode"); m.toLowerCase();
     int modeInt = (m == "zigbee") ? 1 : 0;
     requestModeChange(modeInt);
   }
+  #endif
   _http.sendHeader("Location", "/settings"); _http.send(302, "text/plain", "Saved");
 }
 

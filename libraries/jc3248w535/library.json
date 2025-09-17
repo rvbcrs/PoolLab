@@ -1,0 +1,25 @@
+{
+  "name": "JC3248W535 BSP",
+  "version": "0.1.0",
+  "keywords": [
+    "esp32",
+    "esp32s3",
+    "lvgl",
+    "display",
+    "touch"
+  ],
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "build": {
+    "srcFilter": [
+      "+<*>",
+      "-<**/DEMO_*.c>",
+      "-<**/main.c>"
+    ]
+  }
+}

@@ -1,3 +1,12 @@
+#if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
+#include "Touch.h"
+namespace io {
+bool i2cRead(uint8_t, uint8_t, uint8_t*, uint32_t){ return false; }
+void touchBegin() {}
+bool readTouchOnce(TouchPoint &p){ p.pressed=false; return false; }
+bool getTouchPoint(TouchPoint &p){ p.pressed=false; return false; }
+}
+#else
 #include "Touch.h"
 #include <Wire.h>
 
@@ -33,7 +42,12 @@ bool i2cRead(uint8_t addr, uint8_t reg, uint8_t* buf, uint32_t len){
 }
 
 void touchBegin(){
+  // Use Arduino Wire only on non-S3 boards; S3 BSP sets up I2C
+  #if !defined(BOARD_ESP32S3_35)
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
+  #else
+  (void)TOUCH_SDA; (void)TOUCH_SCL;
+  #endif
   pinMode(TOUCH_RST, OUTPUT);
   digitalWrite(TOUCH_RST, LOW); 
   delay(50); 
@@ -80,3 +94,4 @@ bool getTouchPoint(TouchPoint &p) {
 } // namespace io
 
 
+#endif

@@ -2,7 +2,9 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#if !defined(USE_JC3248W535)
 #include <Arduino_GFX_Library.h>
+#endif
 
 namespace core {
 
@@ -16,6 +18,7 @@ public:
 private:
   Arduino_GFX* _gfx;
   lv_color_t* _buf1;
+  lv_color_t* _buf2;
   lv_disp_draw_buf_t _drawBuf;
   lv_disp_drv_t _dispDrv;
 };

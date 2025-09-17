@@ -1,16 +1,19 @@
+#if !defined(USE_JC3248W535)
 #include "DisplayBridge.h"
 
 namespace core {
 
 DisplayBridge::DisplayBridge(Arduino_GFX* gfx)
-  : _gfx(gfx), _buf1(nullptr) {
+  : _gfx(gfx), _buf1(nullptr), _buf2(nullptr) {
 }
 
 void DisplayBridge::initLvgl(uint16_t bufHeight) {
   lv_init();
   uint16_t hor = _gfx->width();
-  _buf1 = (lv_color_t*)malloc(hor * bufHeight * sizeof(lv_color_t));
-  lv_disp_draw_buf_init(&_drawBuf, _buf1, NULL, hor * bufHeight);
+  size_t sz = (size_t)hor * bufHeight * sizeof(lv_color_t);
+  _buf1 = (lv_color_t*)malloc(sz);
+  _buf2 = (lv_color_t*)malloc(sz);
+  lv_disp_draw_buf_init(&_drawBuf, _buf1, _buf2, hor * bufHeight);
 }
 
 lv_disp_t* DisplayBridge::registerDisplay() {
@@ -18,6 +21,7 @@ lv_disp_t* DisplayBridge::registerDisplay() {
   _dispDrv.hor_res = _gfx->width();
   _dispDrv.ver_res = _gfx->height();
   _dispDrv.draw_buf = &_drawBuf;
+  _dispDrv.full_refresh = 0; // use partial refresh
   _dispDrv.flush_cb = [](lv_disp_drv_t *d, const lv_area_t *a, lv_color_t *p){
     Arduino_GFX* gfx = (Arduino_GFX*)d->user_data;
     int32_t w = (a->x2 - a->x1 + 1);
@@ -34,5 +38,4 @@ lv_disp_t* DisplayBridge::registerDisplay() {
 }
 
 } // namespace core
-
-
+#endif
