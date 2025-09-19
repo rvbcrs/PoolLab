@@ -377,7 +377,7 @@ static void lvgl_port_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     lvgl_port_ctx.running = true;
     while (lvgl_port_ctx.running) {
-        if (lvgl_port_lock(0)) {
+        if (lvgl_port_lock(5)) {
             task_delay_ms = lv_timer_handler();
             lvgl_port_unlock();
         }

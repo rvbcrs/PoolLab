@@ -3,7 +3,6 @@
 
 #define LV_COLOR_DEPTH 16
 #if defined(BOARD_ESP32S3_35)
-// AXS15231B BSP uses big-endian RGB565 → swap 16-bit color bytes for correct colors
 #define LV_COLOR_16_SWAP 1
 #else
 #define LV_COLOR_16_SWAP 0

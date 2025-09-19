@@ -13,6 +13,8 @@
 */
 
 #include <Arduino.h>
+#include <stdio.h>
+#include <stdarg.h>
 #if !defined(USE_JC3248W535)
 #include <Arduino_GFX_Library.h>
 #endif
@@ -37,6 +39,8 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <esp_log.h>
+#include "domain/DummySensor.h"
+#include "domain/Telemetry.h"
 #if !defined(USE_JC3248W535)
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
@@ -53,8 +57,11 @@
 //#include <Wire.h>
 #endif
 
-#if defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
-#define LVGL_LOCK() bsp_display_lock(0)
+#if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
+#define LVGL_LOCK() jc3248w535_lock(1)
+#define LVGL_UNLOCK() jc3248w535_unlock()
+#elif defined(BOARD_ESP32S3_35)
+#define LVGL_LOCK() bsp_display_lock(1)
 #define LVGL_UNLOCK() bsp_display_unlock()
 #else
 #define LVGL_LOCK() true
@@ -103,6 +110,13 @@ static volatile float zbPhMinValue = 0, zbPhMaxValue = 0, zbOrpMinValue = 0, zbO
 static Preferences zbPrefs;
 #endif
 static bool wifiOff = false;
+static volatile bool g_settingsRequested = false;
+static volatile bool g_startPortalRequested = false;
+static volatile bool g_ui_ip_dirty = false;
+static String g_ui_ip_text;
+static volatile bool g_showMainRequested = false;
+
+extern "C" void requestShowMain(){ g_showMainRequested = true; }
 #if ZB_ENABLED
 static const char *ZB_PREF_NS = "poollab";
 static const char *ZB_PREF_PAIR = "zb_pair"; // bool flag to start pairing on next boot
@@ -125,7 +139,16 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
 #include "ui/UI.h"
+// Provide C-linkage declarations for image assets used by UI when included here
+extern "C" {
+  extern const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+  extern const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+}
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+#include "ui/LegacyUiC6.h"
+#endif
 #include "io/WebUI.h"
+#include "io/WiFiManager.h"
 #include "boards/BoardSelect.h"
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
@@ -145,14 +168,21 @@ extern "C" const lv_font_t lv_font_montserrat_14;
 extern "C" const lv_font_t lv_font_source_code_pro_18;
 extern "C" const lv_font_t lv_font_source_code_pro_36;
 extern "C" const lv_font_t lv_font_source_code_pro_36_bold;
+#if defined(BOARD_ESP32S3_35)
+// Redirect IDF logs to Arduino Serial
+extern "C" int esp32_vprintf_redirect(const char* fmt, va_list args){
+  char buf[256];
+  int len = vsnprintf(buf, sizeof(buf), fmt, args);
+  if (len > 0) {
+    size_t w = (size_t)((len < (int)sizeof(buf)) ? len : (int)sizeof(buf));
+    Serial.write((const uint8_t*)buf, w);
+  }
+  return len;
+}
+#endif
 #if defined(USE_JC3248W535)
 static jc3248w535_handles_t jc_handles; // zero-initialized
-// Stubs to keep JC demo path minimal without legacy UI/WiFi helpers
-static inline void pushLine(const String &) {}
-static void connectWiFiIfNeeded() {}
-static void ensureMqtt() {}
-static void wifiStaHardRestart() {}
-static inline void updateDummyTelemetry() {}
+// Keep JC path free of legacy helpers; do not define pushLine/connectWiFi... stubs here
 #endif
 
 // ====== USER CONFIG ======
@@ -164,7 +194,11 @@ static const int RX_B_PIN = 17;          // WiFi -> MCU
 static const bool USE_CHANNEL_B = true; // set false if only one direction
 // Backlight pin (as in your working example)
 
-static const int LCD_BL_PIN = 23;        // C6 board
+#if defined(BOARD_ESP32C6_TOUCH_1_47)
+static const int LCD_BL_PIN = 23;        // C6 original working backlight pin
+#else
+static const int LCD_BL_PIN = 23;
+#endif
 
 // Optional transmit pins to inject Tuya frames (leave -1 for sniff-only)
 static const int TX_A_PIN = -1;          // drive MCU<-WiFi line (rarely needed)
@@ -183,9 +217,18 @@ static const uint8_t DP_PH_ALT1  = 118; // alternative pH
 
 // If true, show only the key metrics (pH, ORP, Temp) on screen
 static const bool SIMPLE_VIEW = true;
-static const bool USE_LVGL_UI = true; // switch to LVGL-based UI with swipeable pages
+#if defined(BOARD_ESP32C6_TOUCH_1_47)
+static const bool USE_LVGL_UI = true;  // C6 uses LVGL UI as on master
+#else
+static const bool USE_LVGL_UI = true;  // S3: LVGL cards UI
+#endif
 // Safe rollback: keep LVGL minimal to avoid crashes while debugging
+// On S3 with JC driver, start with safe baseline UI to avoid complex widgets until stable
+#if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
+static const bool LVGL_SAFE_BASELINE = false; // enable full UI on S3
+#else
 static const bool LVGL_SAFE_BASELINE = false;
+#endif
 
 // ===== LVGL UI globals =====
 static lv_obj_t *lv_tv = nullptr;
@@ -247,6 +290,7 @@ static void updateLvglValues();
 static void showRangeDialog(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
 static const bool DUMMY_MODE = true;  // set true to simulate values
+static domain::DummySensor g_dummySensor(6.80f, 7.60f, 250);
 // Tap vs swipe detection for tiles
 struct TileTapCtx { bool isPh; lv_point_t start; uint32_t start_ms; bool maybe_tap; };
 static void tile_tap_cb(lv_event_t *e){
@@ -334,18 +378,23 @@ static core::DisplayBridge *displayBridge = nullptr;
 #endif
 static domain::ControlPolicy *control = nullptr;
 static io::MqttClient mqttClient;
+static io::WiFiManager wifiMgr;
 static io::ZigbeeClient zigbee;
 static io::CaptivePortal portal;
 static io::WebUI webui;
-static core::Storage::Mode runMode = core::Storage::MODE_ZIGBEE;
-static core::Storage::Mode savedMode = core::Storage::MODE_ZIGBEE;
+static core::Storage::Mode runMode = core::Storage::MODE_WIFI_MQTT;
+static core::Storage::Mode savedMode = core::Storage::MODE_WIFI_MQTT;
 static bool modeForced = false;
+// Minimal UI heartbeat (JC simple mode)
+#if defined(USE_JC3248W535)
+static bool g_minimal_ui_active = false;
+#endif
 // --- Button for Zigbee commissioning (monitor both common BOOT pins)
 #if defined(BOARD_ESP32C6_TOUCH_1_47)
 static const int BTN_PIN1 = 9;   // C6: BOOT (GPIO9)
 static const int BTN_PIN2 = 0;   // backup
 #elif defined(BOARD_ESP32S3_35)
-static const int BTN_PIN1 = 0;   // S3: use GPIO0 (BOOT) as user button (active low)
+static const int BTN_PIN1 = -1;  // S3: no button logic
 static const int BTN_PIN2 = -1;  // unused
 #else
 static const int BTN_PIN1 = 0;
@@ -373,6 +422,17 @@ static void setupWiFiEvents() {
       case ARDUINO_EVENT_WIFI_STA_GOT_IP:
         ESP_LOGI("WiFi", "Got IP: %s", WiFi.localIP().toString().c_str());
         wifiConnecting = false;
+        // Update UI IP label when LVGL UI is active
+        if (USE_LVGL_UI) {
+          #if defined(BOARD_ESP32S3_35)
+          if (LVGL_LOCK()) {
+            ui::setIp(WiFi.localIP().toString().c_str());
+            LVGL_UNLOCK();
+          }
+          #else
+          ui::setIp(WiFi.localIP().toString().c_str());
+          #endif
+        }
         // Start OTA once we are on the network
         {
           uint64_t chipid = ESP.getEfuseMac();
@@ -391,19 +451,37 @@ static void setupWiFiEvents() {
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
         ESP_LOGI("WiFi", "Disconnected, reason=%d", (int)info.wifi_sta_disconnected.reason);
         wifiConnecting = false;
+        // Clear IP label on disconnect when LVGL UI is active
+        if (USE_LVGL_UI) {
+          #if defined(BOARD_ESP32S3_35)
+          if (LVGL_LOCK()) { ui::setIp("--"); LVGL_UNLOCK(); }
+          #else
+          ui::setIp("--");
+          #endif
+        }
         wifiFailCount++;
         // Immediate reconnect if not in Zigbee commissioning
         if (!wifiOff && !portal.isActive()) {
           delay(100);
           WiFi.reconnect();
         }
-        // Start captive portal after several failures
-        if (!wifiOff && runMode == core::Storage::MODE_WIFI_MQTT && wifiFailCount >= 5 && !portal.isActive()) {
+        if (wifiFailCount > 3) {
+          ESP_LOGI("WiFi", "Too many fails, starting captive portal");
           portal.setStorage(&storage);
-          portal.beginAP("PoolLab-Setup");
+          if (!portal.isActive()) {
+            portal.beginAP("PoolLab-Setup");
+            if (USE_LVGL_UI) {
+              #if defined(BOARD_ESP32S3_35)
+              if (LVGL_LOCK()) { ui::setIp(WiFi.softAPIP().toString().c_str()); LVGL_UNLOCK(); }
+              #else
+              ui::setIp(WiFi.softAPIP().toString().c_str());
+              #endif
+            }
+          }
         }
         break;
-      default: break;
+      default:
+        break;
     }
   });
 }
@@ -417,11 +495,27 @@ static const size_t BL_CANDIDATES_COUNT = sizeof(BL_CANDIDATES) / sizeof(BL_CAND
 
 
 #if defined(BOARD_ESP32C6_TOUCH_1_47)
+#include "core/Board.h"
+#include "core/boards/Esp32C6Board.h"
+#include "core/display/DisplayDriver.h"
+#include "core/display/St7789C6.h"
+#include "core/touch/TouchDriver.h"
+#include "core/touch/Axs5106L.h"
+static core::Esp32C6Board g_boardC6;
 Arduino_DataBus *bus = new Arduino_HWSPI(15 /* DC */, 14 /* CS */, 1 /* SCK */, 2 /* MOSI */, -1 /* MISO */);
 Arduino_GFX *gfx = new Arduino_ST7789(bus, DISPLAY_CFG.rstPin, DISPLAY_CFG.rotation, false /* IPS */,
                                       DISPLAY_CFG.width, DISPLAY_CFG.height,
                                       DISPLAY_CFG.colOffset1, DISPLAY_CFG.rowOffset1,
                                       DISPLAY_CFG.colOffset2, DISPLAY_CFG.rowOffset2);
+static core::St7789C6 displayDriver(gfx, bus);
+static core::Axs5106L touchDriver(18,19,20,21,0x63);
+#if !defined(USE_JC3248W535)
+static ui::LegacyUiC6 legacyUi(gfx);
+#endif
+
+#if 0
+static void lcd_reg_init(void) {}
+#endif
 #endif
 
 
@@ -523,8 +617,13 @@ static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEE
 static const float WARN_MARGIN_PH = 0.05f;   // pH within 0.05 of min/max
 static const int   WARN_MARGIN_ORP = 20;     // mV within 20 of min/max
 
+static void ui_update_values_async(void *){ ui::updateValues(); }
 static void updateLvglValues(){
   if (!USE_LVGL_UI) return;
+  #if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
+  // On JC path, rely on the LVGL timer in UI.cpp to update values to avoid flooding
+  return;
+  #endif
   #if defined(BOARD_ESP32S3_35)
   if (!LVGL_LOCK()) return;
   #endif
@@ -1063,244 +1162,65 @@ static void drawMotorIcon(Arduino_GFX *gfx, int x, int y, bool on) {
 }
 #endif
 
-#if !defined(USE_JC3248W535)
-static void drawStaticUI() {
-  if (!SIMPLE_VIEW) return;
-  if (staticDrawn) return;
-  staticDrawn = true;
-
-  gfx->fillScreen(BLACK);
-
-  // Outer frame
-  gfx->drawRoundRect(2, 2, 316, 168, 10, CYAN);
-  gfx->drawRoundRect(4, 4, 312, 164, 10, DARKGREEN);
-  // Column separator
-  gfx->drawLine(UI_MID_X, 8, UI_MID_X, 164, DARKGREY);
-
-  // Left (pH)
-  #if !defined(USE_JC3248W535)
-  drawDropletIcon(gfx, ui_lx-4, ui_ly+2, CYAN);
-  #endif
-  gfx->setTextColor(WHITE);
-  gfx->setFont(nullptr);
-  gfx->setTextSize(2);
-  gfx->setCursor(ui_lx+18, ui_ly+14);
-  gfx->print("pH");
-
-  // Right (ORP)
-  #if !defined(USE_JC3248W535)
-  drawBoltIcon(gfx, ui_rx-6, ui_ry+2, YELLOW);
-  #endif
-  gfx->setFont(nullptr);
-  gfx->setTextSize(2); // gelijk aan pH label
-  gfx->setCursor(ui_rx+14, ui_ry+14);
-  gfx->print("ORP");
-
-  // (mV label wordt naast het ORP-waardevak getekend wanneer de waarde wordt geüpdatet)
-
-  // Verplaats motor iconen achter labels (boven de waardevelden)
-  M1_ICON_X = ui_lx + 60; M1_ICON_Y = ui_ly + 14;
-  M2_ICON_X = ui_rx + 68; M2_ICON_Y = ui_ry + 14;
-
-  // Bottom temperature label/icon
-  #if !defined(USE_JC3248W535)
-  drawThermoIcon(gfx, ui_lx-4, ui_by-14, ORANGE);
-  #endif
-  // Restore default font after custom fonts
-  gfx->setFont(nullptr);
-
-  // Force first-time numeric rendering of placeholders/values
-  lastPhScaled = INT32_MAX;
-  lastOrpInt = INT32_MAX;
-  lastTempScaled = INT32_MAX;
-
-  // Create canvases once
-  if (!phCanvas)   phCanvas   = new GFXcanvas16(PH_BOX_W, PH_BOX_H);
-  if (!orpCanvas)  orpCanvas  = new GFXcanvas16(ORP_BOX_W, ORP_BOX_H);
-  if (!tempCanvas) tempCanvas = new GFXcanvas16(TEMP_BOX_W, TEMP_BOX_H);
-  if (!ipCanvas)   ipCanvas   = new GFXcanvas16(IP_BOX_W, IP_BOX_H);
-
-  // Draw pagination
-  drawPagination();
-}
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+static bool staticDrawn = false;
+// C6 legacy UI state migrated to LegacyUiC6
+static uint8_t currentPage = 0;
+static bool lastM1Icon=false, lastM2Icon=false;
+static String shownIp;
+// Box geometry (C6 UI)
+static const int PH_BOX_X=24, PH_BOX_Y=40, PH_BOX_W=110, PH_BOX_H=40;
+static const int ORP_BOX_X=182, ORP_BOX_Y=40, ORP_BOX_W=110, ORP_BOX_H=40;
+static const int TEMP_BOX_X=24, TEMP_BOX_Y=118, TEMP_BOX_W=120, TEMP_BOX_H=16;
+static const int IP_BOX_X=182, IP_BOX_Y=118, IP_BOX_W=120, IP_BOX_H=16;
+#else
+// No-op placeholders for non-C6 builds so references compile
+static inline void drawStaticUI() {}
+static inline void drawPagination() {}
+#endif
 
 static void updateValueAreas() {
+#if !(defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535))
+  // Non-C6 or JC path: LVGL updates only
+  updateLvglValues();
+  return;
+#else
   if (USE_LVGL_UI) { updateLvglValues(); return; }
   if (!SIMPLE_VIEW) return;
-  if (UI_OVERLAY_ACTIVE) return;
+  #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+  if (legacyUi.overlayActive()) return;
+  #endif
 
-  // pH value box (draw to canvas, then blit)
-  int phScaled = METRICS().havePh ? (int)lrintf(METRICS().phVal * 100.0f) : INT32_MIN;
-  if (phScaled != lastPhScaled) {
-    lastPhScaled = phScaled;
-    if (phCanvas) {
-      phCanvas->fillScreen(BLACK);
-      phCanvas->setFont(&FreeSansBold24pt7b);
-      uint16_t c = WHITE;
-      if (METRICS().havePh) {
-        bool nearMin = METRICS().phVal <= PH_MIN + WARN_MARGIN_PH;
-        bool nearMax = METRICS().phVal >= PH_MAX - WARN_MARGIN_PH;
-        bool below   = METRICS().phVal < PH_MIN;
-        bool above   = METRICS().phVal > PH_MAX;
-        if (below || above) c = RED;
-        else if (nearMin || nearMax) c = ORANGE;
-      }
-      phCanvas->setTextColor(c);
-      phCanvas->setCursor(0, 34);
-      if (METRICS().havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f", METRICS().phVal); phCanvas->print(b); } else { phCanvas->print("--.--"); }
-      gfx->draw16bitRGBBitmap(PH_BOX_X, PH_BOX_Y, phCanvas->getBuffer(), PH_BOX_W, PH_BOX_H);
-      phCanvas->setFont(nullptr);
-    }
-  }
-
-  // ORP value box (canvas)
-  int orpInt = METRICS().haveOrp ? (int)lrintf(METRICS().orpMv) : INT32_MIN;
-  if (orpInt != lastOrpInt) {
-    lastOrpInt = orpInt;
-    if (orpCanvas) {
-      orpCanvas->fillScreen(BLACK);
-      orpCanvas->setFont(&FreeSansBold24pt7b);
-      uint16_t c = WHITE;
-      if (METRICS().haveOrp) {
-        bool nearMin = orpInt <= ORP_MIN + WARN_MARGIN_ORP;
-        bool nearMax = orpInt >= ORP_MAX - WARN_MARGIN_ORP;
-        bool below   = orpInt < ORP_MIN;
-        bool above   = orpInt > ORP_MAX;
-        if (below || above) c = RED;
-        else if (nearMin || nearMax) c = ORANGE;
-      }
-      orpCanvas->setTextColor(c);
-      orpCanvas->setCursor(0, 34);
-      char vb[16];
-      if (METRICS().haveOrp) { snprintf(vb,sizeof(vb),"%d", orpInt); orpCanvas->print(vb); } else { strcpy(vb, "----"); orpCanvas->print(vb); }
-      gfx->draw16bitRGBBitmap(ORP_BOX_X, ORP_BOX_Y, orpCanvas->getBuffer(), ORP_BOX_W, ORP_BOX_H);
-      orpCanvas->setFont(nullptr);
-      // Draw unit label just after the rendered number width, clamped inside the ORP box
-      int16_t bx1, by1; uint16_t bw, bh;
-      orpCanvas->setFont(&FreeSansBold24pt7b);
-      orpCanvas->getTextBounds(vb, 0, 34, &bx1, &by1, &bw, &bh);
-      int mvx = ORP_BOX_X + (int)min((int)bw + 8, ORP_BOX_W - 16);
-      int mvy = ORP_BOX_Y + 28;
-      gfx->setFont(nullptr);
-      gfx->setTextSize(1);
-      gfx->setTextColor(WHITE);
-      gfx->setCursor(mvx, mvy);
-      gfx->print("mV");
-    }
-  }
-
-  // Temp value box (canvas)
-  int tempScaled = METRICS().haveTemp ? (int)lrintf(METRICS().tempC * 10.0f) : INT32_MIN;
-  if (tempScaled != lastTempScaled) {
-    lastTempScaled = tempScaled;
-    if (tempCanvas) {
-      tempCanvas->fillScreen(BLACK);
-      tempCanvas->setFont(&FreeSans12pt7b);
-      tempCanvas->setTextColor(WHITE);
-      tempCanvas->setCursor(0, 16);
-      if (METRICS().haveTemp) { char b[20]; snprintf(b,sizeof(b),"%.1f °C", METRICS().tempC); tempCanvas->print(b); } else { tempCanvas->print("--.- °C"); }
-      gfx->draw16bitRGBBitmap(TEMP_BOX_X, TEMP_BOX_Y, tempCanvas->getBuffer(), TEMP_BOX_W, TEMP_BOX_H);
-      tempCanvas->setFont(nullptr);
-    }
-  }
-
-  // IP address box (canvas)
-  String wantIp = (WiFi.status()==WL_CONNECTED) ? WiFi.localIP().toString() : String("--");
-  if (wantIp != shownIp) {
-    shownIp = wantIp;
-    if (ipCanvas) {
-      ipCanvas->fillScreen(BLACK);
-      ipCanvas->setFont(nullptr);
-      ipCanvas->setTextSize(1);
-      ipCanvas->setTextColor(WHITE);
-      ipCanvas->setCursor(0, 12);
-      ipCanvas->print("IP: "); ipCanvas->print(shownIp);
-      gfx->draw16bitRGBBitmap(IP_BOX_X, IP_BOX_Y, ipCanvas->getBuffer(), IP_BOX_W, IP_BOX_H);
-    }
-  }
+  String ipText = (WiFi.status()==WL_CONNECTED) ? WiFi.localIP().toString() : String("--");
+  legacyUi.updateValues(
+    METRICS().havePh, METRICS().phVal,
+    METRICS().haveOrp, METRICS().orpMv,
+    METRICS().haveTemp, METRICS().tempC,
+    ipText
+  );
 
   // Skip Arduino_GFX motor icon drawing when LVGL UI is active
-  if (!USE_LVGL_UI && !UI_OVERLAY_ACTIVE) {
-    #if !defined(USE_JC3248W535)
-    if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
-    if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
-    #endif
-  }
+  // Pump icon drawing removed (legacy icon positions removed); LVGL handles icons when active
+#endif
 }
 
 // Touch moved to io/Touch
 
-// ---- Simple on-device editor overlay ----
-enum OverlayKind { OVL_NONE=0, OVL_PH, OVL_ORP };
-static OverlayKind ovl = OVL_NONE;
-static bool ovlDirty=false;
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+// C6 legacy UI helpers
+static void drawPaginationC6();
+// Stubs for legacy helpers
+static void drawPagination() { drawPaginationC6(); }
+static void showRangeDialogLegacy(bool forPh) { legacyUi.showRangeOverlay(forPh, PH_MIN, PH_MAX, ORP_MIN, ORP_MAX); }
+static void drawStaticUI() { legacyUi.drawStaticUI(); }
 
-// Overlay layout
-static const int OVL_X=12, OVL_Y=6, OVL_W=300, OVL_H=148;
-static const int BTN_W=48, BTN_H=32;
-static const int ROW1_Y = OVL_Y + 26;  // hoger zodat meer ruimte overblijft
-static const int ROW2_Y = ROW1_Y + 48; // compacte verticale spacing
-static const int VAL_W=110;
-static const int COL_LEFT = OVL_X + 16;
-static const int COL_VAL  = OVL_X + 70;   // tekstvak verder links
-static const int COL_PLUS = OVL_X + 220;  // netjes naast elkaar
-static const int COL_MINUS= OVL_X + 170;
+// drawButton moved into LegacyUiC6
 
-static void drawButton(int x,int y,int w,int h,const char* label,uint16_t fg,uint16_t bg,int textSize=2){
-  gfx->fillRoundRect(x,y,w,h,6,bg);
-  gfx->drawRoundRect(x,y,w,h,6,fg);
-  gfx->setFont(nullptr); gfx->setTextSize(textSize); gfx->setTextColor(fg);
-  int tx = x + 8; int ty = y + (h/2) - (textSize*4); // approx vertical centering
-  gfx->setCursor(tx,ty);
-  gfx->print(label);
-}
-
-static void drawOverlay(){
-  UI_OVERLAY_ACTIVE = true;
-  // Modal box
-  gfx->fillRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 10, DARKGREY);
-  gfx->drawRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 10, WHITE);
-  // (Optioneel) titel weglaten om ruimte te winnen
-  // gfx->setFont(nullptr); gfx->setTextSize(2); gfx->setTextColor(WHITE);
-  // gfx->setCursor(OVL_X+10, OVL_Y+18);
-  // gfx->print(ovl==OVL_PH?"Edit pH":"Edit ORP");
-
-  // Labels
-  gfx->setTextSize(2);
-  gfx->setCursor(COL_LEFT, ROW1_Y-10); gfx->print("Min");
-  gfx->setCursor(COL_LEFT, ROW2_Y-10); gfx->print("Max");
-
-  // Value boxes
-  char b[16];
-  if (ovl==OVL_PH) { snprintf(b,sizeof(b),"%.2f", PH_MIN); }
-  else { snprintf(b,sizeof(b),"%d", ORP_MIN); }
-  drawButton(COL_VAL, ROW1_Y-8, VAL_W, BTN_H, b, WHITE, BLACK, 2);
-  if (ovl==OVL_PH) { snprintf(b,sizeof(b),"%.2f", PH_MAX); }
-  else { snprintf(b,sizeof(b),"%d", ORP_MAX); }
-  drawButton(COL_VAL, ROW2_Y-8, VAL_W, BTN_H, b, WHITE, BLACK, 2);
-
-  // +/- buttons
-  drawButton(COL_MINUS, ROW1_Y-8, BTN_W, BTN_H, "-", WHITE, DARKGREY, 3);
-  drawButton(COL_PLUS,  ROW1_Y-8, BTN_W, BTN_H, "+", WHITE, DARKGREY, 3);
-  drawButton(COL_MINUS, ROW2_Y-8, BTN_W, BTN_H, "-", WHITE, DARKGREY, 3);
-  drawButton(COL_PLUS,  ROW2_Y-8, BTN_W, BTN_H, "+", WHITE, DARKGREY, 3);
-
-  // Onderste strook achter Save/Cancel om overlap met velden te vermijden
-  gfx->fillRect(OVL_X+8, OVL_Y+OVL_H-44, OVL_W-16, 40, DARKGREY);
-
-  // Save/Cancel
-  drawButton(OVL_X+34,  OVL_Y+OVL_H-38, 100, BTN_H, "Save", WHITE, GREEN, 2);
-  drawButton(OVL_X+OVL_W-144, OVL_Y+OVL_H-38, 100, BTN_H, "Cancel", WHITE, RED, 2);
-  ovlDirty=false;
-}
+static void drawOverlayC6(){ legacyUi.showRangeOverlay(true, PH_MIN, PH_MAX, ORP_MIN, ORP_MAX); }
 
 static bool inRect(int x,int y,int rx,int ry,int rw,int rh){ return x>=rx && x<rx+rw && y>=ry && y<ry+rh; }
 
 static void applyAndPersistThresholds(){
-  // Publish retained and store to NVS
-  // Publish retained config via MQTT client
-  String _s1 = String(PH_MIN,2); mqttClient.ensureConnected();
-  (void)_s1; // ensure not optimized out if client defers publish
   storage.setPhMin(PH_MIN);
   storage.setPhMax(PH_MAX);
   storage.setOrpMin(ORP_MIN);
@@ -1308,60 +1228,52 @@ static void applyAndPersistThresholds(){
 }
 
 static void drawSettingsPage() {
-  // Draw settings frame
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+  legacyUi.drawSettingsPage((uint8_t)M1_SPEED_PC, (uint8_t)M2_SPEED_PC);
+  legacyUi.drawPagination();
+#else
+  // Non-C6 path keeps existing layout if ever used
   gfx->drawRoundRect(2, 2, 316, 168, 10, CYAN);
   gfx->drawRoundRect(4, 4, 312, 164, 10, DARKGREEN);
-  
   gfx->setFont(nullptr);
   gfx->setTextSize(2);
   gfx->setTextColor(WHITE);
   gfx->setCursor(10, 20);
   gfx->print("Motor Settings");
-  
-  // Motor speed controls
   gfx->setTextSize(1);
   gfx->setTextColor(WHITE);
-  
-  // pH Motor
-  gfx->setCursor(20, 50);
-  gfx->print("pH Motor Speed:");
+  gfx->setCursor(20, 50); gfx->print("pH Motor Speed:");
   drawButton(150, 45, 40, 20, "-", WHITE, DARKGREY, 1);
   drawButton(195, 45, 50, 20, String(M1_SPEED_PC).c_str(), WHITE, BLACK, 1);
   drawButton(250, 45, 40, 20, "+", WHITE, DARKGREY, 1);
-  gfx->setCursor(295, 50);
-  gfx->print("%");
-  
-  // ORP Motor  
-  gfx->setCursor(20, 80);
-  gfx->print("ORP Motor Speed:");
+  gfx->setCursor(295, 50); gfx->print("%");
+  gfx->setCursor(20, 80); gfx->print("ORP Motor Speed:");
   drawButton(150, 75, 40, 20, "-", WHITE, DARKGREY, 1);
   drawButton(195, 75, 50, 20, String(M2_SPEED_PC).c_str(), WHITE, BLACK, 1);
   drawButton(250, 75, 40, 20, "+", WHITE, DARKGREY, 1);
-  gfx->setCursor(295, 80);
-  gfx->print("%");
-  
-  // Save button
+  gfx->setCursor(295, 80); gfx->print("%");
   drawButton(110, 120, 100, 30, "Save", WHITE, GREEN, 2);
-  
-  // Draw pagination
   drawPagination();
+#endif
 }
 
 static void handleTouchUI(){
   io::TouchPoint tp; 
-  bool hasTouch = io::readTouchOnce(tp);
+  bool hasTouch = false;
+  #if defined(BOARD_ESP32C6_TOUCH_1_47)
+  {
+    core::TouchPoint cp{0,0,false};
+    hasTouch = touchDriver.read(cp);
+    tp.x = cp.x; tp.y = cp.y; tp.pressed = hasTouch;
+  }
+  #else
+  hasTouch = io::readTouchOnce(tp);
+  #endif
   
   // Simple button-based page navigation (temporary solution)
   static bool pageButtonDrawn = false;
-  if (!pageButtonDrawn && currentPage == 0) {
-    // Draw "Settings" button at bottom
-    drawButton(210, 145, 100, 25, "Settings", WHITE, DARKGREY, 1);
-    pageButtonDrawn = true;
-  } else if (!pageButtonDrawn && currentPage == 1) {
-    // Draw "Back" button at bottom
-    drawButton(10, 145, 60, 25, "Back", WHITE, DARKGREY, 1);
-    pageButtonDrawn = true;
-  }
+  // Buttons now drawn inside Legacy UI renderers
+  pageButtonDrawn = true;
   
   // Track last touch for simple tap detection
   static int16_t lastTouchX = 0, lastTouchY = 0;
@@ -1393,72 +1305,22 @@ static void handleTouchUI(){
       currentPage = 0;
       pageButtonDrawn = false;
       gfx->fillScreen(BLACK);
-      staticDrawn = false;
-      drawStaticUI();
-      updateValueAreas();
+      if (!USE_LVGL_UI) { staticDrawn = false; drawStaticUI(); updateValueAreas(); }
       return;
     }
     
-    // Handle overlay interactions on release
-    if (ovl != OVL_NONE) {
-      float phStep = 0.05f; int orpStep = 10;
-      if (inRect(lastTouchX,lastTouchY, COL_MINUS, ROW1_Y-8, BTN_W, BTN_H)) { 
-        if (ovl==OVL_PH) { PH_MIN-=phStep; } else { ORP_MIN-=orpStep; } 
-        ovlDirty=true; 
-      }
-      else if (inRect(lastTouchX,lastTouchY, COL_PLUS, ROW1_Y-8, BTN_W, BTN_H)) { 
-        if (ovl==OVL_PH) { PH_MIN+=phStep; } else { ORP_MIN+=orpStep; } 
-        ovlDirty=true; 
-      }
-      else if (inRect(lastTouchX,lastTouchY, COL_MINUS, ROW2_Y-8, BTN_W, BTN_H)) { 
-        if (ovl==OVL_PH) { PH_MAX-=phStep; } else { ORP_MAX-=orpStep; } 
-        ovlDirty=true; 
-      }
-      else if (inRect(lastTouchX,lastTouchY, COL_PLUS, ROW2_Y-8, BTN_W, BTN_H)) { 
-        if (ovl==OVL_PH) { PH_MAX+=phStep; } else { ORP_MAX+=orpStep; } 
-        ovlDirty=true; 
-      }
-      else if (inRect(lastTouchX,lastTouchY, OVL_X+34, OVL_Y+OVL_H-38, 100, BTN_H)) {
-      applyAndPersistThresholds();
-      ovl=OVL_NONE; UI_OVERLAY_ACTIVE=false;
-      gfx->fillScreen(BLACK);
-      staticDrawn=false; drawStaticUI();
-      shownIp = String();
-      lastM1Icon=!lastM1Icon; lastM2Icon=!lastM2Icon;
-      updateValueAreas();
-      return; 
-    }
-      else if (inRect(lastTouchX,lastTouchY, OVL_X+OVL_W-144, OVL_Y+OVL_H-38, 100, BTN_H)) {
-      ovl=OVL_NONE; UI_OVERLAY_ACTIVE=false;
-      gfx->fillScreen(BLACK);
-      staticDrawn=false; drawStaticUI();
-      shownIp = String();
-      lastM1Icon=!lastM1Icon; lastM2Icon=!lastM2Icon;
-      updateValueAreas();
-      return; 
-    }
-    if (ovlDirty) {
-      char b[16];
-      if (ovl==OVL_PH) { snprintf(b,sizeof(b),"%.2f", PH_MIN); }
-      else { snprintf(b,sizeof(b),"%d", ORP_MIN); }
-      drawButton(COL_VAL, ROW1_Y-8, VAL_W, BTN_H, b, WHITE, BLACK, 2);
-      if (ovl==OVL_PH) { snprintf(b,sizeof(b),"%.2f", PH_MAX); }
-      else { snprintf(b,sizeof(b),"%d", ORP_MAX); }
-      drawButton(COL_VAL, ROW2_Y-8, VAL_W, BTN_H, b, WHITE, BLACK, 2);
-      ovlDirty=false;
-    }
-    return;
-  }
+    // Handle overlay interactions on release (handled inside LegacyUiC6)
+    #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+    if (legacyUi.overlayActive()) { return; }
+    #endif
   
   // Check pH/ORP box taps on main page
-  if (currentPage == 0 && ovl == OVL_NONE) {
-    if (inRect(lastTouchX, lastTouchY, PH_BOX_X, PH_BOX_Y, PH_BOX_W, PH_BOX_H)) {
-      ovl = OVL_PH;
-      showRangeDialog(true);
-    } else if (inRect(lastTouchX, lastTouchY, ORP_BOX_X, ORP_BOX_Y, ORP_BOX_W, ORP_BOX_H)) {
-      ovl = OVL_ORP;
-      showRangeDialog(false);
-    }
+    if (currentPage == 0) {
+      if (inRect(lastTouchX, lastTouchY, PH_BOX_X, PH_BOX_Y, PH_BOX_W, PH_BOX_H)) {
+        showRangeDialogLegacy(true);
+      } else if (inRect(lastTouchX, lastTouchY, ORP_BOX_X, ORP_BOX_Y, ORP_BOX_W, ORP_BOX_H)) {
+        showRangeDialogLegacy(false);
+      }
   }
   
   // Check settings page button taps
@@ -1486,13 +1348,13 @@ static void handleTouchUI(){
       pageButtonDrawn = false;
       currentPage = 0;
       gfx->fillScreen(BLACK);
-      staticDrawn = false;
-      drawStaticUI();
-      updateValueAreas();
+      if (!USE_LVGL_UI) { staticDrawn = false; drawStaticUI(); updateValueAreas(); }
     }
   }
   } // End of touch release handling
 }
+
+#endif // defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
 
 static void wifiStaHardRestart(){
   WiFi.persistent(false);
@@ -1541,7 +1403,7 @@ extern "C" void requestModeChange(int mode){
     if (!zbStarted) {
       if (zbEverJoined) zb_start_joined(); else showZigbeeHoldToPairModal();
     }
-    #endif
+#endif // C6 legacy GFX-only
   } else {
     wifiOff = false;
     WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
@@ -1556,68 +1418,49 @@ extern "C" void requestModeChange(int mode){
 
 // ---- Dummy telemetry generator ----
 static void updateDummyTelemetry() {
-  static bool inited=false;
-  static uint32_t last=0; uint32_t now=millis();
+  static bool inited = false;
+  static uint32_t last = 0; 
+  uint32_t now = millis();
   if (!inited) {
-    // Seed with hardware RNG if available
     randomSeed((uint32_t)esp_random());
-    METRICS().phVal = (PH_MIN + PH_MAX) * 0.5f; METRICS().orpMv = (float)ORP_MIN + 50.0f; METRICS().tempC = 25.0f;
-    METRICS().havePh = METRICS().haveOrp = METRICS().haveTemp = true; METRICS().preferPhPrimary = true;
+    METRICS().phVal = (PH_MIN + PH_MAX) * 0.5f;
+    METRICS().orpMv = (float)ORP_MIN + 50.0f;
+    METRICS().tempC = 25.0f;
+    METRICS().havePh = METRICS().haveOrp = METRICS().haveTemp = true;
+    METRICS().preferPhPrimary = true;
     inited = true;
-    last = 0; // force first tick
+    last = 0;
   }
-  if (now - last < 1500) return; // langzamer en beter zichtbaar
+  if (now - last < 1500) return; 
   last = now;
 
-  // --- pH state machine: rise → plateau_high → fall → plateau_low → rise ---
-  static uint8_t phState = 0; // 0 rise, 1 plateau_high, 2 fall, 3 plateau_low
+  static uint8_t phState = 0; 
   static uint32_t phPlateauUntil = 0;
-  const float phStep = 0.10f;        // grotere lineaire stap (0.1 pH)
-  const float phHighTarget = PH_MAX + 0.15f; // iets boven MAX
-  const float phLowTarget  = PH_MIN + 0.10f; // net boven MIN
+  const float phStep = 0.10f;
+  const float phHighTarget = PH_MAX + 0.15f;
+  const float phLowTarget  = PH_MIN + 0.10f;
   switch (phState) {
-    case 0: // rise
-      METRICS().phVal += phStep;
-      if (METRICS().phVal >= phHighTarget) { METRICS().phVal = phHighTarget; phState = 1; phPlateauUntil = now + 6000; }
-      break;
-    case 1: // plateau high (motor zou lopen)
-      if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 2; }
-      break;
-    case 2: // fall
-      METRICS().phVal -= phStep;
-      if (METRICS().phVal <= phLowTarget) { METRICS().phVal = phLowTarget; phState = 3; phPlateauUntil = now + 4000; }
-      break;
-    default: // plateau low
-      if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 0; }
-      break;
+    case 0: METRICS().phVal += phStep; if (METRICS().phVal >= phHighTarget) { METRICS().phVal = phHighTarget; phState = 1; phPlateauUntil = now + 6000; } break;
+    case 1: if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 2; } break;
+    case 2: METRICS().phVal -= phStep; if (METRICS().phVal <= phLowTarget) { METRICS().phVal = phLowTarget; phState = 3; phPlateauUntil = now + 4000; } break;
+    default: if ((int32_t)(now - phPlateauUntil) >= 0) { phState = 0; } break;
   }
   METRICS().phVal = constrain(METRICS().phVal, 3.0f, 14.0f);
 
-  // --- ORP state machine: fall → plateau_low → rise → plateau_high → fall ---
-  static uint8_t orpState = 0; // 0 fall, 1 plateau_low, 2 rise, 3 plateau_high
+  static uint8_t orpState = 0; 
   static uint32_t orpPlateauUntil = 0;
-  const float orpStep = 4.0f;            // mV per tick
-  const float orpLowTarget  = (float)ORP_MIN - 40.0f;  // onder MIN
-  const float orpHighTarget = (float)ORP_MIN + 140.0f; // ruim boven MIN
+  const float orpStep = 4.0f;
+  const float orpLowTarget  = (float)ORP_MIN - 40.0f;
+  const float orpHighTarget = (float)ORP_MIN + 140.0f;
   switch (orpState) {
-    case 0: // fall
-      METRICS().orpMv -= orpStep;
-      if (METRICS().orpMv <= orpLowTarget) { METRICS().orpMv = orpLowTarget; orpState = 1; orpPlateauUntil = now + 6000; }
-      break;
-    case 1: // plateau low (motor zou lopen)
-      if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 2; }
-      break;
-    case 2: // rise
-      METRICS().orpMv += orpStep;
-      if (METRICS().orpMv >= orpHighTarget) { METRICS().orpMv = orpHighTarget; orpState = 3; orpPlateauUntil = now + 4000; }
-      break;
-    default: // plateau high
-      if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 0; }
-      break;
+    case 0: METRICS().orpMv -= orpStep; if (METRICS().orpMv <= orpLowTarget)  { METRICS().orpMv = orpLowTarget;  orpState = 1; orpPlateauUntil = now + 6000; } break;
+    case 1: if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 2; } break;
+    case 2: METRICS().orpMv += orpStep; if (METRICS().orpMv >= orpHighTarget) { METRICS().orpMv = orpHighTarget; orpState = 3; orpPlateauUntil = now + 4000; } break;
+    default: if ((int32_t)(now - orpPlateauUntil) >= 0) { orpState = 0; } break;
   }
   METRICS().orpMv = constrain(METRICS().orpMv, -2000.0f, 2000.0f);
-  METRICS().tempC  += (float)random(-3, 4) / 10.0f;      // ±0.3 °C
-  METRICS().tempC   = constrain(METRICS().tempC, 5.0f, 40.0f);
+  METRICS().tempC += (float)random(-3, 4) / 10.0f;
+  METRICS().tempC = constrain(METRICS().tempC, 5.0f, 40.0f);
 
   updateValueAreas();
 }
@@ -1629,49 +1472,13 @@ void pushLine(const String &s) {
   lines.push_back(t);
 }
 
-void drawScreen() {
-  gfx->fillScreen(BLACK);
-  gfx->setTextColor(WHITE);
-  gfx->setTextWrap(false);
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+void drawScreen() { if (!USE_LVGL_UI && SIMPLE_VIEW) { if (currentPage == 0) { drawStaticUI(); updateValueAreas(); } else if (currentPage == 1) { drawSettingsPage(); } } }
+#else
+static inline void drawScreen() {}
+#endif
 
-  if (SIMPLE_VIEW) {
-    // Draw based on current page
-    if (currentPage == 0) {
-    drawStaticUI();
-    updateValueAreas();
-    } else if (currentPage == 1) {
-      drawSettingsPage();
-    }
-  } else {
-    // Full diagnostic header + lines
-    gfx->setTextSize(2);
-    gfx->setCursor(0, 0);
-    gfx->println("Tuya Sniffer");
-    gfx->setCursor(0, 20);
-    gfx->print("A->WiFi  B->MCU  ");
-    gfx->print(TUYA_BAUD);
-    // Show live byte counters
-    gfx->setCursor(0, 40);
-    gfx->print("A:"); gfx->print(rxA_count);
-    gfx->print("  B:"); gfx->print(rxB_count);
-    // Key metrics
-    gfx->setCursor(0, 60);
-    gfx->print("Temp: "); if (METRICS().haveTemp) { char b[20]; snprintf(b,sizeof(b),"%.1f °C",METRICS().tempC); gfx->print(b); } else { gfx->print("--"); }
-    gfx->setCursor(0, 80);
-    gfx->print("pH: "); if (METRICS().havePh) { char b[16]; snprintf(b,sizeof(b),"%.2f",METRICS().phVal); gfx->print(b); } else { gfx->print("--"); }
-    gfx->setCursor(0, 100);
-    gfx->print("ORP: "); if (METRICS().haveOrp) { char b[16]; snprintf(b,sizeof(b),"%.1f",METRICS().orpMv); gfx->print(b); gfx->print(" mV"); } else { gfx->print("--"); }
 
-    int y = 124; // below header + counters + metrics
-    for (auto &s : lines) {
-      gfx->setCursor(0, y);
-      gfx->println(s);
-      y += 20;
-    }
-  }
-}
-
-#endif // !defined(USE_JC3248W535)
 
 // (legacy parser verwijderd; io/Tuya wordt gebruikt)
 
@@ -1682,6 +1489,10 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.setTimeout(50);
+  Serial.setDebugOutput(true);
+  #if defined(BOARD_ESP32S3_35)
+  esp_log_set_vprintf(esp32_vprintf_redirect);
+  #endif
   // Ensure IDF logs are visible
   esp_log_level_set("*", ESP_LOG_INFO);
   // Silence very verbose I2C low-level noise
@@ -1695,28 +1506,53 @@ void setup() {
   #if defined(USE_JC3248W535)
   ESP_LOGI("MAIN", "Starting display init (JC3248W535)");
   // Ensure Arduino Wire (driver_ng) is not used on S3; no Wire calls on JC path
-
+  
     (void)jc3248w535_begin_simple(90, &jc_handles);
     (void)jc3248w535_backlight_set(100);
-
-    jc3248w535_lock(0);
-    // lv_demo_widgets();
-
-    // Simple example: show a centered label
-    lv_obj_t *label = lv_label_create(lv_scr_act());
-    lv_label_set_text(label, "JC3248W535 ready");
-    lv_obj_center(label);
-
-    jc3248w535_unlock();
- 
-  return; // Skip the rest of setup when using JC3248W535 demo path
+    // Minimal banner before full UI to confirm panel
+    if (jc3248w535_lock(5)) {
+      lv_obj_clean(lv_scr_act());
+      lv_obj_t *label = lv_label_create(lv_scr_act());
+      lv_label_set_text(label, "Starting UI...");
+      lv_obj_center(label);
+      jc3248w535_unlock();
+    }
+    g_minimal_ui_active = true;
+    ESP_LOGI("MAIN", "Proceeding to full UI build");
   #endif
 
-  // Ensure HW SPI uses pins from working example only on the C6 board
-  #if defined(BOARD_ESP32C6_TOUCH_1_47)
-  SPI.begin(1 /* SCK */, -1 /* MISO */, 2 /* MOSI */, 14 /* SS */);
+  // Create a pinned UI task on core 1 for LVGL processing (S3 only)
+  #if defined(BOARD_ESP32S3_35)
+  static TaskHandle_t uiTaskHandle = NULL;
+  xTaskCreatePinnedToCore(
+    [](void *param){
+      (void)param;
+      for(;;){
+        // run lv_timer_handler at ~60Hz
+        if (LVGL_LOCK()) { lv_timer_handler(); LVGL_UNLOCK(); }
+        vTaskDelay(pdMS_TO_TICKS(16));
+      }
+    },
+    "ui_task",
+    4096,
+    NULL,
+    1,
+    &uiTaskHandle,
+    1 // core 1
+  );
+  #endif
+
+  // Avoid Arduino SPI init on S3 JC path (conflicts with QSPI LCD bus)
+  #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
+    // Use board abstraction to init peripherals
+    #if defined(BOARD_ESP32C6_TOUCH_1_47)
+    g_boardC6.earlyInit();
+    g_boardC6.initPeripherals();
+    #else
+    SPI.begin();
+    #endif
   #else
-  SPI.begin();
+    ESP_LOGI("MAIN", "Skipping SPI.begin() on S3 JC path");
   #endif
 
   // Backlight on (default)
@@ -1726,7 +1562,7 @@ void setup() {
   
   // Remove broad BL scan to avoid toggling reserved pins
 
-  #if !defined(USE_JC3248W535)
+  #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
   // Hardware reset pulse on LCD reset pin for the active board
   if (DISPLAY_CFG.rstPin >= 0) {
     pinMode(DISPLAY_CFG.rstPin, OUTPUT);
@@ -1740,15 +1576,37 @@ void setup() {
   // LCD init
   // For ESP32-S3 3.5" board, the display is initialized via BSP when LVGL UI starts below.
   
-    // Apply vendor init sequence per board
-    
-    //lcd_reg_init();
-    //gfx->setRotation(1);
-    
-  
-  // Clear to black once; avoid further direct GFX drawing when LVGL is used
-  //gfx->fillScreen(BLACK);
-  //delay(20);
+  // Initialize Arduino_GFX on C6 legacy path and light backlight
+  #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+    if (gfx) {
+      displayDriver.begin();
+      // Match master: rotation(1) for landscape
+      displayDriver.setRotation(1);
+      // Turn on backlight
+      if (LCD_BL_PIN >= 0) { pinMode(LCD_BL_PIN, OUTPUT); digitalWrite(LCD_BL_PIN, HIGH); }
+      // Clear screen to black
+      gfx->fillScreen(BLACK);
+      delay(10);
+      // Only draw legacy banner/UI when not using LVGL UI
+      if (!USE_LVGL_UI) {
+        gfx->setTextColor(WHITE);
+        gfx->setTextWrap(false);
+        const char *banner = "PoolLab Ready";
+        int16_t text_w = (int16_t)(6 * (int)strlen(banner) * 2);
+        int16_t text_h = (int16_t)(8 * 2);
+        int16_t cx = (int16_t)((int)gfx->width() - text_w) / 2;
+        int16_t cy = (int16_t)((int)gfx->height() - text_h) / 2;
+        gfx->setTextSize(2);
+        gfx->setCursor(cx < 0 ? 0 : cx, cy < 0 ? 0 : cy);
+        gfx->print(banner);
+        delay(150);
+        gfx->fillScreen(BLACK);
+        staticDrawn = false;
+        drawStaticUI();
+        updateValueAreas();
+      }
+    }
+  #endif
  
 
   // Begin touch - MUST be after display init but BEFORE LVGL (matching working code)
@@ -1768,7 +1626,34 @@ void setup() {
     disp = lv_disp_get_default();
     #endif
     
+    // Ensure LVGL is locked on BSP path during UI creation (S3 BSP)
+    #if defined(BOARD_ESP32S3_35)
+    LVGL_LOCK();
+    #endif
+    ESP_LOGI("UI", "Before ui::init; res=%dx%d", (int)lv_disp_get_hor_res(NULL), (int)lv_disp_get_ver_res(NULL));
     ui::init(disp);
+    ESP_LOGI("UI", "After ui::init");
+    // Ensure we remove the temporary banner and any prior objects before building UI
+    lv_obj_clean(lv_scr_act());
+    // Build a safe baseline only for S3 JC path; C6 will build full tile UI below
+    #if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
+    ui::build(false);
+    // Seed demo metrics so values are visible immediately on S3 JC path
+    {
+      auto &M = domain::Metrics::instance();
+      M.havePh = true; M.haveOrp = true; M.haveTemp = true;
+      M.phVal = (PH_MIN + PH_MAX) * 0.5f;
+      M.orpMv = (float)ORP_MIN + 80.0f;
+      M.tempC = 25.0f;
+    }
+    // Update values once for initial paint (under lock)
+    updateLvglValues();
+    // Set initial IP label (if connected later, handlers will refresh)
+    {
+      String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
+      ui::setIp(ip.c_str());
+    }
+    #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
     storage.begin(false);
     PH_MIN = storage.getPhMin(PH_MIN);
@@ -1777,7 +1662,12 @@ void setup() {
     ORP_MAX = storage.getOrpMax(ORP_MAX);
     M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
     M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
-    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+  // Force WiFi on S3 (match C6 WiFi-first behavior for UI)
+  #if defined(BOARD_ESP32S3_35)
+  runMode = core::Storage::MODE_WIFI_MQTT;
+  #else
+  runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+  #endif
     savedMode = runMode;
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
@@ -1787,7 +1677,11 @@ void setup() {
     };
     h.onModeToggle = [](bool zigbee){
       runMode = zigbee ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+      #if !defined(BOARD_ESP32S3_35)
       storage.setMode(runMode);
+      #else
+      runMode = core::Storage::MODE_WIFI_MQTT; // ignore Zigbee on S3
+      #endif
       if (runMode == core::Storage::MODE_ZIGBEE) {
         // Pause MQTT & WiFi until commissioning window ends or user switches back
         if (WiFi.isConnected()) WiFi.disconnect(true, true);
@@ -1809,6 +1703,9 @@ void setup() {
       #endif
       }
     };
+    h.onSettings = [](){ g_settingsRequested = true; };
+    h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; };
+    h.onWifiSave = [](const char *s, const char *p){ storage.setWifiSsid(s?s:""); storage.setWifiPass(p?p:""); };
     ui::configureHandlers(h);
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
@@ -2264,18 +2161,25 @@ void setup() {
       lv_obj_scroll_to_x(lv_tv, 0, LV_ANIM_OFF);
       lv_obj_scroll_to_y(lv_tv, 0, LV_ANIM_OFF);
     };
+    #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
+    ESP_LOGI("UI", "Before build_lvgl_ui");
     build_lvgl_ui();
+    ESP_LOGI("UI", "After build_lvgl_ui");
+    #else
+    ESP_LOGI("UI", "Skipping legacy build_lvgl_ui on S3 JC path (using ui::build)");
+    #endif
     // Add a one-shot timer to enforce centered layout once sizes settle
     lv_timer_t *once = lv_timer_create(lv_fix_initial_layout, 60, NULL);
     lv_timer_set_repeat_count(once, 1);
+    ESP_LOGI("UI", "After layout timer");
     #if defined(BOARD_ESP32S3_35)
     LVGL_UNLOCK();
     #endif
   }
 
-  // Begin touch AFTER LVGL init
-  #if !defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
-  io::touchBegin();
+  // Begin touch AFTER LVGL init (never on S3 JC path; BSP handles it)
+  #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
+  touchDriver.begin();
   #endif
   // If touch is noisy at boot it can stall UI. Add a short debounce warmup.
   delay(50);
@@ -2287,10 +2191,10 @@ void setup() {
   btnPrev = btnStable = btnRawPrev = rawNow;
   btnPressMs = 0; btnLastChangeMs = millis();
 
-  // Init Zigbee client only (no stack start yet). If pairing flag present, reboot path will start Zigbee.
+  // Init Zigbee client only on platforms that support it and when enabled
+  #if ZB_ENABLED && !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
   io::ZigbeeConfig zcfg{};
   zigbee.begin(zcfg);
-  #if ZB_ENABLED
   zbPrefs.begin(ZB_PREF_NS, true);
   bool doPair = zbPrefs.getBool(ZB_PREF_PAIR, false);
   zbEverJoined = zbPrefs.getBool(ZB_PREF_BOUND, false);
@@ -2321,10 +2225,12 @@ void setup() {
   // Configure Tuya DP ids for new parser module
   io::tuyaConfigure(DP_TEMP, DP_ORP, DP_PH, DP_ORP_ALT1, DP_PH_ALT1);
 
-  #if !defined(USE_JC3248W535)
-  pushLine("Ready. Waiting for frames...");
-  drawStaticUI();
-  updateValueAreas();
+  #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+  if (!USE_LVGL_UI) {
+    pushLine("Ready. Waiting for frames...");
+    drawStaticUI();
+    updateValueAreas();
+  }
   #endif
   // Load persisted configuration early when not using LVGL UI (so boot mode is honored)
   if (!USE_LVGL_UI) {
@@ -2339,8 +2245,9 @@ void setup() {
     savedMode = runMode;
   }
 
+  // Respect saved mode; do not force Zigbee on C6
+
   // WiFi + MQTT
-  setupWiFiEvents();
   // Start or stop WiFi based on saved mode at boot (respect prior forced-off, e.g. commissioning)
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
@@ -2352,25 +2259,45 @@ void setup() {
         ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
         portal.setStorage(&storage);
         portal.beginAP("PoolLab-Setup");
+        if (USE_LVGL_UI) {
+          #if defined(BOARD_ESP32S3_35)
+          if (LVGL_LOCK()) { ui::setIp(WiFi.softAPIP().toString().c_str()); LVGL_UNLOCK(); }
+          #else
+          ui::setIp(WiFi.softAPIP().toString().c_str());
+          #endif
+        }
       } else {
-        WiFi.mode(WIFI_STA);
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: WiFi STA starting");
-        #if !defined(USE_JC3248W535)
-        connectWiFiIfNeeded();
+        {
+          String ssid = storage.getWifiSsid("");
+          String pass = storage.getWifiPass("");
+          wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { g_ui_ip_text = ip; g_ui_ip_dirty = true; } });
+          if (USE_LVGL_UI) {
+            #if defined(BOARD_ESP32S3_35)
+            if (LVGL_LOCK()) { ui::setSsid(ssid.c_str()); LVGL_UNLOCK(); }
+            #else
+            ui::setSsid(ssid.c_str());
+            #endif
+          }
+          // Ensure WebUI started on both boards identiek
+          webui.setStorage(&storage);
+          webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC);
+          if (!webui.isActive()) webui.begin();
+        }
         ensureMqtt();
-        #endif
       }
     } else {
+      // Zigbee mode -> WiFi off (C6 behavior); S3 will show UI but WiFi remains off
       WiFi.mode(WIFI_OFF);
       wifiOff = true;
       ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
       // If we were previously joined, start Zigbee stack immediately
-      #if ZB_ENABLED
+#if ZB_ENABLED
       if (zbEverJoined) {
         zb_start_joined();
       }
-      #endif
+#endif
     }
   }
 
@@ -2438,9 +2365,17 @@ void loop() {
     #if !defined(BOARD_ESP32S3_35)
     lv_timer_handler();
     #endif
-    // (removed periodic debug text update)
-    delay(1);  // more responsive UI
-    // Ensure UI reflects latest values/icon states even without motors enabled
+    // Let LVGL task run; then update values under lock
+    delay(1);
+    // Apply deferred UI IP update from WiFi callback without crossing threads
+    if (g_ui_ip_dirty) {
+      g_ui_ip_dirty = false;
+      #if defined(BOARD_ESP32S3_35)
+      if (LVGL_LOCK()) { ui::setIp(g_ui_ip_text.c_str()); LVGL_UNLOCK(); }
+      #else
+      ui::setIp(g_ui_ip_text.c_str());
+      #endif
+    }
     updateLvglValues();
     if (!MOTOR_ENABLE) {
       bool phActive = METRICS().havePh && (METRICS().phVal < PH_MIN || METRICS().phVal > PH_MAX);
@@ -2478,6 +2413,16 @@ void loop() {
     }
     return;
   }
+  // Apply deferred navigation back to main UI (one-shot)
+  if (g_showMainRequested) {
+    g_showMainRequested = false;
+    #if defined(BOARD_ESP32S3_35)
+    if (LVGL_LOCK()) { ui::showMain(); LVGL_UNLOCK(); }
+    #else
+    ui::showMain();
+    #endif
+  }
+  // Removed alive ticker
 
   // --- Button long-press detection for Zigbee commissioning ---
   // Debounce raw state (15ms)
@@ -2491,7 +2436,7 @@ void loop() {
     btnPressMs = nowMs;
     ESP_LOGI("ZB", "Button pressed");
     // Show hint immediately on press to confirm UI feedback
-    showZigbeeHoldToPairModal();
+    if (USE_LVGL_UI) showZigbeeHoldToPairModal();
   }
   if (!btnNow && btnPrev) {
     uint32_t held = btnPressMs ? (nowMs - btnPressMs) : 0;
@@ -2501,7 +2446,7 @@ void loop() {
     if (held >= 3000) {
 #if ZB_ENABLED
       // Start commissioning immediately (no reboot)
-      showZigbeeCommissioningModal(120);
+      if (USE_LVGL_UI) showZigbeeCommissioningModal(120);
       ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
       // Force Zigbee mode during commissioning
       savedMode = runMode;
@@ -2516,7 +2461,7 @@ void loop() {
       ESP_LOGI("ZB", "Zigbee not available on this board");
 #endif
     } else if (held >= 100 && held < 3000) {
-      showZigbeeHoldToPairModal();
+      if (USE_LVGL_UI) showZigbeeHoldToPairModal();
     }
   }
   btnPrev = btnNow;
@@ -2549,6 +2494,21 @@ void loop() {
 #endif
   }
   #endif
+
+  // Defer settings screen outside LVGL event context (lock-protected)
+  if (g_settingsRequested) {
+    if (USE_LVGL_UI) {
+      bool opened = false;
+      #if defined(BOARD_ESP32S3_35)
+      if (LVGL_LOCK()) { ui::showSettings(); ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); LVGL_UNLOCK(); opened = true; }
+      #else
+      ui::showSettings(); opened = true;
+      #endif
+      if (opened) g_settingsRequested = false;
+    } else {
+      g_settingsRequested = false;
+    }
+  }
 
   {
     int processed = 0;
@@ -2597,12 +2557,24 @@ void loop() {
 
   // Avoid drawing directly with Arduino_GFX while LVGL UI is active
 
-  // Dummy telemetry (optional)
-  #if !defined(USE_JC3248W535)
+  // Dummy telemetry (optional) - enabled for all paths so baseline shows values
   if (DUMMY_MODE) {
     updateDummyTelemetry();
+    if (USE_LVGL_UI) updateLvglValues();
+  } else {
+    // Ensure LVGL reflects real telemetry as it updates
+    if (USE_LVGL_UI) updateLvglValues();
   }
-  #endif
+
+  // Start captive portal on request (e.g., after WiFi reset)
+  if (g_startPortalRequested) {
+    g_startPortalRequested = false;
+    portal.setStorage(&storage);
+    if (!portal.isActive()) portal.beginAP("PoolLab-Setup");
+    if (USE_LVGL_UI) ui::setIp(WiFi.softAPIP().toString().c_str());
+  }
+
+  // UI task now handles lv_timer_handler on S3
   // Push live updates to WebUI websockets periodically
   static uint32_t lastWebPush=0;
   if (WiFi.status()==WL_CONNECTED && nowMs - lastWebPush > 1000) {
@@ -2615,20 +2587,7 @@ void loop() {
   uint32_t now = millis();
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
-      if (WiFi.status() != WL_CONNECTED) {
-        if (!wifiConnecting && now - lastConnectAttempt > 5000) {
-          lastConnectAttempt = now;
-          #if !defined(USE_JC3248W535)
-          connectWiFiIfNeeded();
-          #endif
-        }
-        if (wifiConnecting && now - lastWiFiAttemptMs > 12000) {
-          ESP_LOGI("WiFi", "Retry connect (hard restart)");
-          #if !defined(USE_JC3248W535)
-          wifiStaHardRestart();
-          #endif
-        }
-      }
+      wifiMgr.loop();
       if (WiFi.status() == WL_CONNECTED) {
         if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
           lastConnectAttempt = now;
@@ -2644,9 +2603,31 @@ void loop() {
   }
 
   #if !defined(USE_JC3248W535)
+  // When LVGL UI is active (C6 on master), touch events are fed into LVGL input driver above
   if (!USE_LVGL_UI) {
-    // Touch handling
+    #if defined(BOARD_ESP32C6_TOUCH_1_47)
+    // Legacy UI touch path retained for fallback
+    {
+      auto readTouchCb = [](int16_t &x, int16_t &y, bool &down)->bool{
+        core::TouchPoint cp{0,0,false};
+        bool ok = touchDriver.read(cp);
+        if (ok) { x = cp.x; y = cp.y; down = true; } else { down = false; }
+        return ok || down;
+      };
+      legacyUi.handleTouch(
+        readTouchCb,
+        (uint8_t&)M1_SPEED_PC, (uint8_t&)M2_SPEED_PC,
+        (float&)PH_MIN, (float&)PH_MAX, (int&)ORP_MIN, (int&)ORP_MAX,
+        [](){ storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); },
+        [](){ if (!USE_LVGL_UI) { staticDrawn = false; drawStaticUI(); updateValueAreas(); } },
+        [](){ drawSettingsPage(); },
+        [](){ if (!USE_LVGL_UI) { gfx->fillScreen(BLACK); staticDrawn=false; drawStaticUI(); updateValueAreas(); } },
+        [](){ if (!USE_LVGL_UI) { gfx->fillScreen(BLACK); staticDrawn=false; drawStaticUI(); updateValueAreas(); } }
+      );
+    }
+    #else
     handleTouchUI();
+    #endif
   }
   #endif
 
@@ -2679,11 +2660,6 @@ void loop() {
         if (m2Running) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
         else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
       }
-    } else {
-      #if !defined(USE_JC3248W535)
-      if (lastM1Icon != m1Running) { lastM1Icon = m1Running; drawMotorIcon(gfx, M1_ICON_X, M1_ICON_Y, m1Running); }
-      if (lastM2Icon != m2Running) { lastM2Icon = m2Running; drawMotorIcon(gfx, M2_ICON_X, M2_ICON_Y, m2Running); }
-      #endif
     }
   }
 
@@ -2710,26 +2686,30 @@ void loop() {
       if (domain::Metrics::instance().havePh)   zbPh.setFlow(domain::Metrics::instance().phVal);
       if (domain::Metrics::instance().haveOrp)  zbOrp.setPressure((int16_t)lrintf(domain::Metrics::instance().orpMv));
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
-      // Opportunistic re-steering if not yet connected
-      bool connected_now = Zigbee.connected();
-      bool joined_now = zb_is_joined();
-      #if defined(BOARD_ESP32S3_35)
-      if (LVGL_LOCK()) {
-      #endif
-        if (connected_now && joined_now) {
-          lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
-        } else {
-          lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+      // Opportunistic re-steering if not yet connected (only when LVGL UI is active)
+      if (USE_LVGL_UI) {
+        bool connected_now = Zigbee.connected();
+        bool joined_now = zb_is_joined();
+        #if defined(BOARD_ESP32S3_35)
+        if (LVGL_LOCK()) {
+        #endif
+          if (lv_img_link) {
+            if (connected_now && joined_now) {
+              lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+            } else {
+              lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+            }
+          }
+        #if defined(BOARD_ESP32S3_35)
+          LVGL_UNLOCK();
         }
-      #if defined(BOARD_ESP32S3_35)
-        LVGL_UNLOCK();
+        #endif
       }
-      #endif
     }
     #endif
     // Auto-close commissioning modal when commissioning ends
     #if ZB_ENABLED
-    if (lv_zb_modal && zbCommissionUntilMs && millis() > zbCommissionUntilMs) {
+    if (USE_LVGL_UI && lv_zb_modal && zbCommissionUntilMs && millis() > zbCommissionUntilMs) {
       lv_obj_del(lv_zb_modal);
       lv_zb_modal = nullptr;
       zbCommissionUntilMs = 0;
@@ -2738,4 +2718,11 @@ void loop() {
   }
 
 
+}
+
+static void drawPaginationC6() {
+#if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
+  legacyUi.setPage(currentPage);
+  legacyUi.drawPagination();
+#endif
 }

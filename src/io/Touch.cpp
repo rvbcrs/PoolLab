@@ -8,6 +8,7 @@ bool getTouchPoint(TouchPoint &p){ p.pressed=false; return false; }
 }
 #else
 #include "Touch.h"
+#include <Arduino.h>
 #include <Wire.h>
 
 namespace io {
@@ -62,24 +63,33 @@ void touchBegin(){
   ESP_LOGI("TOUCH", "Init complete, ID: %02X %02X %02X", id[0], id[1], id[2]);
 }
 
-bool readTouchOnce(TouchPoint &p){
-  p.pressed = false;
-  // Try without interrupt check - always poll
-  // if (!touchIrq) return false; // no new data
-  // touchIrq = false;
-  uint8_t data[14] = {0};
-  if (!i2cRead(AXS5106L_ADDR, AXS5106L_TOUCH_DATA_REG, data, sizeof(data))) return false;
-  uint8_t n = data[1];
-  if (n == 0) return false;
-  uint16_t rx = (((uint16_t)(data[2] & 0x0F)) << 8) | data[3];
-  uint16_t ry = (((uint16_t)(data[4] & 0x0F)) << 8) | data[5];
-  // Our display uses rotation(1): swap x/y compared to raw, per vendor demo
-  int16_t x = ry; // swapped
-  int16_t y = rx;
-  // Clamp to bounds - use actual display dimensions for rotation(1)
-  x = constrain(x, 0, 319);  // width in landscape
-  y = constrain(y, 0, 171);  // height in landscape
-  p.x = x; p.y = y; p.pressed = true; return true;
+bool readTouchOnce(TouchPoint &out) {
+#if defined(BOARD_ESP32C6_TOUCH_1_47)
+  uint8_t buf[14] = {0};
+  // Defensive: ensure I2C read succeeds and buffer has expected structure
+  if (!i2cRead(AXS5106L_ADDR, AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
+    out.pressed = false; return false;
+  }
+  uint8_t n = buf[1];
+  if (n == 0) { out.pressed = false; return false; }
+  // Validate minimal coordinates payload presence
+  // buf[2..5] should exist
+  uint16_t rx = (uint16_t)((buf[2] & 0x0F) << 8) | buf[3];
+  uint16_t ry = (uint16_t)((buf[4] & 0x0F) << 8) | buf[5];
+  if (rx == 0 && ry == 0) { out.pressed = false; return false; }
+  // Mapping as on master for rotation(1): x=ry; y=rx; clamp to 320x172
+  int16_t x = (int16_t)ry;
+  int16_t y = (int16_t)rx;
+  if (x < 0) x = 0; if (x > 319) x = 319;
+  if (y < 0) y = 0; if (y > 171) y = 171;
+  out.x = x;
+  out.y = y;
+  out.pressed = true;
+  return true;
+#else
+  // existing implementations for other boards
+  return false;
+#endif
 }
 
 // Legacy compatibility
