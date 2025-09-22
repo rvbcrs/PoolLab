@@ -16,6 +16,8 @@ public:
   void ensureSta();
   void startPortal(const String &apPrefix);
   void setIpCallback(IpCallback cb) { _onIp = cb; }
+  void setCredentials(const String &ssid, const String &pass) { _ssid = ssid; _pass = pass; _connecting = false; }
+  bool hasCredentials() const { return _ssid.length() > 0; }
 
 private:
   void setupEvents();

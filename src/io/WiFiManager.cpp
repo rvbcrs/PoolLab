@@ -6,12 +6,16 @@ namespace io {
 void WiFiManager::begin(const String &ssid, const String &pass, const char *clientPrefix, IpCallback onIpUpdate){
   _ssid = ssid; _pass = pass; _clientPrefix = clientPrefix ? clientPrefix : "poollab"; _onIp = onIpUpdate;
   setupEvents();
+  uint64_t chipid = ESP.getEfuseMac(); char host[32];
+  snprintf(host, sizeof(host), "%s-%06llX", _clientPrefix.c_str(), (unsigned long long)(chipid & 0xFFFFFFULL));
+  ESP_LOGI("WiFi", "Boot: hostname=%s", host);
   if (_ssid.length() == 0) {
-    ESP_LOGI("WiFi", "No SSID saved -> starting captive portal");
+    ESP_LOGI("WiFi", "Boot: no SSID -> starting captive portal");
     startPortal("PoolLab-Setup");
     if (_onIp) _onIp(WiFi.softAPIP().toString());
     return;
   }
+  ESP_LOGI("WiFi", "Boot: STA starting (ssid='%s')", _ssid.c_str());
   ensureSta();
 }
 
@@ -51,6 +55,8 @@ void WiFiManager::ensureSta(){
   WiFi.persistent(false);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
+  // Avoid switching out of AP mode when no credentials
+  if (_ssid.length() == 0) return;
   WiFi.mode(WIFI_STA);
   if (WiFi.status() == WL_CONNECTED || _connecting) return;
   hardRestart();
@@ -66,7 +72,10 @@ void WiFiManager::hardRestart(){
 }
 
 void WiFiManager::startPortal(const String &apPrefix){
+  // Stay in AP+STA so we can switch to STA after saving credentials
   WiFi.mode(WIFI_AP_STA);
+  // Disable auto reconnect to prevent STA from killing AP immediately
+  WiFi.setAutoReconnect(false);
   String ssid = apPrefix; uint64_t chipid = ESP.getEfuseMac(); char suffix[16];
   snprintf(suffix, sizeof(suffix), "-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
   ssid += suffix;
@@ -76,6 +85,8 @@ void WiFiManager::startPortal(const String &apPrefix){
 
 void WiFiManager::loop(){
   uint32_t now = millis();
+  // When portal is active (SSID empty), keep AP alive and do not attempt STA reconnects
+  if (_ssid.length() == 0) return;
   if (WiFi.getMode() == WIFI_MODE_STA || WiFi.getMode() == WIFI_MODE_APSTA) {
     if (WiFi.status() != WL_CONNECTED) {
       if (!_connecting && now - _lastAttemptMs > 5000) { _lastAttemptMs = now; ensureSta(); }

@@ -27,8 +27,10 @@ static bool onSettings = false;
 static uint8_t initial_m1=60, initial_m2=60;
 static Handlers handlers;
 static bool initial_mode_zigbee = true;
+static lv_obj_t *lv_modal_active = nullptr; // generic modal holder
 
 void init(lv_disp_t* disp){ (void)disp; }
+static lv_timer_t *g_update_timer = nullptr;
 
 void build(bool safeBaseline){
   lv_obj_t *scr = lv_scr_act();
@@ -97,16 +99,22 @@ void build(bool safeBaseline){
       lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(2,v);} }, LV_EVENT_ALL, NULL);
     }
 
-    ESP_LOGI("UI","Baseline labels + sliders created");
+    // Ensure periodic value updates
+    if (!g_update_timer) {
+      g_update_timer = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::updateValues(); }, 500, NULL);
+    }
+    //ESP_LOGI("UI","Baseline labels + sliders created");
     return;
   }
   // Minimal main labels in center (keeps build small for first split)
-  // --- Web-style UI: three cards + wide Settings button ---
-  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+  // --- Web-style UI: three cards + IP + Settings ---
+  // Slightly lighter background (38,38,38)
+  lv_obj_set_style_bg_color(scr, lv_color_make(46,46,46), 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   int scr_w = (int)lv_disp_get_hor_res(NULL);
   int scr_h = (int)lv_disp_get_ver_res(NULL);
   int pad = 12;
+  int col_gap = 12;
 
   // Container with padding
   lv_obj_t *root = lv_obj_create(scr);
@@ -126,16 +134,13 @@ void build(bool safeBaseline){
   lv_obj_set_width(row, LV_PCT(100));
   lv_obj_set_height(row, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(row, 12, 0);
+  lv_obj_set_style_pad_column(row, col_gap, 0);
   lv_obj_set_style_pad_bottom(row, 8, 0);
-  // Place row near top inside root
   lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 0);
-  // Disable scrolling to ensure clicks are recognized
   lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-  // Use screen width to compute thirds to avoid 0 width before layout
-  auto make_card = [&](lv_color_t c1, const char *title)->lv_obj_t*{
+  auto make_card = [&](lv_color_t c1)->lv_obj_t*{
     lv_obj_t *card = lv_obj_create(row);
     lv_obj_remove_style_all(card);
     lv_obj_set_style_bg_color(card, c1, 0);
@@ -144,82 +149,68 @@ void build(bool safeBaseline){
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_shadow_width(card, 10, 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
-    lv_coord_t gap = 6;
-    lv_coord_t cw = (scr_w - (pad*2) - gap*2) / 3; // 3 cards with small gaps
+    // Compute inner width of root: (scr_w - pad*2) is root size, minus its own padding again
+    lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
+    lv_coord_t cw = (inner_w - (col_gap * 2)) / 3; // three equal tiles within width
     lv_obj_set_size(card, cw, 160);
-    // No text title; icons will serve as titles
     return card;
   };
 
-  lv_obj_t *card_ph  = make_card(lv_color_make(18,32,60), "pH");
-  lv_obj_t *card_orp = make_card(lv_color_make(50,34,12), "ORP");
-  lv_obj_t *card_tmp = make_card(lv_color_make(10,45,42), "Temp");
+  // Slightly darker, less saturated tile colors
+  lv_obj_t *card_ph  = make_card(lv_palette_darken(LV_PALETTE_BLUE, 3));
+  lv_obj_t *card_orp = make_card(lv_palette_darken(LV_PALETTE_AMBER, 3));
+  lv_obj_t *card_tmp = make_card(lv_palette_darken(LV_PALETTE_TEAL, 3));
 
-  // Large value labels + icons
-  {
-    lv_obj_t *icon_ph = lv_img_create(card_ph);
-    lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
-    lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0);
-    lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
-  }
+  // Icons + labels
+  lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
   lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, 44);
-  {
-    lv_obj_t *icon_orp = lv_img_create(card_orp);
-    lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40);
-    lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0);
-    lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
-  }
+
+  lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+
+  // Temp icon + value label
+  lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
   lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
-  // If needed, we can reduce widths further on small screens to avoid clipping
 
-  // Subtext lines (Target / MinMax)
-  lv_obj_t *ph_sub = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub, "Target: 6.80 - 7.60"); lv_obj_align(ph_sub, LV_ALIGN_TOP_LEFT, 0, 76);
-  lv_obj_t *or_sub = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(or_sub, "Min/Max: 250 / 850"); lv_obj_align(or_sub, LV_ALIGN_TOP_LEFT, 0, 76);
+  // Subtext: two-line layout (label, then values)
+  lv_obj_t *ph_sub_lbl = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub_lbl, "Target"); lv_obj_align(ph_sub_lbl, LV_ALIGN_TOP_LEFT, 0, 78);
+  lv_obj_t *ph_sub_vals = lv_label_create(card_ph); lv_obj_set_style_text_color(ph_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(ph_sub_vals, "6.80 - 7.60"); lv_obj_align(ph_sub_vals, LV_ALIGN_TOP_LEFT, 0, 96);
+  lv_obj_t *or_sub_lbl = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(or_sub_lbl, "Min/Max"); lv_obj_align(or_sub_lbl, LV_ALIGN_TOP_LEFT, 0, 78);
+  lv_obj_t *or_sub_vals = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(or_sub_vals, "250 / 850"); lv_obj_align(or_sub_vals, LV_ALIGN_TOP_LEFT, 0, 96);
 
-  // Settings button (full width) stick to bottom
-  lv_obj_t *btn = lv_btn_create(root);
-  lv_obj_set_width(btn, LV_PCT(100));
-  lv_obj_set_height(btn, 44);
-  lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -8);
-  lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0);
-  lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+  // Click handlers to open range editor modals
+  lv_obj_add_flag(card_ph, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(card_ph, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { ui::showRangeEditor(true); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_flag(card_orp, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(card_orp, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { ui::showRangeEditor(false); } }, LV_EVENT_ALL, NULL);
+
+  // Settings button
+  lv_obj_t *btn = lv_btn_create(root); lv_obj_set_width(btn, LV_PCT(100)); lv_obj_set_height(btn, 44); lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -8); lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_t *lblb = lv_label_create(btn); lv_label_set_text(lblb, "Settings"); lv_obj_center(lblb);
-  lv_obj_add_event_cb(btn, [](lv_event_t *e){
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CLICKED) {
-      ESP_LOGI("UI", "Settings clicked");
-      if (handlers.onSettings) handlers.onSettings();
-    }
-  }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(btn, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onSettings) handlers.onSettings(); } }, LV_EVENT_ALL, NULL);
 
-  // IP label above the Settings button, aligned to left
-  lv_lbl_ip = lv_label_create(root);
-  lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY,3), 0);
-  lv_label_set_text(lv_lbl_ip, "IP: --");
-  lv_obj_align_to(lv_lbl_ip, btn, LV_ALIGN_OUT_TOP_LEFT, 0, -6);
-  // SSID label above IP
+  // IP label (content width), placed just above the Settings button on the left (slightly higher)
+  lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align_to(lv_lbl_ip, btn, LV_ALIGN_OUT_TOP_LEFT, 0, -10); lv_label_set_text(lv_lbl_ip, "IP: --");
+
+  // SSID label above IP (stacked), left aligned
   lv_lbl_ssid = lv_label_create(root);
-  lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY,3), 0);
-  lv_label_set_text(lv_lbl_ssid, "SSID: --");
+  lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_text_font(lv_lbl_ssid, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(lv_lbl_ssid, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(lv_lbl_ssid, LV_SIZE_CONTENT);
+  lv_obj_set_style_text_align(lv_lbl_ssid, LV_TEXT_ALIGN_LEFT, 0);
+  // place directly above the IP label on the left (slightly higher)
   lv_obj_align_to(lv_lbl_ssid, lv_lbl_ip, LV_ALIGN_OUT_TOP_LEFT, 0, -6);
-  // Mode switch omitted here to keep layout matching web UI
+  lv_label_set_text(lv_lbl_ssid, "SSID: --");
 
-  if (handlers.onSpeedChange) {
-    // No sliders on this screen; settings button opens portal
+  // Ensure periodic value updates
+  if (!g_update_timer) {
+    g_update_timer = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::updateValues(); }, 500, NULL);
   }
-
-  // Periodic UI update timer to keep values fresh without cross-thread locks
-  // Single periodic UI update timer (500ms). Ensure only one instance exists.
-  static lv_timer_t *val_timer = NULL;
-  if (!val_timer) {
-    val_timer = lv_timer_create([](lv_timer_t *t){ (void)t; ui::updateValues(); }, 500, NULL);
-    // Run once immediately for initial paint
-    ui::updateValues();
-  }
+  // Immediate first refresh
+  ui::updateValues();
 }
 
 void updateValues(){
@@ -307,8 +298,10 @@ void showSettings(){
   lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(content, 12, 0);
   lv_obj_set_style_pad_all(content, pad, 0);
-  // scroll enabled by default; ensure vertical scroll
+  // scroll enabled by default; ensure vertical scroll and faster throw
   lv_obj_set_scroll_dir(content, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+  lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
   lv_obj_t *title = lv_label_create(content);
   lv_label_set_text(title, "Settings");
@@ -316,26 +309,80 @@ void showSettings(){
 
   // pH slider
   lv_obj_t *lblm1 = lv_label_create(content); lv_label_set_text(lblm1, "pH Motor Speed"); lv_obj_align(lblm1, LV_ALIGN_TOP_LEFT, 0, 28);
-  lv_lbl_val_m1 = lv_label_create(content); lv_label_set_text(lv_lbl_val_m1, "60%"); lv_obj_align(lv_lbl_val_m1, LV_ALIGN_TOP_RIGHT, 0, 28);
+  lv_lbl_val_m1 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m1); lv_label_set_text(lv_lbl_val_m1, b);} lv_obj_align(lv_lbl_val_m1, LV_ALIGN_TOP_RIGHT, 0, 28);
   lv_slider_m1 = lv_slider_create(content); lv_obj_set_width(lv_slider_m1, lv_pct(100)); lv_obj_align(lv_slider_m1, LV_ALIGN_TOP_LEFT, 0, 48);
+  // Let vertical swipe gestures bubble to the scrollable parent instead of only moving the slider
+  lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m1, 0, 100);
   lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
 
   // ORP slider
   lv_obj_t *lblm2 = lv_label_create(content); lv_label_set_text(lblm2, "ORP Motor Speed"); lv_obj_align(lblm2, LV_ALIGN_TOP_LEFT, 0, 88);
-  lv_lbl_val_m2 = lv_label_create(content); lv_label_set_text(lv_lbl_val_m2, "60%"); lv_obj_align(lv_lbl_val_m2, LV_ALIGN_TOP_RIGHT, 0, 88);
+  lv_lbl_val_m2 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m2); lv_label_set_text(lv_lbl_val_m2, b);} lv_obj_align(lv_lbl_val_m2, LV_ALIGN_TOP_RIGHT, 0, 88);
   lv_slider_m2 = lv_slider_create(content); lv_obj_set_width(lv_slider_m2, lv_pct(100)); lv_obj_align(lv_slider_m2, LV_ALIGN_TOP_LEFT, 0, 108);
+  // Bubble gestures/events so vertical swipes scroll the page
+  lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m2, 0, 100);
   lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
 
   lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m1){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m1,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(1,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
   lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m2){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m2,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(2,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
 
+  // Intercept vertical swipes on sliders to scroll the content instead of moving the slider
+  struct ScrollInterceptCtx { lv_obj_t *scroll; int initial; int ax; int ay; bool adjust; };
+  auto attach_interceptor = [&](lv_obj_t *slider){
+    ScrollInterceptCtx *ctx = (ScrollInterceptCtx*)lv_mem_alloc(sizeof(ScrollInterceptCtx));
+    ctx->scroll = content; ctx->initial = (int)lv_slider_get_value(slider); ctx->ax=0; ctx->ay=0; ctx->adjust=false;
+    lv_obj_add_event_cb(slider, [](lv_event_t *e){
+      auto code = lv_event_get_code(e);
+      ScrollInterceptCtx *c = (ScrollInterceptCtx*)lv_event_get_user_data(e);
+      lv_obj_t *sl = (lv_obj_t*)lv_event_get_target(e);
+      if (code == LV_EVENT_PRESSED){
+        c->initial = (int)lv_slider_get_value(sl); c->ax=0; c->ay=0; c->adjust=false;
+      } else if (code == LV_EVENT_PRESSING){
+        lv_indev_t *indev = lv_indev_get_act(); if (!indev) return; lv_point_t v; lv_indev_get_vect(indev, &v);
+        c->ax += v.x>=0? v.x : -v.x; c->ay += v.y>=0? v.y : -v.y; // absolute values
+        if (!c->adjust){
+          if (c->ay > c->ax + 3){
+            // Scroll vertically; keep slider fixed to initial
+            if (c->scroll) lv_obj_scroll_by_bounded(c->scroll, 0, v.y, LV_ANIM_OFF);
+            lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
+            // prevent slider change side-effects
+            lv_event_stop_bubbling(e); lv_event_stop_processing(e);
+            return;
+          } else if (c->ax > c->ay + 3){
+            c->adjust = true; // enter real slider adjust mode (horizontal intent)
+          } else {
+            // undecided: keep slider fixed to prevent accidental value change
+            lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
+            lv_event_stop_bubbling(e); lv_event_stop_processing(e);
+            return;
+          }
+        }
+      } else if (code == LV_EVENT_VALUE_CHANGED){
+        if (!c->adjust){
+          // block value changes during vertical scroll
+          lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
+          lv_event_stop_bubbling(e); lv_event_stop_processing(e);
+          return;
+        }
+      } else if (code == LV_EVENT_RELEASED){
+        if (!c->adjust){ lv_slider_set_value(sl, c->initial, LV_ANIM_OFF); }
+      } else if (code == LV_EVENT_DELETE){
+        lv_mem_free(c);
+      }
+    }, LV_EVENT_ALL, ctx);
+  };
+  attach_interceptor(lv_slider_m1);
+  attach_interceptor(lv_slider_m2);
+
   // Editable WiFi fields (prefilled later via setSavedWifi)
   lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148);
-  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 168);
-  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 202);
-  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 222);
+  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172);
+  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220);
+  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244);
 
   // Sticky footer
   lv_obj_t *footer = lv_obj_create(scr);
@@ -351,13 +398,13 @@ void showSettings(){
   lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(footer, LV_DIR_NONE);
 
-  lv_obj_t *btnWifi = lv_btn_create(footer); lv_obj_set_size(btnWifi, (scr_w - pad*2 - 20)/3, footer_h-16); lv_obj_t *lblw = lv_label_create(btnWifi); lv_label_set_text(lblw, "Reset WiFi"); lv_obj_center(lblw);
+  lv_obj_t *btnWifi = lv_btn_create(footer); lv_obj_set_height(btnWifi, footer_h-16); lv_obj_set_flex_grow(btnWifi, 1); lv_obj_t *lblw = lv_label_create(btnWifi); lv_label_set_text(lblw, "Reset WiFi"); lv_obj_center(lblw);
   lv_obj_add_event_cb(btnWifi, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_size(btnSave, (scr_w - pad*2 - 20)/3, footer_h-16); lv_obj_t *lbls = lv_label_create(btnSave); lv_label_set_text(lbls, "Save WiFi"); lv_obj_center(lbls);
+  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_t *lbls = lv_label_create(btnSave); lv_label_set_text(lbls, "Save WiFi"); lv_obj_center(lbls);
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiSave) { const char *s = lv_textarea_get_text(lv_ta_ssid); const char *p = lv_textarea_get_text(lv_ta_pass); handlers.onWifiSave(s, p); } } }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnBack = lv_btn_create(footer); lv_obj_set_size(btnBack, (scr_w - pad*2 - 20)/3, footer_h-16); lv_obj_t *lblb = lv_label_create(btnBack); lv_label_set_text(lblb, "Back"); lv_obj_center(lblb);
+  lv_obj_t *btnBack = lv_btn_create(footer); lv_obj_set_height(btnBack, footer_h-16); lv_obj_set_flex_grow(btnBack, 1); lv_obj_t *lblb = lv_label_create(btnBack); lv_label_set_text(lblb, "Back"); lv_obj_center(lblb);
   lv_obj_add_event_cb(btnBack, [](lv_event_t *e){ auto code=lv_event_get_code(e); if (code==LV_EVENT_CLICKED || code==LV_EVENT_SHORT_CLICKED || code==LV_EVENT_RELEASED){ ui::showMain(); } }, LV_EVENT_ALL, NULL);
 }
 
@@ -378,6 +425,122 @@ void configureHandlers(const Handlers &h){ handlers = h; }
 void setInitialSpeeds(uint8_t m1, uint8_t m2){ initial_m1=m1; initial_m2=m2; }
 void setInitialMode(bool zigbee){ initial_mode_zigbee = zigbee; }
 
+// -------- Extracted helpers --------
+void showRangeEditor(bool isPh){
+  if (lv_modal_active) { lv_obj_del(lv_modal_active); lv_modal_active=nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top()); lv_modal_active = modal;
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
+
+  lv_obj_t *dlg = lv_obj_create(modal); lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40); lv_obj_center(dlg); lv_obj_set_style_radius(dlg, 10, 0); lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  const char *title = isPh ? "pH range" : "ORP range";
+  lv_obj_t *titleLbl = lv_label_create(dlg); lv_label_set_text(titleLbl, title); lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 0);
+
+  // Build two rows for Min/Max: [label][slider grows][value]
+  lv_coord_t dlg_w = lv_obj_get_width(dlg);
+  auto make_row = [&](const char *leftText, bool ph)->std::tuple<lv_obj_t*, lv_obj_t*, lv_obj_t*>{
+    lv_obj_t *row = lv_obj_create(dlg);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(row, 6, 0);
+    lv_obj_set_style_pad_column(row, 10, 0);
+
+    lv_obj_t *lbl = lv_label_create(row); lv_label_set_text(lbl, leftText);
+    lv_obj_t *sl  = lv_slider_create(row);
+    lv_obj_set_flex_grow(sl, 1);
+    lv_obj_set_height(sl, 18);
+    lv_obj_set_style_min_width(sl, 120, 0);
+    lv_obj_set_style_height(sl, 18, LV_PART_MAIN);
+    lv_obj_set_style_radius(sl, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, lv_color_make(70,70,70), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_width(sl, 20, LV_PART_KNOB);
+    lv_obj_set_style_height(sl, 20, LV_PART_KNOB);
+    lv_obj_t *val = lv_label_create(row);
+    if (ph) lv_slider_set_range(sl, 0, 1400); else lv_slider_set_range(sl, 0, 3000);
+    return {sl, val, row};
+  };
+  auto [slMin, valMin, row1] = make_row(isPh?"Min":"Min (mV):", isPh);
+  auto [slMax, valMax, row2] = make_row(isPh?"Max":"Max (mV):", isPh);
+  // Place rows vertically at fixed y positions to avoid overlap
+  lv_obj_align(row1, LV_ALIGN_TOP_MID, 0, 36);
+  lv_obj_align(row2, LV_ALIGN_TOP_MID, 0, 36 + 48);
+  // Ensure rows layout so flex can size children
+  lv_obj_update_layout(dlg);
+  // Remove any accidental minimum widths; rely on flex_grow + row width
+  lv_obj_set_width(slMin, LV_SIZE_CONTENT);
+  lv_obj_set_width(slMax, LV_SIZE_CONTENT);
+  // Strengthen contrast to ensure track/indicator are visible on dark bg
+  lv_obj_set_style_bg_color(slMin, lv_color_make(60,60,60), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slMax, lv_color_make(60,60,60), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slMin, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(slMax, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
+  // Set defaults
+  if (isPh){ lv_slider_set_value(slMin, 680, LV_ANIM_OFF); lv_slider_set_value(slMax, 760, LV_ANIM_OFF);} else { lv_slider_set_value(slMin, 250, LV_ANIM_OFF); lv_slider_set_value(slMax, 850, LV_ANIM_OFF);}  
+  auto set_val_text = [&](lv_obj_t *lbl, bool ph, int v){ char b[16]; if (ph){ int vi=v/100, vf=v%100; snprintf(b,sizeof(b),"%d.%02d",vi,vf);} else { snprintf(b,sizeof(b),"%d",v);} lv_label_set_text(lbl,b); };
+  set_val_text(valMin, isPh, (int)lv_slider_get_value(slMin));
+  set_val_text(valMax, isPh, (int)lv_slider_get_value(slMax));
+
+  lv_obj_t *btnCancel = lv_btn_create(dlg); lv_obj_set_size(btnCancel, 120, 44); lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_LEFT, 0, 0); { lv_obj_t *t=lv_label_create(btnCancel); lv_label_set_text(t, "Cancel"); lv_obj_center(t);} 
+  lv_obj_t *btnSave   = lv_btn_create(dlg); lv_obj_set_size(btnSave, 120, 44); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_RIGHT, 0, 0); { lv_obj_t *t=lv_label_create(btnSave); lv_label_set_text(t, "Save"); lv_obj_center(t);} 
+
+  struct Loc { bool isPh; lv_obj_t *slMin; lv_obj_t *slMax; lv_obj_t *modal; };
+  Loc *ctx = (Loc*)lv_mem_alloc(sizeof(Loc)); ctx->isPh=isPh; ctx->slMin=slMin; ctx->slMax=slMax; ctx->modal=modal;
+
+  // Update live value labels on slider change
+  struct VCtx { bool isPh; lv_obj_t *lbl; };
+  VCtx *v1=(VCtx*)lv_mem_alloc(sizeof(VCtx)); v1->isPh=isPh; v1->lbl=valMin;
+  VCtx *v2=(VCtx*)lv_mem_alloc(sizeof(VCtx)); v2->isPh=isPh; v2->lbl=valMax;
+  lv_obj_add_event_cb(slMin, [](lv_event_t *e){ VCtx *c=(VCtx*)lv_event_get_user_data(e); if (lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); char b[16]; if(c->isPh){ snprintf(b,sizeof(b),"%d.%02d", v/100, v%100);} else { snprintf(b,sizeof(b),"%d", v);} lv_label_set_text(c->lbl,b);} }, LV_EVENT_ALL, v1);
+  lv_obj_add_event_cb(slMax, [](lv_event_t *e){ VCtx *c=(VCtx*)lv_event_get_user_data(e); if (lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); char b[16]; if(c->isPh){ snprintf(b,sizeof(b),"%d.%02d", v/100, v%100);} else { snprintf(b,sizeof(b),"%d", v);} lv_label_set_text(c->lbl,b);} }, LV_EVENT_ALL, v2);
+
+  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ Loc *c=(Loc*)lv_event_get_user_data(e); if (c->modal) lv_obj_del(c->modal); lv_mem_free(c); lv_modal_active=nullptr; }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ Loc *c=(Loc*)lv_event_get_user_data(e); if(c->modal) lv_obj_del(c->modal); lv_mem_free(c); lv_modal_active=nullptr; }, LV_EVENT_CLICKED, ctx);
+}
+
+void showCommissioning(uint32_t seconds){
+  if (lv_modal_active) { lv_obj_del(lv_modal_active); lv_modal_active=nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top()); lv_modal_active = modal;
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *dlg = lv_obj_create(modal); lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40); lv_obj_center(dlg);
+  lv_obj_set_style_radius(dlg, 10, 0); lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg); lv_label_set_text(title, "Zigbee commissioning"); lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_t *spinner = lv_spinner_create(dlg, 1000, 60); lv_obj_set_size(spinner, 28, 28); lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_t *msg = lv_label_create(dlg); char b[48]; snprintf(b, sizeof(b), "Pairing... %us", (unsigned)seconds); lv_label_set_text(msg, b); lv_obj_align(msg, LV_ALIGN_CENTER, 0, 22);
+}
+
+void showHoldToPair(){
+  if (lv_modal_active) { lv_obj_del(lv_modal_active); lv_modal_active=nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top()); lv_modal_active=modal;
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *dlg = lv_obj_create(modal); lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40); lv_obj_center(dlg);
+  lv_obj_set_style_radius(dlg, 10, 0); lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg); lv_label_set_text(title, "Hold BOOT 3s to start Zigbee pairing"); lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+}
 
 } // namespace ui
 

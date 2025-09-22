@@ -8,6 +8,7 @@ extern "C" {
 #endif
 extern const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 extern const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
+extern const lv_img_dsc_t device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40;
 #ifdef __cplusplus
 }
 #endif
@@ -22,6 +23,11 @@ void setSsid(const char *ssid);
 void showSettings();
 void showMain();
 void setSavedWifi(const char *ssid, const char *pass);
+
+// New: extracted dialogs/helpers
+void showRangeEditor(bool isPh);
+void showCommissioning(uint32_t seconds);
+void showHoldToPair();
 
 struct Handlers {
   void (*onSpeedChange)(int idx, int value) = nullptr; // idx: 1=pH motor, 2=ORP motor

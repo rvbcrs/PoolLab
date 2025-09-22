@@ -27,13 +27,13 @@
 #define LV_USE_GPU 0
 
 /* Input device settings */
-#define LV_INDEV_DEF_READ_PERIOD 30  /* Read input every 30ms */
-#define LV_INDEV_DEF_DRAG_LIMIT 10   /* Start drag after 10 pixels */
-#define LV_INDEV_DEF_DRAG_THROW 10   /* Drag throw slow-down */
+#define LV_INDEV_DEF_READ_PERIOD 10  /* Read input every 10ms for snappier response */
+#define LV_INDEV_DEF_DRAG_LIMIT 4    /* Start drag after 4 pixels */
+#define LV_INDEV_DEF_DRAG_THROW 8    /* Drag throw slow-down */
 #define LV_INDEV_DEF_LONG_PRESS_TIME 400  /* Long press time */
 #define LV_INDEV_DEF_LONG_PRESS_REP_TIME 100  /* Repeated trigger period */
-#define LV_INDEV_DEF_GESTURE_LIMIT 50  /* Gesture threshold */
-#define LV_INDEV_DEF_GESTURE_MIN_VELOCITY 3  /* Min swipe speed */
+#define LV_INDEV_DEF_GESTURE_LIMIT 20  /* Gesture threshold */
+#define LV_INDEV_DEF_GESTURE_MIN_VELOCITY 2  /* Min swipe speed */
 
 #endif // LV_CONF_H
 

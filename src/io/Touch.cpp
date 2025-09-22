@@ -60,7 +60,8 @@ void touchBegin(){
   
   uint8_t id[3] = {0};
   i2cRead(AXS5106L_ADDR, AXS5106L_ID_REG, id, 3);
-  ESP_LOGI("TOUCH", "Init complete, ID: %02X %02X %02X", id[0], id[1], id[2]);
+  // Reduce verbosity to avoid UI stalls when no serial monitor is attached
+  //ESP_LOGI("TOUCH", "Init complete, ID: %02X %02X %02X", id[0], id[1], id[2]);
 }
 
 bool readTouchOnce(TouchPoint &out) {
