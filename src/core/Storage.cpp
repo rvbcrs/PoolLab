@@ -44,6 +44,15 @@ void Storage::setWifiPass(const String &v) {
   _prefs.putString("wifi_pass", v);
 }
 
+String Storage::getMqttHost(const String &def) const { return _prefs.getString("mqtt_host", def); }
+uint16_t Storage::getMqttPort(uint16_t def) const { return (uint16_t)_prefs.getUInt("mqtt_port", def); }
+String Storage::getMqttUser(const String &def) const { return _prefs.getString("mqtt_user", def); }
+String Storage::getMqttPass(const String &def) const { return _prefs.getString("mqtt_pass", def); }
+void Storage::setMqttHost(const String &v) { _prefs.putString("mqtt_host", v); }
+void Storage::setMqttPort(uint16_t v) { _prefs.putUInt("mqtt_port", v); }
+void Storage::setMqttUser(const String &v) { _prefs.putString("mqtt_user", v); }
+void Storage::setMqttPass(const String &v) { _prefs.putString("mqtt_pass", v); }
+
 } // namespace core
 
 

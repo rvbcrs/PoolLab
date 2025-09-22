@@ -32,8 +32,7 @@
 #define LV_INDEV_DEF_DRAG_THROW 8    /* Drag throw slow-down */
 #define LV_INDEV_DEF_LONG_PRESS_TIME 400  /* Long press time */
 #define LV_INDEV_DEF_LONG_PRESS_REP_TIME 100  /* Repeated trigger period */
-#define LV_INDEV_DEF_GESTURE_LIMIT 20  /* Gesture threshold */
-#define LV_INDEV_DEF_GESTURE_MIN_VELOCITY 2  /* Min swipe speed */
+/* Note: leave gesture defaults to LVGL to avoid redefinition warnings; set per-driver at runtime */
 
 #endif // LV_CONF_H
 

@@ -320,6 +320,13 @@ lv_indev_t *lvgl_port_add_touch(const lvgl_port_touch_cfg_t *touch_cfg)
 
     /* Register a touchpad input device */
     lv_indev_drv_init(&touch_ctx->indev_drv);
+    /* Tune gesture/scroll parameters at runtime to match C6 behavior and avoid macro overrides */
+    touch_ctx->indev_drv.scroll_limit = 4;
+    touch_ctx->indev_drv.scroll_throw = 8;
+    touch_ctx->indev_drv.long_press_time = 400;
+    touch_ctx->indev_drv.long_press_repeat_time = 100;
+    touch_ctx->indev_drv.gesture_limit = 20;
+    touch_ctx->indev_drv.gesture_min_velocity = 2;
     touch_ctx->indev_drv.type = LV_INDEV_TYPE_POINTER;
     touch_ctx->indev_drv.disp = touch_cfg->disp;
     touch_ctx->indev_drv.read_cb = lvgl_port_touchpad_read;

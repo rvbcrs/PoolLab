@@ -20,6 +20,10 @@ static lv_obj_t *lv_lbl_val_m1 = nullptr;
 static lv_obj_t *lv_lbl_val_m2 = nullptr;
 static lv_obj_t *lv_lbl_saved_ssid = nullptr;
 static lv_obj_t *lv_lbl_saved_pass = nullptr;
+static lv_obj_t *lv_ta_mqtt_host = nullptr;
+static lv_obj_t *lv_ta_mqtt_port = nullptr;
+static lv_obj_t *lv_ta_mqtt_user = nullptr;
+static lv_obj_t *lv_ta_mqtt_pw = nullptr;
 static lv_obj_t *lv_ta_ssid = nullptr;
 static lv_obj_t *lv_ta_pass = nullptr;
 static lv_obj_t *lv_lbl_ssid = nullptr;
@@ -181,14 +185,25 @@ void build(bool safeBaseline){
 
   // Click handlers to open range editor modals
   lv_obj_add_flag(card_ph, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(card_ph, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { ui::showRangeEditor(true); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(card_ph, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      // Defer modal creation to next tick to avoid re-entrancy during event processing
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showRangeEditor(true); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
   lv_obj_add_flag(card_orp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(card_orp, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { ui::showRangeEditor(false); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(card_orp, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showRangeEditor(false); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
 
   // Settings button
   lv_obj_t *btn = lv_btn_create(root); lv_obj_set_width(btn, LV_PCT(100)); lv_obj_set_height(btn, 44); lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -8); lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_t *lblb = lv_label_create(btn); lv_label_set_text(lblb, "Settings"); lv_obj_center(lblb);
-  lv_obj_add_event_cb(btn, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onSettings) handlers.onSettings(); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(btn, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onSettings) handlers.onSettings(); } }, LV_EVENT_CLICKED, NULL);
 
   // IP label (content width), placed just above the Settings button on the left (slightly higher)
   lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
@@ -384,6 +399,16 @@ void showSettings(){
   lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220);
   lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244);
 
+  // MQTT broker settings
+  lv_obj_t *lblHost = lv_label_create(content); lv_label_set_text(lblHost, "MQTT Host"); lv_obj_align(lblHost, LV_ALIGN_TOP_LEFT, 0, 284);
+  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 306);
+  lv_obj_t *lblPort = lv_label_create(content); lv_label_set_text(lblPort, "MQTT Port"); lv_obj_align(lblPort, LV_ALIGN_TOP_LEFT, 0, 346);
+  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 368);
+  lv_obj_t *lblUser = lv_label_create(content); lv_label_set_text(lblUser, "MQTT User"); lv_obj_align(lblUser, LV_ALIGN_TOP_LEFT, 0, 408);
+  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 430);
+  lv_obj_t *lblPw = lv_label_create(content); lv_label_set_text(lblPw, "MQTT Password"); lv_obj_align(lblPw, LV_ALIGN_TOP_LEFT, 0, 470);
+  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 492);
+
   // Sticky footer
   lv_obj_t *footer = lv_obj_create(scr);
   lv_obj_remove_style_all(footer);
@@ -401,11 +426,34 @@ void showSettings(){
   lv_obj_t *btnWifi = lv_btn_create(footer); lv_obj_set_height(btnWifi, footer_h-16); lv_obj_set_flex_grow(btnWifi, 1); lv_obj_t *lblw = lv_label_create(btnWifi); lv_label_set_text(lblw, "Reset WiFi"); lv_obj_center(lblw);
   lv_obj_add_event_cb(btnWifi, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_t *lbls = lv_label_create(btnSave); lv_label_set_text(lbls, "Save WiFi"); lv_obj_center(lbls);
-  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiSave) { const char *s = lv_textarea_get_text(lv_ta_ssid); const char *p = lv_textarea_get_text(lv_ta_pass); handlers.onWifiSave(s, p); } } }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_t *lbls = lv_label_create(btnSave); lv_label_set_text(lbls, "Save"); lv_obj_center(lbls);
+  // Save WiFi + MQTT settings via handlers (main will persist)
+  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      if (handlers.onWifiSave) {
+        const char *s = lv_textarea_get_text(lv_ta_ssid);
+        const char *p = lv_textarea_get_text(lv_ta_pass);
+        handlers.onWifiSave(s, p);
+      }
+      if (handlers.onMqttSave) {
+        const char *host = lv_textarea_get_text(lv_ta_mqtt_host);
+        const char *port = lv_textarea_get_text(lv_ta_mqtt_port);
+        const char *user = lv_textarea_get_text(lv_ta_mqtt_user);
+        const char *pw   = lv_textarea_get_text(lv_ta_mqtt_pw);
+        uint16_t prt = (uint16_t)atoi(port && *port ? port : "1883");
+        handlers.onMqttSave(host, prt, user, pw);
+      }
+    }
+  }, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t *btnBack = lv_btn_create(footer); lv_obj_set_height(btnBack, footer_h-16); lv_obj_set_flex_grow(btnBack, 1); lv_obj_t *lblb = lv_label_create(btnBack); lv_label_set_text(lblb, "Back"); lv_obj_center(lblb);
-  lv_obj_add_event_cb(btnBack, [](lv_event_t *e){ auto code=lv_event_get_code(e); if (code==LV_EVENT_CLICKED || code==LV_EVENT_SHORT_CLICKED || code==LV_EVENT_RELEASED){ ui::showMain(); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(btnBack, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      // Defer navigation to avoid deleting objects during event dispatch
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showMain(); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
 }
 
 void showMain(){
@@ -419,6 +467,13 @@ void showMain(){
 void setSavedWifi(const char *ssid, const char *pass){
   if (lv_ta_ssid) lv_textarea_set_text(lv_ta_ssid, (ssid&&ssid[0])?ssid:"");
   if (lv_ta_pass) lv_textarea_set_text(lv_ta_pass, (pass&&pass[0])?pass:"");
+}
+
+void setSavedMqtt(const char *host, uint16_t port, const char *user, const char *pass){
+  if (lv_ta_mqtt_host) lv_textarea_set_text(lv_ta_mqtt_host, (host&&host[0])?host:"");
+  if (lv_ta_mqtt_port) { char b[8]; snprintf(b,sizeof(b),"%u", (unsigned)port); lv_textarea_set_text(lv_ta_mqtt_port, b); }
+  if (lv_ta_mqtt_user) lv_textarea_set_text(lv_ta_mqtt_user, (user&&user[0])?user:"");
+  if (lv_ta_mqtt_pw)   lv_textarea_set_text(lv_ta_mqtt_pw,   (pass&&pass[0])?pass:"");
 }
 
 void configureHandlers(const Handlers &h){ handlers = h; }
@@ -504,8 +559,25 @@ void showRangeEditor(bool isPh){
   lv_obj_add_event_cb(slMin, [](lv_event_t *e){ VCtx *c=(VCtx*)lv_event_get_user_data(e); if (lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); char b[16]; if(c->isPh){ snprintf(b,sizeof(b),"%d.%02d", v/100, v%100);} else { snprintf(b,sizeof(b),"%d", v);} lv_label_set_text(c->lbl,b);} }, LV_EVENT_ALL, v1);
   lv_obj_add_event_cb(slMax, [](lv_event_t *e){ VCtx *c=(VCtx*)lv_event_get_user_data(e); if (lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); char b[16]; if(c->isPh){ snprintf(b,sizeof(b),"%d.%02d", v/100, v%100);} else { snprintf(b,sizeof(b),"%d", v);} lv_label_set_text(c->lbl,b);} }, LV_EVENT_ALL, v2);
 
-  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ Loc *c=(Loc*)lv_event_get_user_data(e); if (c->modal) lv_obj_del(c->modal); lv_mem_free(c); lv_modal_active=nullptr; }, LV_EVENT_CLICKED, ctx);
-  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ Loc *c=(Loc*)lv_event_get_user_data(e); if(c->modal) lv_obj_del(c->modal); lv_mem_free(c); lv_modal_active=nullptr; }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      Loc *c=(Loc*)lv_event_get_user_data(e);
+      // defer delete to avoid destroying hierarchy during event handler
+      lv_obj_t *to_del = c->modal;
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ lv_obj_t *obj=(lv_obj_t*)tm->user_data; if (obj) lv_obj_del(obj); }, 0, to_del);
+      lv_timer_set_repeat_count(t, 1);
+      lv_mem_free(c); lv_modal_active=nullptr;
+    }
+  }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      Loc *c=(Loc*)lv_event_get_user_data(e);
+      lv_obj_t *to_del = c->modal;
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ lv_obj_t *obj=(lv_obj_t*)tm->user_data; if (obj) lv_obj_del(obj); }, 0, to_del);
+      lv_timer_set_repeat_count(t, 1);
+      lv_mem_free(c); lv_modal_active=nullptr;
+    }
+  }, LV_EVENT_CLICKED, ctx);
 }
 
 void showCommissioning(uint32_t seconds){

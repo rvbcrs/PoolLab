@@ -23,6 +23,7 @@ void setSsid(const char *ssid);
 void showSettings();
 void showMain();
 void setSavedWifi(const char *ssid, const char *pass);
+void setSavedMqtt(const char *host, uint16_t port, const char *user, const char *pass);
 
 // New: extracted dialogs/helpers
 void showRangeEditor(bool isPh);
@@ -35,6 +36,7 @@ struct Handlers {
   void (*onSettings)() = nullptr;                      // open in-app settings
   void (*onWifiReset)() = nullptr;                     // clear wifi creds, start portal
   void (*onWifiSave)(const char *ssid, const char *pass) = nullptr; // save wifi creds
+  void (*onMqttSave)(const char *host, uint16_t port, const char *user, const char *pass) = nullptr; // save MQTT broker
 };
 
 void configureHandlers(const Handlers &h);

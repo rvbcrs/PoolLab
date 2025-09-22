@@ -21,8 +21,14 @@ void MqttClient::begin(const char* host, uint16_t port, const char* user, const 
 
 void MqttClient::ensureConnected() {
   if (isConnected()) return;
-  
-  if (_client.connect(_clientId, _user, _pass)) {
+  if (_host == nullptr || _host[0] == '\0') return; // skip if no broker configured
+  bool connected = false;
+  if (_user && _user[0]) {
+    connected = _client.connect(_clientId, _user, _pass);
+  } else {
+    connected = _client.connect(_clientId);
+  }
+  if (connected) {
     _client.subscribe(TOPIC_CMD_PH_MIN);
     _client.subscribe(TOPIC_CMD_PH_MAX);
     _client.subscribe(TOPIC_CMD_ORP_MIN);

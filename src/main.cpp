@@ -144,6 +144,8 @@ extern "C" {
 #include "io/WebUI.h"
 #include "io/WiFiManager.h"
 #include "boards/BoardSelect.h"
+#include "io/Buttons.h"
+#include "io/MotorController.h"
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
 extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
@@ -162,25 +164,7 @@ extern "C" const lv_font_t lv_font_montserrat_14;
 extern "C" const lv_font_t lv_font_source_code_pro_18;
 extern "C" const lv_font_t lv_font_source_code_pro_36;
 extern "C" const lv_font_t lv_font_source_code_pro_36_bold;
-#if defined(BOARD_ESP32S3_35)
-// Redirect IDF logs to Arduino Serial
-extern "C" int esp32_vprintf_redirect(const char* fmt, va_list args){
-  char buf[256];
-  int len = vsnprintf(buf, sizeof(buf), fmt, args);
-  // Avoid blocking when no serial monitor is attached (USB CDC not open)
-  // Only write when DTR is asserted by the host
-  if (len > 0) {
-    #if defined(ARDUINO_USB_CDC_ON_BOOT)
-    if (!Serial) return len; // if CDC not ready, drop
-    int space = Serial.availableForWrite();
-    if (space <= 0) return len; // USB not consuming -> drop to avoid blocking
-    #endif
-    size_t w = (size_t)((len < (int)sizeof(buf)) ? len : (int)sizeof(buf));
-    Serial.write((const uint8_t*)buf, w);
-  }
-  return len;
-}
-#endif
+#include "core/Log.h"
 #if defined(USE_JC3248W535)
 static jc3248w535_handles_t jc_handles; // zero-initialized
 // Keep JC path free of legacy helpers; do not define pushLine/connectWiFi... stubs here
@@ -288,7 +272,7 @@ static void on_orp_plus_cb(lv_event_t *e);
 static void on_all_off_cb(lv_event_t *e);
 static void on_speed_save_cb(lv_event_t *e);
 static void updateLvglValues();
-static void showRangeDialog(bool isPh);
+static void showRangeEditorProxy(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
 static const bool DUMMY_MODE = true;  // set true to simulate values
 static domain::DummySensor g_dummySensor(6.80f, 7.60f, 250);
@@ -314,7 +298,7 @@ static void tile_tap_cb(lv_event_t *e){
     if (dx > SLOP || dy > SLOP) ctx->maybe_tap = false; // it's a swipe/drag
   } else if (code == LV_EVENT_RELEASED) {
     if (ctx->maybe_tap && lv_tick_elaps(ctx->start_ms) <= MAX_TAP_MS) {
-      showRangeDialog(ctx->isPh);
+      showRangeEditorProxy(ctx->isPh);
     }
   }
 }
@@ -366,10 +350,10 @@ static const int   ORP_HYST = 20;     // stop when ORP > (ORP_MIN + ORP_HYST)
 // ---- WiFi + MQTT (Home Assistant via Mosquitto) ----
 static String WIFI_SSID     = "";
 static String WIFI_PASSWORD = "";
-static const char* MQTT_HOST     = "192.168.0.248"; // or broker IP
-static const uint16_t MQTT_PORT  = 1883;
-static const char* MQTT_USER     = "mqqt";  // optional
-static const char* MQTT_PASS     = "mqqt";  // optional
+static String MQTT_HOST     = "192.168.0.248"; // default; overridden by storage
+static uint16_t MQTT_PORT  = 1883;
+static String MQTT_USER     = "";  // optional
+static String MQTT_PASS     = "";  // optional
 static const char* MQTT_CLIENTID = "pool-sniffer-c6";
 
 // MQTT is handled by io::MqttClient now
@@ -377,7 +361,7 @@ static core::Storage storage("poolcfg");
 #if !defined(USE_JC3248W535)
 static core::DisplayBridge *displayBridge = nullptr;
 #endif
-static domain::ControlPolicy *control = nullptr;
+static io::MotorController g_motor;
 static io::MqttClient mqttClient;
 static io::WiFiManager wifiMgr;
 static io::ZigbeeClient zigbee;
@@ -402,11 +386,7 @@ static const int BTN_PIN1 = 0;
 static const int BTN_PIN2 = -1;
 #endif
 // If BOOT is not wired on this board, fall back to GPIO0 only
-static bool btnPrev = false;     // debounced/stable state
-static uint32_t btnPressMs = 0;  // moment stable press started
-static bool btnRawPrev = false;  // immediate/raw read
-static bool btnStable = false;   // debounced state
-static uint32_t btnLastChangeMs = 0; // last raw change timestamp
+static io::Buttons g_buttons;
 
 // (WiFi events handled in io::WiFiManager)
 // Extra: in DIAG_MODE we try multiple candidates in case of board revision
@@ -619,190 +599,14 @@ static void lv_fix_initial_layout(lv_timer_t *t){
 }
 
 // Modal dialog to change min/max for pH or ORP
+static void showRangeEditorProxy(bool isPh){
+  ui::showRangeEditor(isPh);
+}
+
 static void showRangeDialog(bool isPh){
-  const char *title = isPh ? "pH range" : "ORP range";
-  lv_obj_t *modal = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
-  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
-  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
-  // No scrollbars on modal overlay
-  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_opa(modal, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
-
-  // Disable tileview scrolling while dialog is open
-  if (lv_tv) lv_obj_clear_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
-
-  lv_obj_t *dlg = lv_obj_create(modal);
-  lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
-  lv_obj_center(dlg);
-  lv_obj_set_style_radius(dlg, 10, 0);
-  lv_obj_set_style_pad_all(dlg, 8, 0);
-  // No scrollbars on dialog window
-  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_opa(dlg, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
-
-  lv_obj_t *lbl = lv_label_create(dlg); lv_label_set_text(lbl, title); lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-
-  // Min
-  lv_obj_t *minLbl = lv_label_create(dlg); lv_label_set_text(minLbl, "Min:"); lv_obj_align(minLbl, LV_ALIGN_LEFT_MID, 0, -20);
-  lv_obj_t *taMin = lv_textarea_create(dlg); lv_obj_set_width(taMin, 80); lv_obj_align_to(taMin, minLbl, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
-  // Hide any text area scrollbars
-  lv_obj_set_scrollbar_mode(taMin, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_opa(taMin, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
-  char bmin[16]; if (isPh) snprintf(bmin,sizeof(bmin),"%.2f", PH_MIN); else snprintf(bmin,sizeof(bmin),"%d", ORP_MIN); lv_textarea_set_text(taMin, bmin);
-
-  // Max
-  lv_obj_t *maxLbl = lv_label_create(dlg); lv_label_set_text(maxLbl, "Max:"); lv_obj_align(maxLbl, LV_ALIGN_LEFT_MID, 0, 20);
-  lv_obj_t *taMax = lv_textarea_create(dlg); lv_obj_set_width(taMax, 80); lv_obj_align_to(taMax, maxLbl, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
-  lv_obj_set_scrollbar_mode(taMax, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_opa(taMax, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
-  char bmax[16]; if (isPh) snprintf(bmax,sizeof(bmax),"%.2f", PH_MAX); else snprintf(bmax,sizeof(bmax),"%d", ORP_MAX); lv_textarea_set_text(taMax, bmax);
-
-  // Buttons
-  lv_obj_t *btnCancel = lv_btn_create(dlg); lv_obj_set_size(btnCancel, 80, 32); lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_label_set_text(lv_label_create(btnCancel), "Cancel");
-  lv_obj_t *btnSave   = lv_btn_create(dlg); lv_obj_set_size(btnSave, 80, 32); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_RIGHT, 0, 0); lv_label_set_text(lv_label_create(btnSave), "Save");
-
-  struct RangeCtx { bool isPh; lv_obj_t *taMin; lv_obj_t *taMax; lv_obj_t *dlg; lv_obj_t *modal; lv_obj_t *tv; lv_obj_t *lblMin; lv_obj_t *lblMax; };
-  RangeCtx *ctx = (RangeCtx*)lv_mem_alloc(sizeof(RangeCtx));
-  ctx->isPh = isPh; ctx->taMin = taMin; ctx->taMax = taMax; ctx->dlg = dlg; ctx->modal = modal; ctx->tv = lv_tv;
-
-  // Replace textareas with sliders UI
-  // Clean dialog content and rebuild compact slider layout
-  lv_obj_clean(dlg);
-  lv_obj_set_style_pad_all(dlg, 10, 0);
-
-  // Title
-  lv_obj_t *titleLbl = lv_label_create(dlg);
-  lv_label_set_text(titleLbl, title);
-  lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 0);
-
-  // Labels to show values
-  lv_obj_t *lblMin = lv_label_create(dlg);
-  lv_obj_t *lblMax = lv_label_create(dlg);
-  // Initial placement; final alignment is tied to sliders below
-  lv_obj_align(lblMin, LV_ALIGN_LEFT_MID, 0, -25);
-  lv_obj_align(lblMax, LV_ALIGN_LEFT_MID, 0, 15);
-
-  // Sliders
-  lv_obj_t *slMin = lv_slider_create(dlg);
-  lv_obj_set_width(slMin, lv_obj_get_width(dlg) - 120);
-  // Move sliders ~10px up versus original (-20 -> -30, 20 -> 10)
-  lv_obj_align(slMin, LV_ALIGN_RIGHT_MID, -10, -35);
-  lv_obj_t *slMax = lv_slider_create(dlg);
-  lv_obj_set_width(slMax, lv_obj_get_width(dlg) - 120);
-  lv_obj_align(slMax, LV_ALIGN_RIGHT_MID, -10, 5);
-
-  // Configure ranges and initial values
-  if (isPh) {
-    lv_label_set_text(lblMin, "Min:");
-    lv_label_set_text(lblMax, "Max:");
-    lv_slider_set_range(slMin, 0, 1400);
-    lv_slider_set_range(slMax, 0, 1400);
-    lv_slider_set_value(slMin, (int)(PH_MIN * 100.0f), LV_ANIM_OFF);
-    lv_slider_set_value(slMax, (int)(PH_MAX * 100.0f), LV_ANIM_OFF);
-  } else {
-    lv_label_set_text(lblMin, "Min (mV):");
-    lv_label_set_text(lblMax, "Max (mV):");
-    lv_slider_set_range(slMin, 0, 3000);
-    lv_slider_set_range(slMax, 0, 3000);
-    lv_slider_set_value(slMin, ORP_MIN, LV_ANIM_OFF);
-    lv_slider_set_value(slMax, ORP_MAX, LV_ANIM_OFF);
-  }
-  
-  // Show current values next to labels
-  auto update_value_labels = [&](RangeCtx *c){
-    if (c->isPh) {
-      char b1[16], b2[16];
-      snprintf(b1, sizeof(b1), "%.2f", lv_slider_get_value(slMin) / 100.0f);
-      snprintf(b2, sizeof(b2), "%.2f", lv_slider_get_value(slMax) / 100.0f);
-      lv_label_set_text_fmt(lblMin, "Min: %s", b1);
-      lv_label_set_text_fmt(lblMax, "Max: %s", b2);
-    } else {
-      lv_label_set_text_fmt(lblMin, "Min (mV): %d", (int)lv_slider_get_value(slMin));
-      lv_label_set_text_fmt(lblMax, "Max (mV): %d", (int)lv_slider_get_value(slMax));
-    }
-  };
-
-  // Extend ctx to carry new widgets
-  ctx->taMin = slMin; ctx->taMax = slMax; ctx->lblMin = lblMin; ctx->lblMax = lblMax;
-
-  update_value_labels(ctx);
-
-  // Ensure labels are vertically centered to their sliders and sit just to the left
-  lv_obj_align_to(lblMin, slMin, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-  lv_obj_align_to(lblMax, slMax, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-
-  // Enforce constraints and update labels on slider change
-  lv_obj_add_event_cb(slMin, [](lv_event_t *e){
-    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
-    lv_obj_t *slMinL = c->taMin;
-    lv_obj_t *slMaxL = c->taMax;
-    int minv = lv_slider_get_value(slMinL);
-    int maxv = lv_slider_get_value(slMaxL);
-    int step = 1;
-    if (minv > maxv - step) { minv = maxv - step; lv_slider_set_value(slMinL, minv, LV_ANIM_OFF); }
-    if (c->isPh) {
-      lv_label_set_text_fmt(c->lblMin, "Min: %.2f", minv / 100.0f);
-      lv_label_set_text_fmt(c->lblMax, "Max: %.2f", lv_slider_get_value(slMaxL) / 100.0f);
-    } else {
-      lv_label_set_text_fmt(c->lblMin, "Min (mV): %d", minv);
-      lv_label_set_text_fmt(c->lblMax, "Max (mV): %d", (int)lv_slider_get_value(slMaxL));
-    }
-  }, LV_EVENT_VALUE_CHANGED, ctx);
-
-  lv_obj_add_event_cb(slMax, [](lv_event_t *e){
-    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
-    lv_obj_t *slMaxL = c->taMax;
-    lv_obj_t *slMinL = c->taMin;
-    int minv = lv_slider_get_value(slMinL);
-    int maxv = lv_slider_get_value(slMaxL);
-    int step = 1;
-    if (maxv < minv + step) { maxv = minv + step; lv_slider_set_value(slMaxL, maxv, LV_ANIM_OFF); }
-    if (c->isPh) {
-      lv_label_set_text_fmt(c->lblMin, "Min: %.2f", lv_slider_get_value(slMinL) / 100.0f);
-      lv_label_set_text_fmt(c->lblMax, "Max: %.2f", maxv / 100.0f);
-    } else {
-      lv_label_set_text_fmt(c->lblMin, "Min (mV): %d", (int)lv_slider_get_value(slMinL));
-      lv_label_set_text_fmt(c->lblMax, "Max (mV): %d", maxv);
-    }
-  }, LV_EVENT_VALUE_CHANGED, ctx);
-
-  // Large buttons
-  lv_obj_t *btnCancel2 = lv_btn_create(dlg); lv_obj_set_size(btnCancel2, 120, 44); lv_obj_align(btnCancel2, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_label_set_text(lv_label_create(btnCancel2), "Cancel");
-  lv_obj_t *btnSave2   = lv_btn_create(dlg); lv_obj_set_size(btnSave2, 120, 44); lv_obj_align(btnSave2, LV_ALIGN_BOTTOM_RIGHT, 0, 0); lv_label_set_text(lv_label_create(btnSave2), "Save");
-
-  // Cancel closes modal and re-enables swiping
-  lv_obj_add_event_cb(btnCancel2, [](lv_event_t *e){
-    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
-    if (c->tv) lv_obj_add_flag(c->tv, LV_OBJ_FLAG_SCROLLABLE);
-    if (c->modal) lv_obj_del(c->modal);
-    lv_mem_free(c);
-  }, LV_EVENT_CLICKED, ctx);
-
-  // Save applies values then closes modal and re-enables swiping
-  lv_obj_add_event_cb(btnSave2, [](lv_event_t *e){
-    RangeCtx *c = (RangeCtx*)lv_event_get_user_data(e);
-    // Retrieve sliders from ctx
-    lv_obj_t *slMinL = c->taMin;
-    lv_obj_t *slMaxL = c->taMax;
-    if (c->isPh) { PH_MIN = lv_slider_get_value(slMinL) / 100.0f; PH_MAX = lv_slider_get_value(slMaxL) / 100.0f; }
-    else { ORP_MIN = lv_slider_get_value(slMinL); ORP_MAX = lv_slider_get_value(slMaxL); }
-    storage.setPhMin(PH_MIN); storage.setPhMax(PH_MAX);
-    storage.setOrpMin(ORP_MIN); storage.setOrpMax(ORP_MAX);
-    updateLvglValues();
-    if (c->tv) lv_obj_add_flag(c->tv, LV_OBJ_FLAG_SCROLLABLE);
-    if (c->modal) lv_obj_del(c->modal);
-    lv_mem_free(c);
-  }, LV_EVENT_CLICKED, ctx);
-
-  // Ensure restoring scrollable on modal delete (safety)
-  lv_obj_add_event_cb(modal, [](lv_event_t *e){
-    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
-      if (lv_tv) lv_obj_add_flag(lv_tv, LV_OBJ_FLAG_SCROLLABLE);
-    }
-  }, LV_EVENT_ALL, NULL);
+  // Legacy dialog replaced by UI module implementation
+  (void)isPh;
+  ui::showRangeEditor(isPh);
 }
 
 static void showZigbeeCommissioningModal(uint32_t seconds){
@@ -1035,7 +839,19 @@ static void updateValueAreas() { updateLvglValues(); }
 static void ensureMqtt() {
   mqttClient.setStorage(&storage);
   mqttClient.setThresholdRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX);
-  mqttClient.begin(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, MQTT_CLIENTID);
+  // Load MQTT config from storage (fallback to defaults)
+  {
+    String h = storage.getMqttHost(MQTT_HOST);
+    uint16_t p = storage.getMqttPort(MQTT_PORT);
+    String u = storage.getMqttUser(MQTT_USER);
+    String pw= storage.getMqttPass(MQTT_PASS);
+    MQTT_HOST = h; MQTT_PORT = p; MQTT_USER = u; MQTT_PASS = pw;
+  }
+  // Skip MQTT setup entirely if no host configured
+  if (MQTT_HOST.length() == 0) {
+    return;
+  }
+  mqttClient.begin(MQTT_HOST.c_str(), MQTT_PORT, MQTT_USER.length()?MQTT_USER.c_str():nullptr, MQTT_PASS.length()?MQTT_PASS.c_str():nullptr, MQTT_CLIENTID);
 }
 
 static void publishDiscoveryOnce() { mqttClient.publishDiscoveryOnce(); }
@@ -1139,16 +955,7 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.setTimeout(50);
-  Serial.setDebugOutput(false);
-  #if defined(BOARD_ESP32S3_35)
-  // Temporarily disable IDF log redirection to avoid any USB CDC dependency
-  // esp_log_set_vprintf(esp32_vprintf_redirect);
-  #endif
-  // Disable IDF logs globally to keep UI responsive without monitor
-  esp_log_level_set("*", ESP_LOG_NONE);
-  // Silence very verbose I2C low-level noise
-  esp_log_level_set("esp32-hal-i2c-ng", ESP_LOG_WARN);
-  esp_log_level_set("ZB", ESP_LOG_INFO);
+  core::Log::init(true);
   ESP_LOGI("BOOT", "Boot start");
   APP_BOOT_MS = millis();
   // Avoid enabling debug output to USB CDC to prevent any hidden blocking
@@ -1172,8 +979,8 @@ void setup() {
     ESP_LOGI("MAIN", "Proceeding to full UI build");
   #endif
 
-  // Create a pinned UI task on core 1 for LVGL processing (S3 only)
-  #if defined(BOARD_ESP32S3_35)
+  // Create a pinned UI task on core 1 for LVGL processing (S3 only, but NOT when using JC BSP which provides its own LVGL task)
+  #if defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
   static TaskHandle_t uiTaskHandle = NULL;
   // Delay starting the task slightly to ensure LVGL/BSP created the default display
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -1289,6 +1096,17 @@ void setup() {
     ESP_LOGI("UI", "After ui::init");
     // Ensure we remove the temporary banner and any prior objects before building UI
     lv_obj_clean(lv_scr_act());
+    // Apply a dark theme so text contrasts on black backgrounds (do this under lock)
+    {
+      lv_theme_t *th = lv_theme_default_init(
+        disp,
+        lv_palette_main(LV_PALETTE_BLUE),
+        lv_palette_main(LV_PALETTE_RED),
+        true, // dark mode
+        &lv_font_montserrat_14
+      );
+      lv_disp_set_theme(disp, th);
+    }
     // Build a safe baseline only for S3 JC path; C6 will build full tile UI below
     #if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
     ui::build(false);
@@ -1307,6 +1125,8 @@ void setup() {
       String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
       ui::setIp(ip.c_str());
     }
+    // Unlock immediately after UI work to avoid blocking BSP LVGL task
+    LVGL_UNLOCK();
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
     storage.begin(false);
@@ -1360,24 +1180,33 @@ void setup() {
     h.onSettings = [](){ g_settingsRequested = true; };
     h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; };
     h.onWifiSave = [](const char *s, const char *p){ storage.setWifiSsid(s?s:""); storage.setWifiPass(p?p:""); };
+    h.onMqttSave = [](const char *host, uint16_t port, const char *user, const char *pass){
+      storage.setMqttHost(host?host:"");
+      storage.setMqttPort(port);
+      storage.setMqttUser(user?user:"");
+      storage.setMqttPass(pass?pass:"");
+      MQTT_HOST = storage.getMqttHost(MQTT_HOST);
+      MQTT_PORT = storage.getMqttPort(MQTT_PORT);
+      MQTT_USER = storage.getMqttUser(MQTT_USER);
+      MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+    };
     ui::configureHandlers(h);
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
-    // Apply a dark theme so text contrasts on black backgrounds
-    lv_theme_t *th = lv_theme_default_init(
-      disp,
-      lv_palette_main(LV_PALETTE_BLUE),
-      lv_palette_main(LV_PALETTE_RED),
-      true, // dark mode
-      &lv_font_montserrat_14
-    );
-    lv_disp_set_theme(disp, th);
+    // Theme already set earlier under lock for S3; C6 keeps default path
 
     // Input device (touch) bridge (enabled with safe polling read_cb)
     #if !defined(BOARD_ESP32S3_35)
     if (true) {
       static lv_indev_drv_t indev_drv;
       lv_indev_drv_init(&indev_drv);
+      // Tune gesture/scroll parameters at runtime to avoid macro redefinition warnings
+      indev_drv.scroll_limit = 4;            // match UI expectation for drag start
+      indev_drv.scroll_throw = 8;            // moderate deceleration
+      indev_drv.long_press_time = 400;       // ms
+      indev_drv.long_press_repeat_time = 100;// ms
+      indev_drv.gesture_limit = 20;          // pixels
+      indev_drv.gesture_min_velocity = 2;    // pixels per tick
       indev_drv.type = LV_INDEV_TYPE_POINTER;
       indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data)->void{
         uint8_t buf[14] = {0};
@@ -1816,16 +1645,11 @@ void setup() {
       lv_obj_scroll_to_x(lv_tv, 0, LV_ANIM_OFF);
       lv_obj_scroll_to_y(lv_tv, 0, LV_ANIM_OFF);
     };
+    // Use modern UI module instead of legacy builder
     #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-    ESP_LOGI("UI", "Before build_lvgl_ui");
-    build_lvgl_ui();
-    ESP_LOGI("UI", "After build_lvgl_ui");
-    #else
-    ESP_LOGI("UI", "Skipping legacy build_lvgl_ui on S3 JC path (using ui::build)");
+    ui::build(false);
+    ui::updateValues();
     #endif
-    // Add a one-shot timer to enforce centered layout once sizes settle
-    lv_timer_t *once = lv_timer_create(lv_fix_initial_layout, 60, NULL);
-    lv_timer_set_repeat_count(once, 1);
     ESP_LOGI("UI", "After layout timer");
     #if defined(BOARD_ESP32S3_35)
     LVGL_UNLOCK();
@@ -1840,11 +1664,8 @@ void setup() {
   delay(50);
 
   // Init buttons (BOOT) with pull-up and debounce state
-  if (BTN_PIN1 >= 0) pinMode(BTN_PIN1, INPUT_PULLUP);
-  // Initialize button state to avoid false long-press at boot
-  bool rawNow = (BTN_PIN1 >= 0) ? (digitalRead(BTN_PIN1) == LOW) : false;
-  btnPrev = btnStable = btnRawPrev = rawNow;
-  btnPressMs = 0; btnLastChangeMs = millis();
+  // Initialize debounced buttons helper
+  g_buttons.begin(io::ButtonPins{ BTN_PIN1, BTN_PIN2 });
 
   // Init Zigbee client only on platforms that support it and when enabled
   #if ZB_ENABLED && !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
@@ -1965,13 +1786,7 @@ void setup() {
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
-    control = new domain::ControlPolicy(TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM);
-
-    // Use the correct ESP32-C6 ledc API
-    ledcAttach(M1_PWM, PWM_FREQ, PWM_BITS);
-    ledcAttach(M2_PWM, PWM_FREQ, PWM_BITS);
-    ledcWrite(M1_PWM, 0);
-    ledcWrite(M2_PWM, 0);
+    g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
 
     if (MOTOR_TEST && !FORCE_MOTOR_A_ON) {
       uint8_t duty = (uint8_t)(M1_SPEED_PC * 255 / 100);
@@ -2072,7 +1887,9 @@ void loop() {
   if (g_showMainRequested) {
     g_showMainRequested = false;
     #if defined(BOARD_ESP32S3_35)
-    if (LVGL_LOCK()) { ui::showMain(); LVGL_UNLOCK(); }
+    // Defer to LVGL context to avoid cross-thread UI calls
+    lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showMain(); }, 0, NULL);
+    lv_timer_set_repeat_count(t, 1);
     #else
     ui::showMain();
     #endif
@@ -2080,46 +1897,19 @@ void loop() {
   // Removed alive ticker
 
   // --- Button long-press detection for Zigbee commissioning ---
-  // Debounce raw state (15ms)
-  bool rawNow = (BTN_PIN1 >= 0) ? (digitalRead(BTN_PIN1) == LOW) : false;
-  uint32_t nowMs = millis();
-  if (rawNow != btnRawPrev) { btnRawPrev = rawNow; btnLastChangeMs = nowMs; }
-  if ((nowMs - btnLastChangeMs) >= 15) { btnStable = rawNow; }
-
-  bool btnNow = btnStable;
-  if (btnNow && !btnPrev) {
-    btnPressMs = nowMs;
-    ESP_LOGI("ZB", "Button pressed");
-    // Show hint immediately on press to confirm UI feedback
+  if (g_buttons.pollLongPress(3000)) {
+    ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
     if (USE_LVGL_UI) ui::showHoldToPair();
+    #if ZB_ENABLED
+    savedMode = runMode;
+    modeForced = true;
+    runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
+    if (WiFi.isConnected()) WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    wifiOff = true;
+    zb_start_and_commission(120);
+    #endif
   }
-  if (!btnNow && btnPrev) {
-    uint32_t held = btnPressMs ? (nowMs - btnPressMs) : 0;
-    btnPressMs = 0;
-    ESP_LOGI("ZB", "Button released");
-    // Require 3s+ hold to start commissioning; show hint modal for shorter presses
-    if (held >= 3000) {
-#if ZB_ENABLED
-      // Start commissioning immediately (no reboot)
-      if (USE_LVGL_UI) ui::showHoldToPair();
-      ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
-      // Force Zigbee mode during commissioning
-      savedMode = runMode;
-      modeForced = true;
-      runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
-      if (WiFi.isConnected()) WiFi.disconnect(true, true);
-      WiFi.mode(WIFI_OFF);
-      wifiOff = true;
-      zb_start_and_commission(120);
-#else
-      // No Zigbee on this board
-      ESP_LOGI("ZB", "Zigbee not available on this board");
-#endif
-    } else if (held >= 100 && held < 3000) {
-      if (USE_LVGL_UI) ui::showHoldToPair();
-    }
-  }
-  btnPrev = btnNow;
 
   // If commissioning finished, optionally restore WiFi
   #if ZB_ENABLED
@@ -2155,9 +1945,21 @@ void loop() {
     if (USE_LVGL_UI) {
       bool opened = false;
       #if defined(BOARD_ESP32S3_35)
-      if (LVGL_LOCK()) { ui::showSettings(); ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); LVGL_UNLOCK(); opened = true; }
+      if (LVGL_LOCK()) {
+        // Defer UI changes to a zero-delay LVGL timer to avoid event/reentrancy issues
+        lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
+        lv_timer_set_repeat_count(t, 1);
+        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 0, NULL);
+        lv_timer_set_repeat_count(t2, 1);
+        LVGL_UNLOCK(); opened = true;
+      }
       #else
-      ui::showSettings(); opened = true;
+      // Non-S3 path: still defer to next tick
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 0, NULL);
+      lv_timer_set_repeat_count(t2, 1);
+      opened = true;
       #endif
       if (opened) g_settingsRequested = false;
     } else {
@@ -2234,6 +2036,7 @@ void loop() {
   // UI task now handles lv_timer_handler on S3
   // Push live updates to WebUI websockets periodically
   static uint32_t lastWebPush=0;
+  uint32_t nowMs = millis();
   if (WiFi.status()==WL_CONNECTED && nowMs - lastWebPush > 1000) {
     lastWebPush = nowMs;
     if (webui.isActive()) webui.broadcastMetrics();
@@ -2246,14 +2049,17 @@ void loop() {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
       wifiMgr.loop();
       if (WiFi.status() == WL_CONNECTED) {
-        if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
-          lastConnectAttempt = now;
-          mqttClient.ensureConnected();
-        }
-        if (mqttClient.isConnected()) {
-          mqttClient.publishDiscoveryOnce();
-          mqttClient.publishStatesIfReady(domain::Metrics::instance());
-          mqttClient.loop();
+        // Only attempt MQTT if a host is configured
+        if (MQTT_HOST.length() > 0) {
+          if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
+            lastConnectAttempt = now;
+            mqttClient.ensureConnected();
+          }
+          if (mqttClient.isConnected()) {
+            mqttClient.publishDiscoveryOnce();
+            mqttClient.publishStatesIfReady(domain::Metrics::instance());
+            mqttClient.loop();
+          }
         }
       }
     }
@@ -2268,18 +2074,16 @@ void loop() {
   if (MOTOR_ENABLE) {
     domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
     if (!emergencyStop) {
-      control->update(cfg,
-                      domain::Metrics::instance().havePh,
-                      domain::Metrics::instance().phVal,
-                      domain::Metrics::instance().haveOrp,
-                      domain::Metrics::instance().orpMv,
-                      (bool)(FORCE_MOTOR_A_ON && !emergencyStop),
-                      m1Running, m2Running);
+      g_motor.tick(cfg,
+                 domain::Metrics::instance().havePh,
+                 domain::Metrics::instance().phVal,
+                 domain::Metrics::instance().haveOrp,
+                 domain::Metrics::instance().orpMv,
+                 (bool)(FORCE_MOTOR_A_ON && !emergencyStop));
+      m1Running = g_motor.isM1Running();
+      m2Running = g_motor.isM2Running();
     } else {
-      // Keep motors off
-      digitalWrite(TB_STBY, LOW);
-      ledcWrite(M1_PWM, 0);
-      ledcWrite(M2_PWM, 0);
+      g_motor.stopAll();
       m1Running = false; m2Running = false;
     }
     if (USE_LVGL_UI) {

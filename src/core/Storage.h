@@ -39,6 +39,16 @@ public:
   void setWifiSsid(const String &v);
   void setWifiPass(const String &v);
 
+  // MQTT/Home Assistant broker
+  String getMqttHost(const String &def = "") const;
+  uint16_t getMqttPort(uint16_t def = 1883) const;
+  String getMqttUser(const String &def = "") const;
+  String getMqttPass(const String &def = "") const;
+  void setMqttHost(const String &v);
+  void setMqttPort(uint16_t v);
+  void setMqttUser(const String &v);
+  void setMqttPass(const String &v);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()
