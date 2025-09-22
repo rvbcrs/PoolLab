@@ -1191,6 +1191,7 @@ void setup() {
       MQTT_PASS = storage.getMqttPass(MQTT_PASS);
     };
     ui::configureHandlers(h);
+    ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
     // Theme already set earlier under lock for S3; C6 keeps default path
@@ -1835,8 +1836,8 @@ void loop() {
     #if !defined(BOARD_ESP32S3_35)
     lv_timer_handler();
     #endif
-    // Let LVGL task run; then update values under lock
-    delay(1);
+    // Let LVGL task run; then light yield
+    delay(0);
     // Apply deferred UI IP update from WiFi callback without crossing threads
     if (g_ui_ip_dirty) {
       g_ui_ip_dirty = false;
@@ -1850,9 +1851,8 @@ void loop() {
     if (!MOTOR_ENABLE) {
       bool phActive = METRICS().havePh && (METRICS().phVal < PH_MIN || METRICS().phVal > PH_MAX);
       bool orpActive = METRICS().haveOrp && ((int)lrintf(METRICS().orpMv) < ORP_MIN || (int)lrintf(METRICS().orpMv) > ORP_MAX);
-      #if defined(BOARD_ESP32S3_35)
-      if (LVGL_LOCK()) {
-      #endif
+      // Only toggle legacy main-UI icons on non-S3 routes; S3/JC uses module UI via ui::setPumpActive
+      #if !defined(BOARD_ESP32S3_35)
       if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
         if (phActive) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
         else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
@@ -1861,10 +1861,9 @@ void loop() {
         if (orpActive) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
         else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
       }
-      #if defined(BOARD_ESP32S3_35)
-        LVGL_UNLOCK();
-      }
       #endif
+      // Ensure module UI icons reflect threshold state too
+      ui::setPumpActive(phActive, orpActive);
     }
   } else if (DIAG_MODE) {
     static uint32_t last = 0;
@@ -2088,7 +2087,7 @@ void loop() {
     }
     if (USE_LVGL_UI) {
       updateLvglValues();
-      // Toggle pump icons visibility
+      // Toggle pump icons visibility (both legacy main UI and module UI)
       if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
         if (m1Running) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
         else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
@@ -2097,6 +2096,8 @@ void loop() {
         if (m2Running) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
         else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
       }
+      // Module UI pump icons
+      ui::setPumpActive(m1Running, m2Running);
     }
   }
 
@@ -2104,9 +2105,11 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED) {
     ArduinoOTA.handle();
     if (webui.isActive()) webui.loop();
+    delay(0);
   }
   if (portal.isActive()) {
     portal.loop();
+    delay(0);
   }
 
   // Zigbee periodic reporting (Arduino Zigbee runs internally; no explicit loop needed)

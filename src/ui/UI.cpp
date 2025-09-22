@@ -24,6 +24,11 @@ static lv_obj_t *lv_ta_mqtt_host = nullptr;
 static lv_obj_t *lv_ta_mqtt_port = nullptr;
 static lv_obj_t *lv_ta_mqtt_user = nullptr;
 static lv_obj_t *lv_ta_mqtt_pw = nullptr;
+static float g_phMin = 6.80f, g_phMax = 7.60f; static int g_orpMin = 250, g_orpMax = 850;
+static bool g_pumpPh = false, g_pumpOrp = false;
+static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
+// no timer; use lv_async_call to toggle in LVGL task
+static bool g_pump_pending = false;
 static lv_obj_t *lv_ta_ssid = nullptr;
 static lv_obj_t *lv_ta_pass = nullptr;
 static lv_obj_t *lv_lbl_ssid = nullptr;
@@ -89,19 +94,19 @@ void build(bool safeBaseline){
     lv_obj_t *panel = lv_obj_create(scr);
     lv_obj_set_size(panel, lv_obj_get_width(scr)-20, 90);
     lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 8);
-    lv_obj_set_style_bg_opa(panel, LV_OPA_20, 0);
-    lv_obj_set_style_pad_all(panel, 6, 0);
+  lv_obj_set_style_bg_opa(panel, LV_OPA_20, 0);
+  lv_obj_set_style_pad_all(panel, 6, 0);
 
-    lv_obj_t *lblm1 = lv_label_create(panel); lv_label_set_text(lblm1, "pH Motor %"); lv_obj_align(lblm1, LV_ALIGN_LEFT_MID, 0, 14);
-    lv_slider_m1 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m1, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m1, LV_ALIGN_LEFT_MID, 100, 14); lv_slider_set_range(lv_slider_m1, 0, 100); lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
+  lv_obj_t *lblm1 = lv_label_create(panel); lv_label_set_text(lblm1, "pH Motor %"); lv_obj_align(lblm1, LV_ALIGN_LEFT_MID, 0, 14);
+  lv_slider_m1 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m1, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m1, LV_ALIGN_LEFT_MID, 100, 14); lv_slider_set_range(lv_slider_m1, 0, 100); lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
 
-    lv_obj_t *lblm2 = lv_label_create(panel); lv_label_set_text(lblm2, "ORP Motor %"); lv_obj_align(lblm2, LV_ALIGN_LEFT_MID, 0, 44);
-    lv_slider_m2 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m2, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m2, LV_ALIGN_LEFT_MID, 100, 44); lv_slider_set_range(lv_slider_m2, 0, 100); lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
+  lv_obj_t *lblm2 = lv_label_create(panel); lv_label_set_text(lblm2, "ORP Motor %"); lv_obj_align(lblm2, LV_ALIGN_LEFT_MID, 0, 44);
+  lv_slider_m2 = lv_slider_create(panel); lv_obj_set_size(lv_slider_m2, lv_obj_get_width(panel)-110, 12); lv_obj_align(lv_slider_m2, LV_ALIGN_LEFT_MID, 100, 44); lv_slider_set_range(lv_slider_m2, 0, 100); lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
 
-    if (handlers.onSpeedChange) {
-      lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(1,v);} }, LV_EVENT_ALL, NULL);
-      lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(2,v);} }, LV_EVENT_ALL, NULL);
-    }
+  if (handlers.onSpeedChange) {
+    lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(1,v);} }, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); handlers.onSpeedChange(2,v);} }, LV_EVENT_ALL, NULL);
+  }
 
     // Ensure periodic value updates
     if (!g_update_timer) {
@@ -162,8 +167,8 @@ void build(bool safeBaseline){
 
   // Slightly darker, less saturated tile colors
   lv_obj_t *card_ph  = make_card(lv_palette_darken(LV_PALETTE_BLUE, 3));
-  lv_obj_t *card_orp = make_card(lv_palette_darken(LV_PALETTE_AMBER, 3));
-  lv_obj_t *card_tmp = make_card(lv_palette_darken(LV_PALETTE_TEAL, 3));
+  lv_obj_t *card_orp = make_card(lv_palette_darken(LV_PALETTE_TEAL, 3));
+  lv_obj_t *card_tmp = make_card(lv_palette_darken(LV_PALETTE_AMBER, 4));
 
   // Icons + labels
   lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
@@ -172,6 +177,9 @@ void build(bool safeBaseline){
   lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+  // Pump icons (module UI) — place below target labels
+  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
 
   // Temp icon + value label
   lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
@@ -239,6 +247,12 @@ void updateValues(){
       int ph_i = ph100 / 100; int ph_f = abs(ph100 % 100);
       char b[16]; snprintf(b, sizeof(b), "%d.%02d", ph_i, ph_f);
       lv_label_set_text(lv_lbl_ph, b);
+      // Colorize by thresholds
+      lv_color_t c = lv_color_white();
+      bool below = M.phVal < g_phMin; bool above = M.phVal > g_phMax;
+      bool warn = (!below && !above) && (M.phVal <= g_phMin + 0.05f || M.phVal >= g_phMax - 0.05f);
+      if (below || above) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
+      lv_obj_set_style_text_color(lv_lbl_ph, c, 0);
     } else {
       lv_label_set_text(lv_lbl_ph, "--.--");
     }
@@ -249,6 +263,13 @@ void updateValues(){
       char b[16]; snprintf(b, sizeof(b), "%d", (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f)));
       lv_label_set_text(lv_lbl_orp, b);
       if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
+      // Colorize by thresholds
+      int v = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
+      lv_color_t c = lv_color_white();
+      bool low = v < g_orpMin; bool high = v > g_orpMax;
+      bool warn = (!low && !high) && (v <= g_orpMin + 20 || v >= g_orpMax - 20);
+      if (low || high) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
+      lv_obj_set_style_text_color(lv_lbl_orp, c, 0);
     } else {
       lv_label_set_text(lv_lbl_orp, "----");
     }
@@ -277,18 +298,45 @@ void updateValues(){
   }
 }
 
+void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
+  g_phMin = phMin; g_phMax = phMax; g_orpMin = orpMin; g_orpMax = orpMax;
+}
+
+static void pump_toggle_async(void *ud){
+  (void)ud;
+  g_pump_pending = false;
+  if (lv_pump_ph) {
+    if (g_pumpPh) lv_obj_clear_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (lv_pump_orp) {
+    if (g_pumpOrp) lv_obj_clear_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void setPumpActive(bool phActive, bool orpActive){
+  // Avoid updates while in settings screen
+  if (onSettings) return;
+  if (phActive == g_pumpPh && orpActive == g_pumpOrp) return;
+  g_pumpPh = phActive; g_pumpOrp = orpActive;
+  if (g_pump_pending) return;
+  g_pump_pending = true;
+  // Defer to LVGL task; thread-safe per LVGL
+  lv_async_call(pump_toggle_async, NULL);
+}
+
 void setIp(const char *ipText){
-  if (!lv_lbl_ip) return;
+  static char s_ip[64] = {0};
   if (!ipText) ipText = "--";
-  char b[64]; snprintf(b, sizeof(b), "IP: %s", ipText);
-  lv_label_set_text(lv_lbl_ip, b);
+  snprintf(s_ip, sizeof(s_ip), "IP: %s", ipText);
+  // Defer to LVGL task to avoid cross-thread writes
+  lv_async_call([](void *p){ (void)p; if (lv_lbl_ip) lv_label_set_text(lv_lbl_ip, s_ip); }, NULL);
 }
 
 void setSsid(const char *ssid){
-  if (!lv_lbl_ssid) return;
+  static char s_ssid[96] = {0};
   if (!ssid || !ssid[0]) ssid = "--";
-  char b[96]; snprintf(b, sizeof(b), "SSID: %s", ssid);
-  lv_label_set_text(lv_lbl_ssid, b);
+  snprintf(s_ssid, sizeof(s_ssid), "SSID: %s", ssid);
+  lv_async_call([](void *p){ (void)p; if (lv_lbl_ssid) lv_label_set_text(lv_lbl_ssid, s_ssid); }, NULL);
 }
 
 void showSettings(){
@@ -445,6 +493,40 @@ void showSettings(){
       }
     }
   }, LV_EVENT_CLICKED, NULL);
+
+  // On-screen keyboard: show on focus for textareas
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_obj_set_width(kb, scr_w - pad*2);
+  lv_obj_set_style_max_height(kb, scr_h/2, 0);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -pad);
+  lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  auto bind_kb = [&](lv_obj_t *ta){
+    lv_obj_add_event_cb(ta, [](lv_event_t *e){
+      auto code = lv_event_get_code(e);
+      lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+      lv_obj_t *kb = (lv_obj_t*)lv_event_get_user_data(e);
+      if (code == LV_EVENT_FOCUSED) {
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+      } else if (code == LV_EVENT_DEFOCUSED) {
+        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+      }
+    }, LV_EVENT_ALL, kb);
+  };
+  bind_kb(lv_ta_ssid);
+  bind_kb(lv_ta_pass);
+  bind_kb(lv_ta_mqtt_host);
+  bind_kb(lv_ta_mqtt_port);
+  bind_kb(lv_ta_mqtt_user);
+  bind_kb(lv_ta_mqtt_pw);
+  // Hide keyboard on ready/cancel
+  lv_obj_add_event_cb(kb, [](lv_event_t *e){
+    auto code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+      lv_obj_t *kb = (lv_obj_t*)lv_event_get_target(e);
+      lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+  }, LV_EVENT_ALL, NULL);
 
   lv_obj_t *btnBack = lv_btn_create(footer); lv_obj_set_height(btnBack, footer_h-16); lv_obj_set_flex_grow(btnBack, 1); lv_obj_t *lblb = lv_label_create(btnBack); lv_label_set_text(lblb, "Back"); lv_obj_center(lblb);
   lv_obj_add_event_cb(btnBack, [](lv_event_t *e){

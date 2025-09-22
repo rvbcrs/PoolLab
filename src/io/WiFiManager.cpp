@@ -40,9 +40,13 @@ void WiFiManager::setupEvents(){
         _connecting = false; _failCount++;
         if (_onIp) _onIp(String("--"));
         if (_failCount > 3) {
-          ESP_LOGI("WiFi","Too many fails -> Captive Portal");
-          startPortal("PoolLab-Setup");
-          if (_onIp) _onIp(WiFi.softAPIP().toString());
+          if (_ssid.length() == 0) {
+            ESP_LOGI("WiFi","Too many fails and no SSID -> Captive Portal");
+            startPortal("PoolLab-Setup");
+            if (_onIp) _onIp(WiFi.softAPIP().toString());
+          } else {
+            ESP_LOGI("WiFi","Too many fails but SSID is set -> keep STA retries, no portal");
+          }
         }
         break;
       default: break;
