@@ -51,7 +51,7 @@ private:
   bool _announced = false;
   float *_phMin, *_phMax;
   int *_orpMin, *_orpMax;
-  bool _debug = true;
+  bool _debug = false;
 };
 
 } // namespace io
