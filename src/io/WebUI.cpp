@@ -4,6 +4,7 @@
 namespace io {
 
 extern "C" void requestModeChange(int mode);
+extern "C" void requestMqttReload();
 
 void WebUI::begin(){
   if (_active) return;
@@ -70,6 +71,16 @@ void WebUI::handleSettings(){
   html += F("<label>ORP Max (mV)</label><input name='orp_max' value='"); html += _orpMax? String(*_orpMax) : String(850); html += F("'>");
   html += F("<label>pH Motor %</label><input name='m1' value='"); html += _m1? String((int)*_m1) : String(60); html += F("'>");
   html += F("<label>ORP Motor %</label><input name='m2' value='"); html += _m2? String((int)*_m2) : String(60); html += F("'>");
+  // MQTT settings
+  String mh = _storage ? _storage->getMqttHost("") : String("");
+  uint16_t mp = _storage ? _storage->getMqttPort(1883) : 1883;
+  String mu = _storage ? _storage->getMqttUser("") : String("");
+  String mw = _storage ? _storage->getMqttPass("") : String("");
+  html += F("<h3>MQTT</h3>");
+  html += F("<label>Host</label><input name='mqtt_host' value='"); html += mh; html += F("'>");
+  html += F("<label>Port</label><input name='mqtt_port' value='"); if (mp==0) html += F(""); else html += String((unsigned)mp); html += F("'>");
+  html += F("<label>User</label><input name='mqtt_user' value='"); html += mu; html += F("'>");
+  html += F("<label>Password</label><input type='password' name='mqtt_pass' value='"); html += mw; html += F("'>");
   html += F("<div class='row'><button class='btn red' type='submit'>Save</button><a href='/'><button class='btn' type='button'>Cancel</button></a></div>");
   html += F("</form></div>");
   sendFooter(html);
@@ -114,6 +125,18 @@ void WebUI::handleApiSave(){
     requestModeChange(modeInt);
   }
   #endif
+  // MQTT settings save
+  if (_storage) {
+    if (_http.hasArg("mqtt_host")) _storage->setMqttHost(_http.arg("mqtt_host"));
+    if (_http.hasArg("mqtt_port")) {
+      String p = _http.arg("mqtt_port"); p.trim();
+      uint16_t prt = p.length() ? (uint16_t)parseIntOr(p, 1883) : 0;
+      _storage->setMqttPort(prt);
+    }
+    if (_http.hasArg("mqtt_user")) _storage->setMqttUser(_http.arg("mqtt_user"));
+    if (_http.hasArg("mqtt_pass")) _storage->setMqttPass(_http.arg("mqtt_pass"));
+    requestMqttReload();
+  }
   _http.sendHeader("Location", "/settings"); _http.send(302, "text/plain", "Saved");
 }
 

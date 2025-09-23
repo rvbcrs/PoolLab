@@ -59,7 +59,7 @@ void Storage::setWifiPass(const String &pass) {
 }
 
 String Storage::getMqttHost(const String &def) const { return _prefs.getString("mqtt_host", def); }
-uint16_t Storage::getMqttPort(uint16_t def) const { return (uint16_t)_prefs.getUInt("mqtt_port", def); }
+uint16_t Storage::getMqttPort(uint16_t def) const { return _prefs.getUShort("mqtt_port", def); }
 String Storage::getMqttUser(const String &def) const { return _prefs.getString("mqtt_user", def); }
 String Storage::getMqttPass(const String &def) const { return _prefs.getString("mqtt_pass", def); }
 void Storage::setMqttHost(const String &host) {

@@ -478,7 +478,7 @@ void showSettings(){
       const char *port = lv_textarea_get_text(lv_ta_mqtt_port);
       const char *user = lv_textarea_get_text(lv_ta_mqtt_user);
       const char *pw   = lv_textarea_get_text(lv_ta_mqtt_pw);
-      uint16_t prt = (uint16_t)atoi(port && *port ? port : "1883");
+      uint16_t prt = (uint16_t)((port && *port) ? atoi(port) : 0); // 0 = unspecified
       if (handlers.onMqttSave) handlers.onMqttSave(host ? host : "", prt, user ? user : "", pw ? pw : "");
       if (handlers.onSaveSettings) handlers.onSaveSettings();
     }
@@ -493,13 +493,52 @@ void showSettings(){
   }, LV_EVENT_CLICKED, NULL);
 
   // Keyboard binding
-  lv_obj_add_event_cb(lv_ta_ssid, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-  lv_obj_add_event_cb(lv_ta_pass, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-  lv_obj_add_event_cb(lv_ta_mqtt_host, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-  lv_obj_add_event_cb(lv_ta_mqtt_port, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-  lv_obj_add_event_cb(lv_ta_mqtt_user, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-  lv_obj_add_event_cb(lv_ta_mqtt_pw, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
-
+  lv_obj_t *kb = lv_keyboard_create(scr);
+  lv_obj_set_width(kb, scr_w - pad*2);
+  lv_obj_set_style_max_height(kb, scr_h/2, 0);
+  // Align keyboard above footer so it doesn't overlap it
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -(pad + footer_h));
+  lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  struct KbCtx { lv_obj_t *kb; lv_obj_t *content; lv_coord_t base_pad; lv_coord_t footer_h; lv_coord_t pad; };
+  static KbCtx kbctx_store; KbCtx *kbctx = &kbctx_store;
+  kbctx->kb = kb; kbctx->content = content; kbctx->base_pad = pad; kbctx->footer_h = footer_h; kbctx->pad = pad;
+  auto bind_kb = [&](lv_obj_t *ta){
+    lv_obj_add_event_cb(ta, [](lv_event_t *e){
+      auto code = lv_event_get_code(e);
+      lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+      KbCtx *c = (KbCtx*)lv_event_get_user_data(e);
+      if (!c) return;
+      lv_obj_t *kb = c->kb;
+      if (code == LV_EVENT_FOCUSED) {
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+        // Ensure TA is visible above keyboard: increase bottom padding and scroll into view
+        if (c->content) {
+          lv_coord_t kh = lv_obj_get_height(kb);
+          lv_obj_set_style_pad_bottom(c->content, kh + c->pad, 0);
+          lv_obj_scroll_to_view_recursive(ta, LV_ANIM_ON);
+        }
+      } else if (code == LV_EVENT_DEFOCUSED) {
+        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+        lv_keyboard_set_textarea(kb, NULL);
+        if (c->content) lv_obj_set_style_pad_bottom(c->content, c->base_pad, 0);
+      }
+    }, LV_EVENT_ALL, kbctx);
+  };
+  bind_kb(lv_ta_ssid);
+  bind_kb(lv_ta_pass);
+  bind_kb(lv_ta_mqtt_host);
+  bind_kb(lv_ta_mqtt_port);
+  bind_kb(lv_ta_mqtt_user);
+  bind_kb(lv_ta_mqtt_pw);
+  // Hide keyboard on ready/cancel
+  lv_obj_add_event_cb(kb, [](lv_event_t *e){
+    auto code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+      lv_obj_t *kb = (lv_obj_t*)lv_event_get_target(e);
+      lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+  }, LV_EVENT_ALL, NULL);
   // Fields will be populated by caller after opening settings
 }
 
@@ -518,7 +557,10 @@ void setSavedWifi(const char *ssid, const char *pass){
 
 void setSavedMqtt(const char *host, uint16_t port, const char *user, const char *pass){
   if (lv_ta_mqtt_host) lv_textarea_set_text(lv_ta_mqtt_host, (host&&host[0])?host:"");
-  if (lv_ta_mqtt_port) { char b[8]; snprintf(b,sizeof(b),"%u", (unsigned)port); lv_textarea_set_text(lv_ta_mqtt_port, b); }
+  if (lv_ta_mqtt_port) {
+    if (port == 0) { lv_textarea_set_text(lv_ta_mqtt_port, ""); }
+    else { char b[8]; snprintf(b,sizeof(b),"%u", (unsigned)port); lv_textarea_set_text(lv_ta_mqtt_port, b); }
+  }
   if (lv_ta_mqtt_user) lv_textarea_set_text(lv_ta_mqtt_user, (user&&user[0])?user:"");
   if (lv_ta_mqtt_pw)   lv_textarea_set_text(lv_ta_mqtt_pw,   (pass&&pass[0])?pass:"");
 }

@@ -35,6 +35,7 @@ public:
   void publishDiscoveryOnce();
   void publishStatesIfReady(const domain::Metrics &m);
   void loop();
+  void setDebug(bool enabled) { _debug = enabled; }
 
 private:
   void onMessage(char* topic, uint8_t* payload, unsigned int length);
@@ -50,6 +51,7 @@ private:
   bool _announced = false;
   float *_phMin, *_phMax;
   int *_orpMin, *_orpMax;
+  bool _debug = true;
 };
 
 } // namespace io

@@ -1186,7 +1186,7 @@ void setup() {
       }
     };
     h.onSettings = [](){ g_settingsRequested = true; };
-    h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; };
+    h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; ESP.restart(); };
     h.onWifiSave = [](const char *s, const char *p){
       ESP_LOGI("UI", "Saving WiFi: SSID='%s', Pass='%s'", s ? s : "", p ? p : "");
       storage.setWifiSsid(s?s:""); 
@@ -2195,3 +2195,13 @@ void loop() {
 }
 
 // Legacy pagination removed
+
+extern "C" void requestMqttReload(){
+  MQTT_HOST = storage.getMqttHost(MQTT_HOST);
+  MQTT_PORT = storage.getMqttPort(MQTT_PORT);
+  MQTT_USER = storage.getMqttUser(MQTT_USER);
+  MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+  if (WiFi.status() == WL_CONNECTED) {
+    ensureMqtt();
+  }
+}
