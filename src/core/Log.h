@@ -12,7 +12,7 @@ public:
     if (disableWhenNoCDC) {
       esp_log_set_vprintf(&Log::vprintfRedirect);
     }
-    esp_log_level_set("*", ESP_LOG_NONE);
+    esp_log_level_set("*", ESP_LOG_INFO);
   }
 
 private:

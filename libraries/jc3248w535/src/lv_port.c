@@ -600,6 +600,23 @@ static void lvgl_port_touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *
         bool touchpad_pressed = esp_lcd_touch_get_coordinates(touch_ctx->handle, touchpad_x, touchpad_y, NULL, &touchpad_cnt, 1);
 
         if (touchpad_pressed && touchpad_cnt > 0) {
+            static uint32_t last_touch_ms = 0;
+            static uint16_t last_x = 0, last_y = 0;
+            const uint32_t DEBOUNCE_MS = 200;
+            const uint16_t JITTER_TOL = 5; // Pixel tolerance for jitter
+            uint32_t now = esp_timer_get_time() / 1000; // ms
+            if (now - last_touch_ms < DEBOUNCE_MS &&
+                abs(touchpad_x[0] - last_x) <= JITTER_TOL &&
+                abs(touchpad_y[0] - last_y) <= JITTER_TOL) {
+                // Ignore repeat of same point within debounce window
+                esp_rom_printf("Ignored repeated touch\n");
+                data->state = LV_INDEV_STATE_RELEASED;
+                return;
+            }
+            last_touch_ms = now;
+            last_x = touchpad_x[0];
+            last_y = touchpad_y[0];
+
             data->point.x = touchpad_x[0];
             data->point.y = touchpad_y[0];
             data->state = LV_INDEV_STATE_PRESSED;

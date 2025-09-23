@@ -849,8 +849,8 @@ static void ensureMqtt() {
   }
   // Skip MQTT setup entirely if no host configured
   if (MQTT_HOST.length() == 0) {
-    return;
-  }
+      return;
+    }
   mqttClient.begin(MQTT_HOST.c_str(), MQTT_PORT, MQTT_USER.length()?MQTT_USER.c_str():nullptr, MQTT_PASS.length()?MQTT_PASS.c_str():nullptr, MQTT_CLIENTID);
 }
 
@@ -1127,6 +1127,14 @@ void setup() {
     }
     // Unlock immediately after UI work to avoid blocking BSP LVGL task
     LVGL_UNLOCK();
+    // Tune touch repeat thresholds to avoid double key insert on on-screen keyboard
+    {
+      lv_indev_t *indev = bsp_display_get_input_dev();
+      if (indev && indev->driver) {
+        indev->driver->long_press_time = 800;           // ms before repeat starts
+        indev->driver->long_press_repeat_time = 0;      // disable key repeat to avoid doubles
+      }
+    }
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
     storage.begin(false);
@@ -1168,7 +1176,7 @@ void setup() {
         }
         #endif
       } else {
-        // Switch to WiFi/MQTT: keep Zigbee stack quiescent
+        // Switch to WiFi/MQTT immediately
         wifiOff = false;
         WiFi.mode(WIFI_STA);
       #if !defined(USE_JC3248W535)
@@ -1179,8 +1187,13 @@ void setup() {
     };
     h.onSettings = [](){ g_settingsRequested = true; };
     h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; };
-    h.onWifiSave = [](const char *s, const char *p){ storage.setWifiSsid(s?s:""); storage.setWifiPass(p?p:""); };
+    h.onWifiSave = [](const char *s, const char *p){
+      ESP_LOGI("UI", "Saving WiFi: SSID='%s', Pass='%s'", s ? s : "", p ? p : "");
+      storage.setWifiSsid(s?s:""); 
+      storage.setWifiPass(p?p:"");
+    };
     h.onMqttSave = [](const char *host, uint16_t port, const char *user, const char *pass){
+      ESP_LOGI("UI", "Saving MQTT: Host='%s', Port=%u, User='%s', Pass='%s'", host ? host : "", port, user ? user : "", pass ? pass : "");
       storage.setMqttHost(host?host:"");
       storage.setMqttPort(port);
       storage.setMqttUser(user?user:"");
@@ -1189,6 +1202,13 @@ void setup() {
       MQTT_PORT = storage.getMqttPort(MQTT_PORT);
       MQTT_USER = storage.getMqttUser(MQTT_USER);
       MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+    };
+    h.onSaveSettings = [](){ 
+      // Optional: additional saves or restart logic
+      requestShowMain();
+    };
+    h.onCancelSettings = [](){ 
+      requestShowMain();
     };
     ui::configureHandlers(h);
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
@@ -1205,7 +1225,7 @@ void setup() {
       indev_drv.scroll_limit = 4;            // match UI expectation for drag start
       indev_drv.scroll_throw = 8;            // moderate deceleration
       indev_drv.long_press_time = 400;       // ms
-      indev_drv.long_press_repeat_time = 100;// ms
+      indev_drv.long_press_repeat_time = 0;  // ms (disable repeat to avoid double key inserts)
       indev_drv.gesture_limit = 20;          // pixels
       indev_drv.gesture_min_velocity = 2;    // pixels per tick
       indev_drv.type = LV_INDEV_TYPE_POINTER;
@@ -1243,6 +1263,19 @@ void setup() {
         data->point.x = x; 
         data->point.y = y; 
         data->state = LV_INDEV_STATE_PRESSED;
+        
+        static uint32_t last_press_ms = 0;
+        const uint32_t DEBOUNCE_MS = 400;
+        uint32_t now = millis();
+        if (now - last_press_ms < DEBOUNCE_MS) {
+          data->state = LV_INDEV_STATE_RELEASED;
+          return;
+        }
+        last_press_ms = now;
+        
+        static uint32_t last_read_ms = 0;
+        if (now - last_read_ms < 50) return; // Throttle reads to 20Hz max to avoid overload
+        last_read_ms = now;
         
         static uint32_t last_print = 0;
         if (millis() - last_print > 100) { // Rate limit printing
@@ -1897,18 +1930,18 @@ void loop() {
 
   // --- Button long-press detection for Zigbee commissioning ---
   if (g_buttons.pollLongPress(3000)) {
-    ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
+      ESP_LOGI("ZB", "Long press: start commissioning now (120s)");
     if (USE_LVGL_UI) ui::showHoldToPair();
     #if ZB_ENABLED
-    savedMode = runMode;
-    modeForced = true;
-    runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
-    if (WiFi.isConnected()) WiFi.disconnect(true, true);
-    WiFi.mode(WIFI_OFF);
-    wifiOff = true;
-    zb_start_and_commission(120);
-    #endif
-  }
+      savedMode = runMode;
+      modeForced = true;
+      runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
+      if (WiFi.isConnected()) WiFi.disconnect(true, true);
+      WiFi.mode(WIFI_OFF);
+      wifiOff = true;
+      zb_start_and_commission(120);
+#endif
+    }
 
   // If commissioning finished, optionally restore WiFi
   #if ZB_ENABLED
@@ -1948,7 +1981,8 @@ void loop() {
         // Defer UI changes to a zero-delay LVGL timer to avoid event/reentrancy issues
         lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
         lv_timer_set_repeat_count(t, 1);
-        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 0, NULL);
+        // Populate fields shortly after the UI is created to ensure textareas exist
+        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
         lv_timer_set_repeat_count(t2, 1);
         LVGL_UNLOCK(); opened = true;
       }
@@ -1956,7 +1990,7 @@ void loop() {
       // Non-S3 path: still defer to next tick
       lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
       lv_timer_set_repeat_count(t, 1);
-      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 0, NULL);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
       lv_timer_set_repeat_count(t2, 1);
       opened = true;
       #endif
@@ -2050,18 +2084,18 @@ void loop() {
       if (WiFi.status() == WL_CONNECTED) {
         // Only attempt MQTT if a host is configured
         if (MQTT_HOST.length() > 0) {
-          if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
-            lastConnectAttempt = now;
-            mqttClient.ensureConnected();
-          }
-          if (mqttClient.isConnected()) {
-            mqttClient.publishDiscoveryOnce();
-            mqttClient.publishStatesIfReady(domain::Metrics::instance());
-            mqttClient.loop();
-          }
+        if (!mqttClient.isConnected() && now - lastConnectAttempt > 5000) {
+          lastConnectAttempt = now;
+          mqttClient.ensureConnected();
+        }
+        if (mqttClient.isConnected()) {
+          mqttClient.publishDiscoveryOnce();
+          mqttClient.publishStatesIfReady(domain::Metrics::instance());
+          mqttClient.loop();
         }
       }
     }
+  }
   }
 
   #if !defined(USE_JC3248W535)
@@ -2074,10 +2108,10 @@ void loop() {
     domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
     if (!emergencyStop) {
       g_motor.tick(cfg,
-                 domain::Metrics::instance().havePh,
-                 domain::Metrics::instance().phVal,
-                 domain::Metrics::instance().haveOrp,
-                 domain::Metrics::instance().orpMv,
+                      domain::Metrics::instance().havePh,
+                      domain::Metrics::instance().phVal,
+                      domain::Metrics::instance().haveOrp,
+                      domain::Metrics::instance().orpMv,
                  (bool)(FORCE_MOTOR_A_ON && !emergencyStop));
       m1Running = g_motor.isM1Running();
       m2Running = g_motor.isM2Running();

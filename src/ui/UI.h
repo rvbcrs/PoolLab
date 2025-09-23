@@ -40,6 +40,8 @@ struct Handlers {
   void (*onWifiReset)() = nullptr;                     // clear wifi creds, start portal
   void (*onWifiSave)(const char *ssid, const char *pass) = nullptr; // save wifi creds
   void (*onMqttSave)(const char *host, uint16_t port, const char *user, const char *pass) = nullptr; // save MQTT broker
+  void (*onSaveSettings)() = nullptr;                  // new: after saving, navigate/notify
+  void (*onCancelSettings)() = nullptr;                // new: cancel and return
 };
 
 void configureHandlers(const Handlers &h);

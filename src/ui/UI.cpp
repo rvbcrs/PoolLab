@@ -4,6 +4,9 @@
 #include <WiFi.h>
 #include <math.h>
 #include "domain/Metrics.h"
+#include "core/Storage.h"
+
+extern core::Storage storage;
 
 namespace ui {
 
@@ -29,6 +32,8 @@ static bool g_pumpPh = false, g_pumpOrp = false;
 static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
 // no timer; use lv_async_call to toggle in LVGL task
 static bool g_pump_pending = false;
+// Debounce for on-screen keyboard (avoid double insert)
+static uint32_t g_kb_last_ms = 0; static int16_t g_kb_last_id = -1;
 static lv_obj_t *lv_ta_ssid = nullptr;
 static lv_obj_t *lv_ta_pass = nullptr;
 static lv_obj_t *lv_lbl_ssid = nullptr;
@@ -340,9 +345,7 @@ void setSsid(const char *ssid){
 }
 
 void showSettings(){
-  // In-app settings with scrollable content and sticky footer
   onSettings = true;
-  // Invalidate main labels so async timers do not touch freed objects
   lv_lbl_ph = lv_lbl_orp = lv_lbl_orp_unit = lv_lbl_temp = lv_lbl_ip = lv_lbl_ssid = nullptr;
   lv_obj_t *scr = lv_scr_act();
   lv_obj_clean(scr);
@@ -361,7 +364,6 @@ void showSettings(){
   lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(content, 12, 0);
   lv_obj_set_style_pad_all(content, pad, 0);
-  // scroll enabled by default; ensure vertical scroll and faster throw
   lv_obj_set_scroll_dir(content, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
@@ -374,7 +376,6 @@ void showSettings(){
   lv_obj_t *lblm1 = lv_label_create(content); lv_label_set_text(lblm1, "pH Motor Speed"); lv_obj_align(lblm1, LV_ALIGN_TOP_LEFT, 0, 28);
   lv_lbl_val_m1 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m1); lv_label_set_text(lv_lbl_val_m1, b);} lv_obj_align(lv_lbl_val_m1, LV_ALIGN_TOP_RIGHT, 0, 28);
   lv_slider_m1 = lv_slider_create(content); lv_obj_set_width(lv_slider_m1, lv_pct(100)); lv_obj_align(lv_slider_m1, LV_ALIGN_TOP_LEFT, 0, 48);
-  // Let vertical swipe gestures bubble to the scrollable parent instead of only moving the slider
   lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m1, 0, 100);
@@ -384,7 +385,6 @@ void showSettings(){
   lv_obj_t *lblm2 = lv_label_create(content); lv_label_set_text(lblm2, "ORP Motor Speed"); lv_obj_align(lblm2, LV_ALIGN_TOP_LEFT, 0, 88);
   lv_lbl_val_m2 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m2); lv_label_set_text(lv_lbl_val_m2, b);} lv_obj_align(lv_lbl_val_m2, LV_ALIGN_TOP_RIGHT, 0, 88);
   lv_slider_m2 = lv_slider_create(content); lv_obj_set_width(lv_slider_m2, lv_pct(100)); lv_obj_align(lv_slider_m2, LV_ALIGN_TOP_LEFT, 0, 108);
-  // Bubble gestures/events so vertical swipes scroll the page
   lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m2, 0, 100);
@@ -393,47 +393,40 @@ void showSettings(){
   lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m1){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m1,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(1,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
   lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m2){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m2,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(2,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
 
-  // Intercept vertical swipes on sliders to scroll the content instead of moving the slider
+  // Intercept vertical swipe on sliders to scroll the content instead of adjusting the slider
   struct ScrollInterceptCtx { lv_obj_t *scroll; int initial; int ax; int ay; bool adjust; };
   auto attach_interceptor = [&](lv_obj_t *slider){
     ScrollInterceptCtx *ctx = (ScrollInterceptCtx*)lv_mem_alloc(sizeof(ScrollInterceptCtx));
-    ctx->scroll = content; ctx->initial = (int)lv_slider_get_value(slider); ctx->ax=0; ctx->ay=0; ctx->adjust=false;
+    ctx->scroll = content; ctx->initial = (int)lv_slider_get_value(slider); ctx->ax = 0; ctx->ay = 0; ctx->adjust = false;
     lv_obj_add_event_cb(slider, [](lv_event_t *e){
       auto code = lv_event_get_code(e);
       ScrollInterceptCtx *c = (ScrollInterceptCtx*)lv_event_get_user_data(e);
       lv_obj_t *sl = (lv_obj_t*)lv_event_get_target(e);
-      if (code == LV_EVENT_PRESSED){
-        c->initial = (int)lv_slider_get_value(sl); c->ax=0; c->ay=0; c->adjust=false;
-      } else if (code == LV_EVENT_PRESSING){
+      if (code == LV_EVENT_PRESSED) {
+        c->initial = (int)lv_slider_get_value(sl); c->ax = 0; c->ay = 0; c->adjust = false;
+      } else if (code == LV_EVENT_PRESSING) {
         lv_indev_t *indev = lv_indev_get_act(); if (!indev) return; lv_point_t v; lv_indev_get_vect(indev, &v);
-        c->ax += v.x>=0? v.x : -v.x; c->ay += v.y>=0? v.y : -v.y; // absolute values
-        if (!c->adjust){
-          if (c->ay > c->ax + 3){
-            // Scroll vertically; keep slider fixed to initial
+        c->ax += v.x >= 0 ? v.x : -v.x; c->ay += v.y >= 0 ? v.y : -v.y;
+        if (!c->adjust) {
+          if (c->ay > c->ax + 3) {
             if (c->scroll) lv_obj_scroll_by_bounded(c->scroll, 0, v.y, LV_ANIM_OFF);
             lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
-            // prevent slider change side-effects
-            lv_event_stop_bubbling(e); lv_event_stop_processing(e);
-            return;
-          } else if (c->ax > c->ay + 3){
-            c->adjust = true; // enter real slider adjust mode (horizontal intent)
+            lv_event_stop_bubbling(e); lv_event_stop_processing(e); return;
+          } else if (c->ax > c->ay + 3) {
+            c->adjust = true;
           } else {
-            // undecided: keep slider fixed to prevent accidental value change
             lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
-            lv_event_stop_bubbling(e); lv_event_stop_processing(e);
-            return;
+            lv_event_stop_bubbling(e); lv_event_stop_processing(e); return;
           }
         }
-      } else if (code == LV_EVENT_VALUE_CHANGED){
-        if (!c->adjust){
-          // block value changes during vertical scroll
+      } else if (code == LV_EVENT_VALUE_CHANGED) {
+        if (!c->adjust) {
           lv_slider_set_value(sl, c->initial, LV_ANIM_OFF);
-          lv_event_stop_bubbling(e); lv_event_stop_processing(e);
-          return;
+          lv_event_stop_bubbling(e); lv_event_stop_processing(e); return;
         }
-      } else if (code == LV_EVENT_RELEASED){
-        if (!c->adjust){ lv_slider_set_value(sl, c->initial, LV_ANIM_OFF); }
-      } else if (code == LV_EVENT_DELETE){
+      } else if (code == LV_EVENT_RELEASED) {
+        if (!c->adjust) { lv_slider_set_value(sl, c->initial, LV_ANIM_OFF); }
+      } else if (code == LV_EVENT_DELETE) {
         lv_mem_free(c);
       }
     }, LV_EVENT_ALL, ctx);
@@ -441,101 +434,73 @@ void showSettings(){
   attach_interceptor(lv_slider_m1);
   attach_interceptor(lv_slider_m2);
 
-  // Editable WiFi fields (prefilled later via setSavedWifi)
+  // Editable WiFi fields
   lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148);
   lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172);
   lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220);
   lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244);
 
-  // MQTT broker settings
-  lv_obj_t *lblHost = lv_label_create(content); lv_label_set_text(lblHost, "MQTT Host"); lv_obj_align(lblHost, LV_ALIGN_TOP_LEFT, 0, 284);
-  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 306);
-  lv_obj_t *lblPort = lv_label_create(content); lv_label_set_text(lblPort, "MQTT Port"); lv_obj_align(lblPort, LV_ALIGN_TOP_LEFT, 0, 346);
-  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 368);
-  lv_obj_t *lblUser = lv_label_create(content); lv_label_set_text(lblUser, "MQTT User"); lv_obj_align(lblUser, LV_ALIGN_TOP_LEFT, 0, 408);
-  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 430);
-  lv_obj_t *lblPw = lv_label_create(content); lv_label_set_text(lblPw, "MQTT Password"); lv_obj_align(lblPw, LV_ALIGN_TOP_LEFT, 0, 470);
-  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 492);
+  // MQTT fields
+  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292);
+  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316);
+  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364);
+  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388);
+  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436);
+  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460);
+  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508);
+  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532);
 
-  // Sticky footer
+  // Footer
   lv_obj_t *footer = lv_obj_create(scr);
   lv_obj_remove_style_all(footer);
-  lv_obj_set_size(footer, scr_w - pad*2, footer_h);
+  lv_obj_set_size(footer, scr_w, footer_h);
   lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -pad);
-  lv_obj_set_style_bg_color(footer, lv_color_make(32,32,32), 0);
+  lv_obj_set_style_bg_color(footer, lv_color_make(30,30,30), 0);
   lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(footer, 12, 0);
-  lv_obj_set_style_pad_all(footer, 8, 0);
+  lv_obj_set_style_pad_all(footer, pad, 0);
   lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
   lv_obj_set_style_pad_column(footer, 10, 0);
-  lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(footer, LV_DIR_NONE);
 
-  lv_obj_t *btnWifi = lv_btn_create(footer); lv_obj_set_height(btnWifi, footer_h-16); lv_obj_set_flex_grow(btnWifi, 1); lv_obj_t *lblw = lv_label_create(btnWifi); lv_label_set_text(lblw, "Reset WiFi"); lv_obj_center(lblw);
-  lv_obj_add_event_cb(btnWifi, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
+  // Reset WiFi button
+  lv_obj_t *btnReset = lv_btn_create(footer); lv_obj_set_height(btnReset, footer_h-16); lv_obj_set_flex_grow(btnReset, 1); lv_obj_set_style_bg_color(btnReset, lv_palette_main(LV_PALETTE_GREY), 0); lv_obj_add_flag(btnReset, LV_OBJ_FLAG_CLICKABLE);
+  { lv_obj_t *lbl = lv_label_create(btnReset); lv_label_set_text(lbl, "Reset WiFi"); lv_obj_center(lbl); }
+  lv_obj_add_event_cb(btnReset, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_t *lbls = lv_label_create(btnSave); lv_label_set_text(lbls, "Save"); lv_obj_center(lbls);
-  // Save WiFi + MQTT settings via handlers (main will persist)
+  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_set_style_bg_color(btnSave, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btnSave, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t *lblSave = lv_label_create(btnSave); lv_label_set_text(lblSave, "Save"); lv_obj_center(lblSave);
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
-      if (handlers.onWifiSave) {
-        const char *s = lv_textarea_get_text(lv_ta_ssid);
-        const char *p = lv_textarea_get_text(lv_ta_pass);
-        handlers.onWifiSave(s, p);
-      }
-      if (handlers.onMqttSave) {
-        const char *host = lv_textarea_get_text(lv_ta_mqtt_host);
-        const char *port = lv_textarea_get_text(lv_ta_mqtt_port);
-        const char *user = lv_textarea_get_text(lv_ta_mqtt_user);
-        const char *pw   = lv_textarea_get_text(lv_ta_mqtt_pw);
-        uint16_t prt = (uint16_t)atoi(port && *port ? port : "1883");
-        handlers.onMqttSave(host, prt, user, pw);
-      }
+      const char *s = lv_textarea_get_text(lv_ta_ssid);
+      const char *p = lv_textarea_get_text(lv_ta_pass);
+      if (handlers.onWifiSave) handlers.onWifiSave(s ? s : "", p ? p : "");
+      const char *host = lv_textarea_get_text(lv_ta_mqtt_host);
+      const char *port = lv_textarea_get_text(lv_ta_mqtt_port);
+      const char *user = lv_textarea_get_text(lv_ta_mqtt_user);
+      const char *pw   = lv_textarea_get_text(lv_ta_mqtt_pw);
+      uint16_t prt = (uint16_t)atoi(port && *port ? port : "1883");
+      if (handlers.onMqttSave) handlers.onMqttSave(host ? host : "", prt, user ? user : "", pw ? pw : "");
+      if (handlers.onSaveSettings) handlers.onSaveSettings();
     }
   }, LV_EVENT_CLICKED, NULL);
 
-  // On-screen keyboard: show on focus for textareas
-  lv_obj_t *kb = lv_keyboard_create(scr);
-  lv_obj_set_width(kb, scr_w - pad*2);
-  lv_obj_set_style_max_height(kb, scr_h/2, 0);
-  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -pad);
-  lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-  auto bind_kb = [&](lv_obj_t *ta){
-    lv_obj_add_event_cb(ta, [](lv_event_t *e){
-      auto code = lv_event_get_code(e);
-      lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
-      lv_obj_t *kb = (lv_obj_t*)lv_event_get_user_data(e);
-      if (code == LV_EVENT_FOCUSED) {
-        lv_keyboard_set_textarea(kb, ta);
-        lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-      } else if (code == LV_EVENT_DEFOCUSED) {
-        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-      }
-    }, LV_EVENT_ALL, kb);
-  };
-  bind_kb(lv_ta_ssid);
-  bind_kb(lv_ta_pass);
-  bind_kb(lv_ta_mqtt_host);
-  bind_kb(lv_ta_mqtt_port);
-  bind_kb(lv_ta_mqtt_user);
-  bind_kb(lv_ta_mqtt_pw);
-  // Hide keyboard on ready/cancel
-  lv_obj_add_event_cb(kb, [](lv_event_t *e){
-    auto code = lv_event_get_code(e);
-    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-      lv_obj_t *kb = (lv_obj_t*)lv_event_get_target(e);
-      lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    }
-  }, LV_EVENT_ALL, NULL);
-
-  lv_obj_t *btnBack = lv_btn_create(footer); lv_obj_set_height(btnBack, footer_h-16); lv_obj_set_flex_grow(btnBack, 1); lv_obj_t *lblb = lv_label_create(btnBack); lv_label_set_text(lblb, "Back"); lv_obj_center(lblb);
-  lv_obj_add_event_cb(btnBack, [](lv_event_t *e){
+  lv_obj_t *btnCancel = lv_btn_create(footer); lv_obj_set_height(btnCancel, footer_h-16); lv_obj_set_flex_grow(btnCancel, 1); lv_obj_set_style_bg_color(btnCancel, lv_palette_main(LV_PALETTE_RED), 0); lv_obj_add_flag(btnCancel, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t *lblCancel = lv_label_create(btnCancel); lv_label_set_text(lblCancel, "Back"); lv_obj_center(lblCancel);
+  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
-      // Defer navigation to avoid deleting objects during event dispatch
-      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showMain(); }, 0, NULL);
-      lv_timer_set_repeat_count(t, 1);
+      if (handlers.onCancelSettings) handlers.onCancelSettings();
     }
   }, LV_EVENT_CLICKED, NULL);
+
+  // Keyboard binding
+  lv_obj_add_event_cb(lv_ta_ssid, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+  lv_obj_add_event_cb(lv_ta_pass, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+  lv_obj_add_event_cb(lv_ta_mqtt_host, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+  lv_obj_add_event_cb(lv_ta_mqtt_port, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+  lv_obj_add_event_cb(lv_ta_mqtt_user, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+  lv_obj_add_event_cb(lv_ta_mqtt_pw, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_FOCUSED) g_kb_last_ms = millis(); }, LV_EVENT_FOCUSED, NULL);
+
+  // Fields will be populated by caller after opening settings
 }
 
 void showMain(){
