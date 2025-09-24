@@ -55,6 +55,23 @@ static Parser pa, pb;
 void tuyaFeedA(uint8_t b){ pa.feed(b); }
 void tuyaFeedB(uint8_t b){ pb.feed(b); }
 
+// ---- Frame TX helpers ----
+uint8_t tuyaChecksum(const uint8_t* p, size_t n) { uint32_t s=0; for (size_t i=0;i<n;i++) s+=p[i]; return (uint8_t)(s & 0xFF); }
+
+void tuyaSendFrame(HardwareSerial &port, uint8_t cmd, const uint8_t* data, uint16_t len) {
+  uint8_t hdr[6] = {0x55, 0xAA, 0x00 /* ver */, cmd, (uint8_t)(len>>8), (uint8_t)(len & 0xFF)};
+  port.write(hdr, sizeof(hdr));
+  if (len && data) port.write(data, len);
+  uint8_t chkBuf[6+256]; // small temp buffer for checksum calc (len is small for our commands)
+  memcpy(chkBuf, hdr, 6);
+  if (len && data) memcpy(chkBuf+6, data, len);
+  port.write(tuyaChecksum(chkBuf, 6+len));
+}
+
+void tuyaSendDpQuery(HardwareSerial &port) { tuyaSendFrame(port, 0x10, nullptr, 0); }
+void tuyaSendQueryProductInfo(HardwareSerial &port) { tuyaSendFrame(port, 0x01, nullptr, 0); }
+void tuyaSendSetWifiStatus(HardwareSerial &port, uint8_t status) { uint8_t d[1] = { status }; tuyaSendFrame(port, 0x03, d, 1); }
+
 } // namespace io
 
 

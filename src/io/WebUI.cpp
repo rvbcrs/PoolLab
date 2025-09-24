@@ -4,6 +4,7 @@
 namespace io {
 
 extern "C" void requestModeChange(int mode);
+extern "C" void requestMqttReload();
 
 void WebUI::begin(){
   if (_active) return;
@@ -24,7 +25,7 @@ static String fmtFloat(float v, int d){ char b[24]; dtostrf(v, 0, d, b); return 
 
 void WebUI::sendStyleHeader(String &h){
   h  = F("<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>");
-  h += F("<style>body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#e3e3e3;margin:0;padding:16px;} .card{background:#1b1b1b;border-radius:10px;padding:16px;max-width:900px;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.4);} h2,h3{margin:0 0 12px 0;} label{display:block;margin:10px 0 6px;} input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box;} .row{display:flex;gap:8px;} .row>*{flex:1;} .btn{cursor:pointer;border:none;} .btn.red{background:#b00020;} .btn.blue{background:#1976d2;} .muted{color:#aaa;font-size:12px;margin-top:8px;display:block;} .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:8px 0 14px;} .tile{border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 1px 6px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.04);} .tile .title{color:#d6d6d6;font-size:13px;margin:6px 0 2px;display:block;letter-spacing:.3px} .tile .val{font-size:28px;font-weight:700;letter-spacing:.3px;margin:2px 0 6px} .icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;margin-bottom:4px;font-size:18px} .tile.blue{background:linear-gradient(180deg,#1d2938,#141a22);} .tile.blue .icon{background:#0c2a3f;color:#5ec8ff;} .tile.orange{background:linear-gradient(180deg,#2e2418,#1c1711);} .tile.orange .icon{background:#3a220c;color:#ffb74d;} .tile.teal{background:linear-gradient(180deg,#19312e,#121e1c);} .tile.teal .icon{background:#0c2f28;color:#7fe3cf;}</style></head><body>");
+  h += F("<style>body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#e3e3e3;margin:0;padding:16px;} .card{background:#1b1b1b;border-radius:10px;padding:16px;max-width:900px;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.4);} h2,h3{margin:0 0 12px 0;} label{display:block;margin:10px 0 6px;} input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box;} .row{display:flex;gap:8px;} .row>*{flex:1;} .btn{cursor:pointer;border:none;} .btn.red{background:#b00020;} .btn.blue{background:#1976d2;} .muted{color:#aaa;font-size:12px;margin-top:8px;display:block;} .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:8px 0 14px;} .tile{position:relative;border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 1px 6px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.04);} .tile .title{color:#d6d6d6;font-size:13px;margin:6px 0 2px;display:block;letter-spacing:.3px} .tile .val{font-size:28px;font-weight:700;letter-spacing:.3px;margin:2px 0 6px} .icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;margin-bottom:4px;font-size:18px} .tile .pump{position:absolute;left:10px;bottom:10px;opacity:.9;font-size:18px;display:none} .warn{color:#ffa000} .bad{color:#ff5252} .tile.blue{background:linear-gradient(180deg,#1d2938,#141a22);} .tile.blue .icon{background:#0c2a3f;color:#5ec8ff;} .tile.orange{background:linear-gradient(180deg,#2e2418,#1c1711);} .tile.orange .icon{background:#3a220c;color:#ffb74d;} .tile.teal{background:linear-gradient(180deg,#19312e,#121e1c);} .tile.teal .icon{background:#0c2f28;color:#7fe3cf;}</style></head><body>");
 }
 void WebUI::sendFooter(String &h){ h += F("</body></html>"); }
 
@@ -34,16 +35,22 @@ void WebUI::handleIndex(){
   // pH tile
   html += F("<div class='tile blue'><div class='icon'>💧</div><span class='title'>pH</span><div class='val' id='phVal'>--.--</div><div class='muted'>Target: <span id='ph_range'>");
   html += (_phMin && _phMax) ? (fmtFloat(*_phMin,2)+String(" - ")+fmtFloat(*_phMax,2)) : String("--");
-  html += F("</span></div></div>");
+  html += F("</span></div><div class='pump' id='pump_ph'>🌀</div></div>");
   // ORP tile
   html += F("<div class='tile orange'><div class='icon'>⚡</div><span class='title'>ORP</span><div class='val' id='orpVal'>----</div><div class='muted'>Min/Max: <span id='orp_range'>");
   html += (_orpMin && _orpMax) ? (String(*_orpMin)+String(" / ")+String(*_orpMax)) : String("--");
-  html += F("</span></div></div>");
+  html += F("</span></div><div class='pump' id='pump_orp'>🌀</div></div>");
   // Temp tile
   html += F("<div class='tile teal'><div class='icon'>🌡️</div><span class='title'>Temp</span><div class='val' id='tempVal'>--.- °C</div></div>");
   html += F("</div><div class='row'><a href='/settings'><button class='btn blue'>Settings</button></a></div>");
   html += F("<span class='muted'>IP: "); html += WiFi.localIP().toString(); html += F("</span></div>");
-  html += F("<script>var ws=new WebSocket('ws://'+location.host+':81/'); ws.onmessage=function(e){try{var d=JSON.parse(e.data); if(d.ph!==undefined) document.getElementById('phVal').innerText=d.ph===null?'--.--':d.ph; if(d.orp!==undefined) document.getElementById('orpVal').innerText=d.orp===null?'----':(d.orp+' mV'); if(d.temp!==undefined) document.getElementById('tempVal').innerText=d.temp===null?'--.- °C':(d.temp+' °C');}catch(_){} };</script>");
+  // thresholds for client-side coloring
+  float phMin = _phMin? *_phMin : 6.80f; float phMax = _phMax? *_phMax : 7.60f; int orpMin = _orpMin? *_orpMin : 250; int orpMax = _orpMax? *_orpMax : 850;
+  html += F("<script>");
+  html += "var PH_MIN="+String(phMin,2)+",PH_MAX="+String(phMax,2)+",ORP_MIN="+String(orpMin)+",ORP_MAX="+String(orpMax)+";";
+  html += F("function cls(el,c){el.classList.remove('bad');el.classList.remove('warn'); if(c) el.classList.add(c);} ");
+  html += F("function nearPh(v){return (v<=PH_MIN+0.05)||(v>=PH_MAX-0.05);} function nearOrp(v){return (v<=ORP_MIN+20)||(v>=ORP_MAX-20);} ");
+  html += F("var ws=new WebSocket('ws://'+location.host+':81/'); ws.onmessage=function(e){try{var d=JSON.parse(e.data); if(d.ph!==undefined){var el=document.getElementById('phVal'); if(d.ph===null){el.innerText='--.--'; cls(el,null);} else {el.innerText=d.ph; var v=parseFloat(d.ph); if(isFinite(v)){ if(v<PH_MIN||v>PH_MAX){cls(el,'bad');} else if(nearPh(v)){cls(el,'warn');} else {cls(el,null);} var pump=(v<PH_MIN||v>PH_MAX); document.getElementById('pump_ph').style.display=pump?'block':'none'; }}} if(d.orp!==undefined){var el2=document.getElementById('orpVal'); if(d.orp===null){el2.innerText='----'; cls(el2,null);} else {el2.innerText=d.orp+' mV'; var v2=parseInt(d.orp); if(isFinite(v2)){ if(v2<ORP_MIN||v2>ORP_MAX){cls(el2,'bad');} else if(nearOrp(v2)){cls(el2,'warn');} else {cls(el2,null);} var pump2=(v2<ORP_MIN||v2>ORP_MAX); document.getElementById('pump_orp').style.display=pump2?'block':'none'; }}} if(d.temp!==undefined){document.getElementById('tempVal').innerText=d.temp===null?'--.- °C':(d.temp+' °C');}}catch(_){} };</script>");
   sendFooter(html);
   _http.send(200, "text/html; charset=UTF-8", html);
 }
@@ -52,9 +59,11 @@ void WebUI::handleSettings(){
   String html; sendStyleHeader(html);
   html += F("<div class='card'><h3>Settings</h3>");
   html += F("<form method='POST' action='/api/save'>");
-  // Network mode
-  core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_ZIGBEE) : core::Storage::MODE_ZIGBEE;
-  html += F("<label>Mode</label><div class='row'><select name='mode'><option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option><option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option></select></div>");
+  // Network mode (only if Zigbee compiled in)
+  #if HAS_ZIGBEE
+    core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_ZIGBEE) : core::Storage::MODE_ZIGBEE;
+    html += F("<label>Mode</label><div class='row'><select name='mode'><option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option><option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option></select></div>");
+  #endif
   // Thresholds
   html += F("<label>pH Min</label><input name='ph_min' value='"); html += _phMin? fmtFloat(*_phMin,2) : String(6.80f); html += F("'>");
   html += F("<label>pH Max</label><input name='ph_max' value='"); html += _phMax? fmtFloat(*_phMax,2) : String(7.60f); html += F("'>");
@@ -62,6 +71,16 @@ void WebUI::handleSettings(){
   html += F("<label>ORP Max (mV)</label><input name='orp_max' value='"); html += _orpMax? String(*_orpMax) : String(850); html += F("'>");
   html += F("<label>pH Motor %</label><input name='m1' value='"); html += _m1? String((int)*_m1) : String(60); html += F("'>");
   html += F("<label>ORP Motor %</label><input name='m2' value='"); html += _m2? String((int)*_m2) : String(60); html += F("'>");
+  // MQTT settings
+  String mh = _storage ? _storage->getMqttHost("") : String("");
+  uint16_t mp = _storage ? _storage->getMqttPort(1883) : 1883;
+  String mu = _storage ? _storage->getMqttUser("") : String("");
+  String mw = _storage ? _storage->getMqttPass("") : String("");
+  html += F("<h3>MQTT</h3>");
+  html += F("<label>Host</label><input name='mqtt_host' value='"); html += mh; html += F("'>");
+  html += F("<label>Port</label><input name='mqtt_port' value='"); if (mp==0) html += F(""); else html += String((unsigned)mp); html += F("'>");
+  html += F("<label>User</label><input name='mqtt_user' value='"); html += mu; html += F("'>");
+  html += F("<label>Password</label><input type='password' name='mqtt_pass' value='"); html += mw; html += F("'>");
   html += F("<div class='row'><button class='btn red' type='submit'>Save</button><a href='/'><button class='btn' type='button'>Cancel</button></a></div>");
   html += F("</form></div>");
   sendFooter(html);
@@ -99,10 +118,24 @@ void WebUI::handleApiSave(){
   if (_http.hasArg("m2") && _m2 && _storage) {
     int v = parseIntOr(_http.arg("m2"), *_m2); v = constrain(v,0,100); *_m2 = (uint8_t)v; _storage->setM2Speed(*_m2);
   }
+  #if HAS_ZIGBEE
   if (_http.hasArg("mode") && _storage) {
     String m = _http.arg("mode"); m.toLowerCase();
     int modeInt = (m == "zigbee") ? 1 : 0;
     requestModeChange(modeInt);
+  }
+  #endif
+  // MQTT settings save
+  if (_storage) {
+    if (_http.hasArg("mqtt_host")) _storage->setMqttHost(_http.arg("mqtt_host"));
+    if (_http.hasArg("mqtt_port")) {
+      String p = _http.arg("mqtt_port"); p.trim();
+      uint16_t prt = p.length() ? (uint16_t)parseIntOr(p, 1883) : 0;
+      _storage->setMqttPort(prt);
+    }
+    if (_http.hasArg("mqtt_user")) _storage->setMqttUser(_http.arg("mqtt_user"));
+    if (_http.hasArg("mqtt_pass")) _storage->setMqttPass(_http.arg("mqtt_pass"));
+    requestMqttReload();
   }
   _http.sendHeader("Location", "/settings"); _http.send(302, "text/plain", "Saved");
 }

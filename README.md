@@ -92,6 +92,7 @@ Notities
 - `src/main.cpp`: Orkestratie. UI‑handlers, bootvolgorde, WiFi/MQTT, Zigbee‑commissioning, Tuya‑feed, periodieke publish.
 - `src/core/Storage.{h,cpp}`: Dunne wrapper rond `Preferences` (NVS). Slaat drempels, motorsnelheden en modemodus op (`poolcfg` namespace).
 - `src/core/DisplayBridge.{h,cpp}`: Brug tussen Arduino_GFX en LVGL (display registratie, thema, input).
+- `src/boards/BoardSelect.h`: Boardprofielen en capabilities (`BOARD`, `HAS_ZIGBEE`) en displayconfig.
 - `src/domain/Metrics.{h,cpp}`: Houdt laatste pH/ORP/temperatuur bij; bron voor UI/MQTT.
 - `src/io/MqttClient.{h,cpp}`: PubSubClient‑gebaseerde client; discovery, state‑publish, command‑topics → NVS.
 - `src/io/Tuya.{h,cpp}`: Configuratie en parsing van Tuya‑frames; voedt `Metrics`.
@@ -110,3 +111,9 @@ Notities
 - `PubSubClient`
 - `lvgl`
 - Zigbee libs via framework‑linker flags indien aanwezig
+
+### Multi‑board support
+- Kies het gewenste environment in `platformio.ini`:
+  - `esp32-c6-devkitc-1` → `BOARD=ESP32C6_TOUCH_1_47`, `HAS_ZIGBEE=1` (Zigbee UI zichtbaar)
+  - `esp32-s3-35` → `BOARD=ESP32S3_35`, `HAS_ZIGBEE=0` (Zigbee UI verborgen)
+- `BoardSelect.h` levert de display‑config (resolutie/offsets/rotatie) en capability flags. Zo kun je eenvoudig andere schermen/boards toevoegen.
