@@ -354,7 +354,8 @@ static String MQTT_HOST     = "192.168.0.248"; // default; overridden by storage
 static uint16_t MQTT_PORT  = 1883;
 static String MQTT_USER     = "";  // optional
 static String MQTT_PASS     = "";  // optional
-static const char* MQTT_CLIENTID = "pool-sniffer-c6";
+static char MQTT_CLIENTID_BUF[48] = {0};
+static const char* MQTT_CLIENTID = MQTT_CLIENTID_BUF;
 
 // MQTT is handled by io::MqttClient now
 static core::Storage storage("poolcfg");
@@ -849,9 +850,23 @@ static void ensureMqtt() {
   }
   // Skip MQTT setup entirely if no host configured
   if (MQTT_HOST.length() == 0) {
+      ESP_LOGI("MQTT", "Skipping MQTT: empty host");
       return;
     }
+  ESP_LOGI("MQTT", "Config: host='%s' port=%u user='%s' passlen=%u", MQTT_HOST.c_str(), (unsigned)MQTT_PORT, MQTT_USER.c_str(), (unsigned)MQTT_PASS.length());
   mqttClient.begin(MQTT_HOST.c_str(), MQTT_PORT, MQTT_USER.length()?MQTT_USER.c_str():nullptr, MQTT_PASS.length()?MQTT_PASS.c_str():nullptr, MQTT_CLIENTID);
+  // One-shot debugged connect probe at boot to print clear outcome
+  static bool s_mqtt_probe_done = false;
+  if (!s_mqtt_probe_done) {
+    s_mqtt_probe_done = true;
+    if (WiFi.status() == WL_CONNECTED) {
+      mqttClient.setDebug(true);
+      mqttClient.ensureConnected();
+      mqttClient.setDebug(false);
+    } else {
+      ESP_LOGI("MQTT", "Deferring initial connect probe: WiFi not connected yet");
+    }
+  }
 }
 
 static void publishDiscoveryOnce() { mqttClient.publishDiscoveryOnce(); }
@@ -958,6 +973,11 @@ void setup() {
   core::Log::init(true);
   ESP_LOGI("BOOT", "Boot start");
   APP_BOOT_MS = millis();
+  // Build unique MQTT clientId using chip MAC
+  uint64_t mac = ESP.getEfuseMac();
+  snprintf(MQTT_CLIENTID_BUF, sizeof(MQTT_CLIENTID_BUF), "pool-%04X%08X",
+           (unsigned)((mac >> 32) & 0xFFFF),
+           (unsigned)(mac & 0xFFFFFFFF));
   // Avoid enabling debug output to USB CDC to prevent any hidden blocking
   // Serial.setDebugOutput(true);
 

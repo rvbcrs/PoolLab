@@ -28,6 +28,10 @@ void MqttClient::begin(const char* host, uint16_t port, const char* user, const 
 void MqttClient::ensureConnected() {
   if (isConnected()) return;
   if (_host == nullptr || _host[0] == '\0') return; // skip if no broker configured
+  uint32_t now = millis();
+  if (_nextTryAtMs && (int32_t)(now - _nextTryAtMs) < 0) {
+    return; // backoff window active
+  }
   if (_debug) {
     ESP_LOGI("MQTT", "Connecting to broker %s%s%u...", _host, (_port>0?":":" (default 1883, port="), (_port>0?_port:1883));
     ESP_LOGI("MQTT", "Auth %s user='%s' passlen=%u clientId=%s",
@@ -50,8 +54,15 @@ void MqttClient::ensureConnected() {
     _client.subscribe(TOPIC_CMD_PH_MAX);
     _client.subscribe(TOPIC_CMD_ORP_MIN);
     _client.subscribe(TOPIC_CMD_ORP_MAX);
+    _announced = false; // allow discovery publish again after reconnect
+    _backoffMs = 5000;  // reset backoff on success
+    _nextTryAtMs = 0;
   } else {
     if (_debug) ESP_LOGE("MQTT", "Connect failed. state=%d", _client.state());
+    // Exponential backoff up to 5 minutes to keep UI responsive
+    if (_backoffMs < 300000) _backoffMs = _backoffMs * 2;
+    if (_backoffMs > 300000) _backoffMs = 300000;
+    _nextTryAtMs = now + _backoffMs;
   }
 }
 

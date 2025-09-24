@@ -36,6 +36,7 @@ public:
   void publishStatesIfReady(const domain::Metrics &m);
   void loop();
   void setDebug(bool enabled) { _debug = enabled; }
+  void resetBackoff() { _backoffMs = 5000; _nextTryAtMs = 0; }
 
 private:
   void onMessage(char* topic, uint8_t* payload, unsigned int length);
@@ -52,6 +53,8 @@ private:
   float *_phMin, *_phMax;
   int *_orpMin, *_orpMax;
   bool _debug = false;
+  uint32_t _nextTryAtMs = 0;
+  uint32_t _backoffMs = 5000; // starts at 5s, doubles up to 5min
 };
 
 } // namespace io
