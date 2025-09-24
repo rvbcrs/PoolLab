@@ -154,8 +154,8 @@ void build(bool safeBaseline){
   lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-  auto make_card = [&](lv_color_t c1)->lv_obj_t*{
-    lv_obj_t *card = lv_obj_create(row);
+  auto make_card = [&](lv_obj_t *parent, lv_color_t c1, lv_coord_t cw)->lv_obj_t*{
+    lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
     lv_obj_set_style_bg_color(card, c1, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -163,22 +163,29 @@ void build(bool safeBaseline){
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_shadow_width(card, 10, 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
-    // Compute inner width of root: (scr_w - pad*2) is root size, minus its own padding again
-    lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
-    lv_coord_t cw = (inner_w - (col_gap * 2)) / 3; // three equal tiles within width
     lv_obj_set_size(card, cw, 160);
     return card;
   };
 
-  // Slightly darker, less saturated tile colors
-  lv_obj_t *card_ph  = make_card(lv_palette_darken(LV_PALETTE_BLUE, 3));
-  lv_obj_t *card_orp = make_card(lv_palette_darken(LV_PALETTE_TEAL, 3));
-  lv_obj_t *card_tmp = make_card(lv_palette_darken(LV_PALETTE_AMBER, 4));
+  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
+  lv_obj_t *card_ph = nullptr, *card_orp = nullptr, *card_tmp = nullptr;
+  lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
+  if (small_layout) {
+    // 2-tile layout for C6
+    lv_coord_t cw = (inner_w - col_gap) / 2;
+    card_ph  = make_card(row, lv_palette_darken(LV_PALETTE_BLUE, 3), cw);
+    card_orp = make_card(row, lv_palette_darken(LV_PALETTE_TEAL, 3), cw);
+  } else {
+    // 3-card layout for S3
+    lv_coord_t cw = (inner_w - (col_gap * 2)) / 3;
+    card_ph  = make_card(row, lv_palette_darken(LV_PALETTE_BLUE, 3), cw);
+    card_orp = make_card(row, lv_palette_darken(LV_PALETTE_TEAL, 3), cw);
+    card_tmp = make_card(row, lv_palette_darken(LV_PALETTE_AMBER, 4), cw);
+  }
 
   // Icons + labels
   lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
   lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, 44);
-
   lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
@@ -186,9 +193,11 @@ void build(bool safeBaseline){
   lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
   lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
 
-  // Temp icon + value label
-  lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
-  lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
+  // Temp label: only in 3-card layout; in small layout we skip
+  if (!small_layout && card_tmp) {
+    lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
+    lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
+  }
 
   // Subtext: two-line layout (label, then values)
   lv_obj_t *ph_sub_lbl = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub_lbl, "Target"); lv_obj_align(ph_sub_lbl, LV_ALIGN_TOP_LEFT, 0, 78);

@@ -1700,9 +1700,13 @@ void setup() {
       lv_obj_scroll_to_y(lv_tv, 0, LV_ANIM_OFF);
     };
     // Use modern UI module instead of legacy builder
-    #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-    ui::build(false);
-    ui::updateValues();
+    #if defined(BOARD_ESP32C6_TOUCH_1_47)
+      build_lvgl_ui();
+    #else
+      #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
+      ui::build(false);
+      ui::updateValues();
+      #endif
     #endif
     ESP_LOGI("UI", "After layout timer");
     #if defined(BOARD_ESP32S3_35)
