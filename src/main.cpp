@@ -131,6 +131,8 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/MqttClient.h"
 #include "io/Touch.h"
 #include "io/Tuya.h"
+#include "io/AnalogPhOrpSensor.h"
+#include "io/AdsPhOrpSensor.h"
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
 #include "ui/UI.h"
@@ -202,6 +204,43 @@ static const uint8_t DP_PH_ALT1  = 118; // alternative pH
 
 // If true, show only the key metrics (pH, ORP, Temp) on screen
 static const bool SIMPLE_VIEW = true;
+
+// ===== Analog sensor (PH4502C/ORP) integration =====
+// Enable to read pH and ORP from two ADC pins instead of Tuya UART
+#ifndef USE_ANALOG_SENSORS
+#define USE_ANALOG_SENSORS 0
+#endif
+#ifndef USE_ADS1115
+#define USE_ADS1115 0
+#endif
+#if USE_ANALOG_SENSORS
+  // Define ADC-capable GPIOs here (set to actual free ADC pins on your board)
+  #ifndef PH_ADC_PIN
+  #define PH_ADC_PIN -1
+  #endif
+  #ifndef ORP_ADC_PIN
+  #define ORP_ADC_PIN -1
+  #endif
+  io::AnalogPhOrpSensor g_analog(PH_ADC_PIN, ORP_ADC_PIN);
+#endif
+#if USE_ADS1115
+  #ifndef ADS_ADDR
+  #define ADS_ADDR 0x48
+  #endif
+  #ifndef ADS_SDA
+  #define ADS_SDA 18
+  #endif
+  #ifndef ADS_SCL
+  #define ADS_SCL 19
+  #endif
+  #ifndef ADS_CH_PH
+  #define ADS_CH_PH 0
+  #endif
+  #ifndef ADS_CH_ORP
+  #define ADS_CH_ORP 1
+  #endif
+  io::AdsPhOrpSensor g_ads(ADS_ADDR, ADS_SDA, ADS_SCL, ADS_CH_PH, ADS_CH_ORP, io::AdsPhOrpSensor::GAIN_1, 8, 1000);
+#endif
 #if defined(BOARD_ESP32C6_TOUCH_1_47)
 static const bool USE_LVGL_UI = true;  // C6 uses LVGL UI as on master
 #else
@@ -274,7 +313,11 @@ static void on_speed_save_cb(lv_event_t *e);
 static void updateLvglValues();
 static void showRangeEditorProxy(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
-static const bool DUMMY_MODE = true;  // set true to simulate values
+#if USE_ANALOG_SENSORS
+static const bool DUMMY_MODE = false;  // real sensors active
+#else
+static const bool DUMMY_MODE = true;   // simulate values
+#endif
 static domain::DummySensor g_dummySensor(6.80f, 7.60f, 250);
 // Tap vs swipe detection for tiles
 struct TileTapCtx { bool isPh; lv_point_t start; uint32_t start_ms; bool maybe_tap; };
@@ -361,7 +404,7 @@ static volatile uint32_t g_s3_lvgl_heartbeat_ms = 0;
 #endif
 
 // MQTT is handled by io::MqttClient now
-static core::Storage storage("poolcfg");
+core::Storage g_storage("poolcfg");
 #if !defined(USE_JC3248W535)
 static core::DisplayBridge *displayBridge = nullptr;
 #endif
@@ -462,10 +505,10 @@ static void lv_update_speed_labels(){
   if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
   if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
 }
-static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
-static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
-static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
-static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; g_storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; g_storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; g_storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; g_storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
 static void on_all_off_cb(lv_event_t *e){
   (void)e;
   // Immediate stop of both motors (emergency)
@@ -489,7 +532,7 @@ static void on_all_off_cb(lv_event_t *e){
     if (lv_img_pump_orp_shadow) { lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
   }
 }
-static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); }
+static void on_speed_save_cb(lv_event_t *e){ (void)e; g_storage.setM1Speed(M1_SPEED_PC); g_storage.setM2Speed(M2_SPEED_PC); }
 
 // Alert margins and border thickness for near/exceed thresholds (used by LVGL updater)
 static const float WARN_MARGIN_PH = 0.05f;   // pH within 0.05 of min/max
@@ -841,14 +884,14 @@ static void updateValueAreas() { updateLvglValues(); }
 // WiFi helpers are fully handled by WiFiManager now
 
 static void ensureMqtt() {
-  mqttClient.setStorage(&storage);
+  mqttClient.setStorage(&g_storage);
   mqttClient.setThresholdRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX);
   // Load MQTT config from storage (fallback to defaults)
   {
-    String h = storage.getMqttHost(MQTT_HOST);
-    uint16_t p = storage.getMqttPort(MQTT_PORT);
-    String u = storage.getMqttUser(MQTT_USER);
-    String pw= storage.getMqttPass(MQTT_PASS);
+    String h = g_storage.getMqttHost(MQTT_HOST);
+    uint16_t p = g_storage.getMqttPort(MQTT_PORT);
+    String u = g_storage.getMqttUser(MQTT_USER);
+    String pw= g_storage.getMqttPass(MQTT_PASS);
     MQTT_HOST = h; MQTT_PORT = p; MQTT_USER = u; MQTT_PASS = pw;
   }
   // Skip MQTT setup entirely if no host configured
@@ -878,7 +921,7 @@ static void publishStatesIfReady() { mqttClient.publishStatesIfReady(domain::Met
 extern "C" void requestModeChange(int mode){
   // mode: 1 = Zigbee, 0 = WiFi
   runMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-  storage.setMode(runMode);
+  g_storage.setMode(runMode);
   if (runMode == core::Storage::MODE_ZIGBEE) {
     if (WiFi.isConnected()) WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
@@ -890,12 +933,12 @@ extern "C" void requestModeChange(int mode){
 #endif // C6 legacy GFX-only
   } else {
     wifiOff = false;
-    WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-    WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+    WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+    WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
     #if ZB_ENABLED
     if (zbStarted) { ESP.restart(); }
     #endif
-    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); } }
+    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); } }
     else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiMgr.ensureSta(); ensureMqtt(); }
   }
 }
@@ -1160,30 +1203,30 @@ void setup() {
     }
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
-    storage.begin(false);
-    PH_MIN = storage.getPhMin(PH_MIN);
-    PH_MAX = storage.getPhMax(PH_MAX);
-    ORP_MIN = storage.getOrpMin(ORP_MIN);
-    ORP_MAX = storage.getOrpMax(ORP_MAX);
-    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+    g_storage.begin(false);
+    PH_MIN = g_storage.getPhMin(PH_MIN);
+    PH_MAX = g_storage.getPhMax(PH_MAX);
+    ORP_MIN = g_storage.getOrpMin(ORP_MIN);
+    ORP_MAX = g_storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
   // Force WiFi on S3 (match C6 WiFi-first behavior for UI)
   #if defined(BOARD_ESP32S3_35)
   runMode = core::Storage::MODE_WIFI_MQTT;
   #else
-    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
   #endif
     savedMode = runMode;
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
       value = constrain(value, 0, 100);
-      if (idx==1) { M1_SPEED_PC = (uint8_t)value; storage.setM1Speed(M1_SPEED_PC); }
-      else if (idx==2) { M2_SPEED_PC = (uint8_t)value; storage.setM2Speed(M2_SPEED_PC); }
+      if (idx==1) { M1_SPEED_PC = (uint8_t)value; g_storage.setM1Speed(M1_SPEED_PC); }
+      else if (idx==2) { M2_SPEED_PC = (uint8_t)value; g_storage.setM2Speed(M2_SPEED_PC); }
     };
     h.onModeToggle = [](bool zigbee){
       runMode = zigbee ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
       #if !defined(BOARD_ESP32S3_35)
-      storage.setMode(runMode);
+      g_storage.setMode(runMode);
       #else
       runMode = core::Storage::MODE_WIFI_MQTT; // ignore Zigbee on S3
       #endif
@@ -1209,22 +1252,22 @@ void setup() {
       }
     };
     h.onSettings = [](){ g_settingsRequested = true; };
-    h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; ESP.restart(); };
+    h.onWifiReset = [](){ g_storage.setWifiSsid(""); g_storage.setWifiPass(""); g_startPortalRequested = true; ESP.restart(); };
     h.onWifiSave = [](const char *s, const char *p){
       ESP_LOGI("UI", "Saving WiFi: SSID='%s', Pass='%s'", s ? s : "", p ? p : "");
-      storage.setWifiSsid(s?s:""); 
-      storage.setWifiPass(p?p:"");
+      g_storage.setWifiSsid(s?s:""); 
+      g_storage.setWifiPass(p?p:"");
     };
     h.onMqttSave = [](const char *host, uint16_t port, const char *user, const char *pass){
       ESP_LOGI("UI", "Saving MQTT: Host='%s', Port=%u, User='%s', Pass='%s'", host ? host : "", port, user ? user : "", pass ? pass : "");
-      storage.setMqttHost(host?host:"");
-      storage.setMqttPort(port);
-      storage.setMqttUser(user?user:"");
-      storage.setMqttPass(pass?pass:"");
-      MQTT_HOST = storage.getMqttHost(MQTT_HOST);
-      MQTT_PORT = storage.getMqttPort(MQTT_PORT);
-      MQTT_USER = storage.getMqttUser(MQTT_USER);
-      MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+      g_storage.setMqttHost(host?host:"");
+      g_storage.setMqttPort(port);
+      g_storage.setMqttUser(user?user:"");
+      g_storage.setMqttPass(pass?pass:"");
+      MQTT_HOST = g_storage.getMqttHost(MQTT_HOST);
+      MQTT_PORT = g_storage.getMqttPort(MQTT_PORT);
+      MQTT_USER = g_storage.getMqttUser(MQTT_USER);
+      MQTT_PASS = g_storage.getMqttPass(MQTT_PASS);
     };
     h.onSaveSettings = [](){ 
       // Optional: additional saves or restart logic
@@ -1567,7 +1610,7 @@ void setup() {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
         runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-        storage.setMode(runMode);
+        g_storage.setMode(runMode);
         if (runMode == core::Storage::MODE_ZIGBEE) {
           // Switch radios: stop WiFi and start Zigbee immediately if already joined
           if (WiFi.isConnected()) WiFi.disconnect(true, true);
@@ -1586,8 +1629,8 @@ void setup() {
           // Switch to WiFi/MQTT immediately
           wifiOff = false;
           // Load latest creds from NVS
-          WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-          WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+    WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+    WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
           // If Zigbee stack is running, perform a quick reboot to release radio cleanly
           #if ZB_ENABLED
           if (zbStarted) {
@@ -1598,7 +1641,7 @@ void setup() {
           #endif
           if (WIFI_SSID.length() == 0) {
             // No creds → start captive portal
-            if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }
+            if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }
           } else {
             // Ensure portal is stopped and bring up STA now
             if (portal.isActive()) portal.stop();
@@ -1653,7 +1696,7 @@ void setup() {
       lv_lbl_speed1 = lv_label_create(row_ph); lv_obj_set_style_text_color(lv_lbl_speed1, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
       lv_obj_t *btn1m = lv_btn_create(row_ph); lv_obj_set_size(btn1m, 28, 24); { lv_obj_t *t = lv_label_create(btn1m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn1m, on_ph_minus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_t *btn1p = lv_btn_create(row_ph); lv_obj_set_size(btn1p, 28, 24); { lv_obj_t *t = lv_label_create(btn1p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn1p, on_ph_plus_cb, LV_EVENT_CLICKED, NULL);
-      lv_obj_add_event_cb(lv_sl_speed1, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M1_SPEED_PC = (uint8_t)v; storage.setM1Speed(M1_SPEED_PC); if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC); }, LV_EVENT_ALL, NULL);
+      lv_obj_add_event_cb(lv_sl_speed1, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M1_SPEED_PC = (uint8_t)v; g_storage.setM1Speed(M1_SPEED_PC); if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC); }, LV_EVENT_ALL, NULL);
       // Row: ORP
       lv_obj_t *row_orp = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_orp); lv_obj_set_width(row_orp, LV_PCT(100)); lv_obj_set_height(row_orp, 36); lv_obj_set_flex_flow(row_orp, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_orp, 12, 0); lv_obj_set_style_pad_ver(row_orp, 6, 0);
       lv_obj_t *lbl2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lbl2, lv_color_black(), 0); lv_label_set_text(lbl2, "ORP Speed");
@@ -1661,7 +1704,7 @@ void setup() {
       lv_lbl_speed2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lv_lbl_speed2, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
       lv_obj_t *btn2m = lv_btn_create(row_orp); lv_obj_set_size(btn2m, 28, 24); { lv_obj_t *t = lv_label_create(btn2m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_t *btn2p = lv_btn_create(row_orp); lv_obj_set_size(btn2p, 28, 24); { lv_obj_t *t = lv_label_create(btn2p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL);
-      lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
+      lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; g_storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
 
       // Row: ALL OFF emergency button
       lv_obj_t *row_off = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_off); lv_obj_set_width(row_off, LV_PCT(100)); lv_obj_set_height(row_off, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_off, LV_FLEX_FLOW_ROW);
@@ -1686,7 +1729,7 @@ void setup() {
       lv_obj_t *row_net = lv_obj_create(sec_net); lv_obj_remove_style_all(row_net); lv_obj_set_width(row_net, LV_PCT(100)); lv_obj_set_height(row_net, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_net, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_net, 12, 0);
       lv_obj_t *lblNet = lv_label_create(row_net); lv_obj_set_style_text_color(lblNet, lv_color_black(), 0); lv_label_set_text(lblNet, "WiFi setup portal"); lv_obj_set_flex_grow(lblNet, 1);
       lv_obj_t *btnCfgWifi = lv_btn_create(row_net); lv_obj_set_size(btnCfgWifi, 120, 28); lv_label_set_text(lv_label_create(btnCfgWifi), "Configure WiFi");
-      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
+      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
@@ -1753,14 +1796,39 @@ void setup() {
   }
   #endif
 
+  #if !USE_ANALOG_SENSORS
   if (!DIAG_MODE) {
     // UARTs (RX only) unless TX pins are provided
     TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
     if (USE_CHANNEL_B) TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
   }
+  #endif
 
   // Configure Tuya DP ids for new parser module
+  #if !USE_ANALOG_SENSORS
   io::tuyaConfigure(DP_TEMP, DP_ORP, DP_PH, DP_ORP_ALT1, DP_PH_ALT1);
+  #endif
+
+  // Initialize analog sensors when enabled
+  #if USE_ANALOG_SENSORS
+  g_analog.begin();
+  // Load calibration from storage
+  {
+    io::AnalogPhOrpSensor::PhCal ph{}; ph.voltsAtPh4 = g_storage.getPhVAt4(3.00f); ph.voltsAtPh10 = g_storage.getPhVAt10(2.00f);
+    io::AnalogPhOrpSensor::OrpCal orp{}; orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f); orp.mVPerVolt = g_storage.getOrpMvPerV(1000.0f);
+    g_analog.setPhCalibration(ph);
+    g_analog.setOrpCalibration(orp);
+  }
+  #endif
+  #if USE_ADS1115
+  g_ads.begin();
+  {
+    io::AdsPhOrpSensor::PhCal ph{}; ph.voltsAtPh4 = g_storage.getPhVAt4(3.00f); ph.voltsAtPh10 = g_storage.getPhVAt10(2.00f);
+    io::AdsPhOrpSensor::OrpCal orp{}; orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f); orp.mVPerVolt = g_storage.getOrpMvPerV(1000.0f);
+    g_ads.setPhCalibration(ph);
+    g_ads.setOrpCalibration(orp);
+  }
+  #endif
 
   #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
   if (!USE_LVGL_UI) {
@@ -1771,14 +1839,14 @@ void setup() {
   #endif
   // Load persisted configuration early when not using LVGL UI (so boot mode is honored)
   if (!USE_LVGL_UI) {
-    storage.begin(false);
-    PH_MIN = storage.getPhMin(PH_MIN);
-    PH_MAX = storage.getPhMax(PH_MAX);
-    ORP_MIN = storage.getOrpMin(ORP_MIN);
-    ORP_MAX = storage.getOrpMax(ORP_MAX);
-    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
-    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    g_storage.begin(false);
+    PH_MIN = g_storage.getPhMin(PH_MIN);
+    PH_MAX = g_storage.getPhMax(PH_MAX);
+    ORP_MIN = g_storage.getOrpMin(ORP_MIN);
+    ORP_MAX = g_storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+    runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
     savedMode = runMode;
   }
 
@@ -1789,12 +1857,12 @@ void setup() {
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
       // Load persisted WiFi creds first so we can decide between STA vs captive portal
-      WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-      WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+      WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+      WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
       if (WIFI_SSID.length() == 0) {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
-        portal.setStorage(&storage);
+        portal.setStorage(&g_storage);
         portal.beginAP("PoolLab-Setup");
         if (USE_LVGL_UI) {
           #if defined(BOARD_ESP32S3_35)
@@ -1807,8 +1875,8 @@ void setup() {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: WiFi STA starting");
         {
-          String ssid = storage.getWifiSsid("");
-          String pass = storage.getWifiPass("");
+          String ssid = g_storage.getWifiSsid("");
+          String pass = g_storage.getWifiPass("");
           wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { g_ui_ip_text = ip; g_ui_ip_dirty = true; } });
           if (USE_LVGL_UI) {
             #if defined(BOARD_ESP32S3_35)
@@ -1818,7 +1886,7 @@ void setup() {
             #endif
           }
           // Ensure WebUI started on both boards identiek
-          webui.setStorage(&storage);
+          webui.setStorage(&g_storage);
           webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC);
           if (!webui.isActive()) webui.begin();
         }
@@ -1841,8 +1909,8 @@ void setup() {
   if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
   // Load custom speeds if present
-  M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-  M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+  M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+  M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 pins
@@ -1877,6 +1945,7 @@ void setup() {
   }
 
   // Optionally send Tuya queries after boot (requires TX pin wired!)
+  #if !USE_ANALOG_SENSORS
   if (SEND_ON_BOOT) {
     #if !defined(USE_JC3248W535)
     pushLine("TX: query product info"); drawScreen();
@@ -1889,6 +1958,7 @@ void setup() {
     io::tuyaSendDpQuery(TUYA_A);
     #endif
   }
+  #endif
 }
 
 void loop() {
@@ -1963,7 +2033,7 @@ void loop() {
     #if ZB_ENABLED
       savedMode = runMode;
       modeForced = true;
-      runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
+      runMode = core::Storage::MODE_ZIGBEE; g_storage.setMode(runMode);
       if (WiFi.isConnected()) WiFi.disconnect(true, true);
       WiFi.mode(WIFI_OFF);
       wifiOff = true;
@@ -1980,7 +2050,7 @@ void loop() {
     if (modeForced) {
       // Restore user's previous mode selection
       runMode = savedMode;
-      storage.setMode(runMode);
+      g_storage.setMode(runMode);
       modeForced = false;
     }
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
@@ -2010,7 +2080,7 @@ void loop() {
         lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
         lv_timer_set_repeat_count(t, 1);
         // Populate fields shortly after the UI is created to ensure textareas exist
-        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
         lv_timer_set_repeat_count(t2, 1);
         LVGL_UNLOCK(); opened = true;
       }
@@ -2018,7 +2088,7 @@ void loop() {
       // Non-S3 path: still defer to next tick
       lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
       lv_timer_set_repeat_count(t, 1);
-      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
       lv_timer_set_repeat_count(t2, 1);
       opened = true;
       #endif
@@ -2028,32 +2098,35 @@ void loop() {
     }
   }
 
+  #if !USE_ANALOG_SENSORS
   {
     int processed = 0;
     #if !defined(USE_JC3248W535)
     while (TUYA_A.available()) {
-    uint8_t b = TUYA_A.read();
-    rxA_count++;
-    lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
-    io::tuyaFeedA(b);
-    // Reduce debug/printing when UI is active to avoid lag
-    if (!USE_LVGL_UI && DIAG_MODE) {
-      // ASCII line capture for quick human-readable sniffing
-      if (b == '\n' || b == '\r') {
-        if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
-      } else {
-        if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
-        if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+      uint8_t b = TUYA_A.read();
+      rxA_count++;
+      lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
+      io::tuyaFeedA(b);
+      // Reduce debug/printing when UI is active to avoid lag
+      if (!USE_LVGL_UI && DIAG_MODE) {
+        // ASCII line capture for quick human-readable sniffing
+        if (b == '\n' || b == '\r') {
+          if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+        } else {
+          if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
+          if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+        }
+        // RAW hex dump to USB Serial (16 bytes per line)
+        if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
+        rawCountA++;
       }
-      // RAW hex dump to USB Serial (16 bytes per line)
-      if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
-      rawCountA++;
+      if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
     }
-    if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
+    #endif
   }
   #endif
-  }
   #if !defined(USE_JC3248W535)
+  #if !USE_ANALOG_SENSORS
   if (USE_CHANNEL_B && !USE_LVGL_UI) {
     while (TUYA_B.available()) {
       uint8_t b = TUYA_B.read();
@@ -2072,6 +2145,7 @@ void loop() {
     }
   }
   #endif
+  #endif
 
   // Avoid drawing directly with Arduino_GFX while LVGL UI is active
 
@@ -2084,12 +2158,35 @@ void loop() {
     if (USE_LVGL_UI) updateLvglValues();
   }
 
+  // Read sensors (internal ADC or ADS1115) and update Metrics when enabled
+  #if USE_ANALOG_SENSORS
+  {
+    static uint32_t lastRead = 0;
+    domain::Telemetry t{};
+    if (g_analog.read(t)) {
+      if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
+      if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
+      if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+    }
+  }
+  #endif
+  #if USE_ADS1115
+  {
+    domain::Telemetry t{};
+    if (g_ads.read(t)) {
+      if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
+      if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
+      if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+    }
+  }
+  #endif
+
   // Start captive portal on request (e.g., after WiFi reset)
   if (g_startPortalRequested) {
     g_startPortalRequested = false;
     // Clear WiFiManager credentials to avoid STA attempts with empty SSID
     wifiMgr.setCredentials("", "");
-    portal.setStorage(&storage);
+    portal.setStorage(&g_storage);
     if (!portal.isActive()) portal.beginAP("PoolLab-Setup");
     if (USE_LVGL_UI) ui::setIp(WiFi.softAPIP().toString().c_str());
   }
@@ -2181,10 +2278,10 @@ void loop() {
     #if ZB_ENABLED
     if (zbStarted) {
       // Apply deferred AO changes safely in app thread context
-      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; storage.setPhMin(PH_MIN); }
-      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; storage.setPhMax(PH_MAX); }
-      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); storage.setOrpMin(ORP_MIN); }
-      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); storage.setOrpMax(ORP_MAX); }
+      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; g_storage.setPhMin(PH_MIN); }
+      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; g_storage.setPhMax(PH_MAX); }
+      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); g_storage.setOrpMin(ORP_MIN); }
+      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); g_storage.setOrpMax(ORP_MAX); }
       if (domain::Metrics::instance().havePh)   zbPh.setFlow(domain::Metrics::instance().phVal);
       if (domain::Metrics::instance().haveOrp)  zbOrp.setPressure((int16_t)lrintf(domain::Metrics::instance().orpMv));
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
@@ -2270,10 +2367,10 @@ void loop() {
 // Legacy pagination removed
 
 extern "C" void requestMqttReload(){
-  MQTT_HOST = storage.getMqttHost(MQTT_HOST);
-  MQTT_PORT = storage.getMqttPort(MQTT_PORT);
-  MQTT_USER = storage.getMqttUser(MQTT_USER);
-  MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+  MQTT_HOST = g_storage.getMqttHost(MQTT_HOST);
+  MQTT_PORT = g_storage.getMqttPort(MQTT_PORT);
+  MQTT_USER = g_storage.getMqttUser(MQTT_USER);
+  MQTT_PASS = g_storage.getMqttPass(MQTT_PASS);
   if (WiFi.status() == WL_CONNECTED) {
     ensureMqtt();
   }

@@ -49,6 +49,18 @@ public:
   void setMqttUser(const String &v);
   void setMqttPass(const String &v);
 
+  // Analog sensor calibration (persisted)
+  // pH: two-point calibration (volts at pH4 and pH10)
+  float getPhVAt4(float def) const;
+  float getPhVAt10(float def) const;
+  void  setPhVAt4(float v);
+  void  setPhVAt10(float v);
+  // ORP: center voltage at 0 mV and scale (mV per Volt)
+  float getOrpVAt0(float def) const;
+  float getOrpMvPerV(float def) const;
+  void  setOrpVAt0(float v);
+  void  setOrpMvPerV(float v);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

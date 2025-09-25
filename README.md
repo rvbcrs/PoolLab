@@ -172,3 +172,92 @@ MQTT is raw TCP. HTTP “Proxy Hosts” werken niet voor MQTT‑TCP. Gebruik Str
 - `src/io/ZigbeeClient.{h,cpp}`: Abstractie voor Arduino Zigbee (indien beschikbaar); commissioning‑venster e.d.
 - `src/ui/UI.{h,cpp}`: Eenvoudige LVGL UI met toggles/sliders; handlers configureerbaar vanuit `main.cpp`.
 - `src/fonts`, `src/images`: UI assets.
+
+### pH / ORP sensoren
+
+Je kunt de sensoren op twee manieren uitlezen:
+
+1) Interne ESP32‑ADC
+- Zet in `platformio.ini` per environment:
+```
+-D USE_ANALOG_SENSORS=1
+-D PH_ADC_PIN=<adc_gpio>
+-D ORP_ADC_PIN=<adc_gpio>
+```
+- pH/ORP AO → respectievelijk `PH_ADC_PIN` / `ORP_ADC_PIN` (3.3 V max), GND gemeenschappelijk.
+  - C6 advies: `PH_ADC_PIN=0`, `ORP_ADC_PIN=7`
+  - S3 advies: `PH_ADC_PIN=1`, `ORP_ADC_PIN=2`
+
+2) ADS1115 (16‑bit) via I2C
+- Zet in `platformio.ini` per environment:
+```
+-D USE_ADS1115=1
+-D ADS_ADDR=0x48        ; 0x48..0x4B afhankelijk van ADDR
+-D ADS_SDA=18           ; I2C SDA (voorbeeld)
+-D ADS_SCL=19           ; I2C SCL (voorbeeld)
+-D ADS_CH_PH=0          ; single‑ended kanaal 0
+-D ADS_CH_ORP=1         ; single‑ended kanaal 1
+```
+- Bekabeling: pH AO → A0, ORP AO → A1, SDA/SCL → ESP32, VDD=3.3 V (aanbevolen na OPA2333‑mod), GND gemeenschappelijk. I2C‑pull‑ups naar 3.3 V.
+  - C6/S3 advies: `ADS_SDA=18`, `ADS_SCL=19`, `ADS_CH_PH=0`, `ADS_CH_ORP=1`, `ADS_ADDR=0x48`
+
+Calibratie
+- Via UI: Settings → Calibration → pH / ORP of via de speed‑dial rechtsonder.
+- pH: meet buffer 4.00 en 10.00 (opslaan). ORP: 0 mV solution (Sample) en eventueel mV/V aanpassen.
+- Waarden worden in NVS opgeslagen en automatisch geladen bij boot (werkt voor zowel ADC als ADS).
+
+### Wiring diagrams
+
+Optie A — ADS1115 (aanbevolen)
+
+```mermaid
+flowchart LR
+  PH[pH elektrode\n(PH4502C AO)] -->|AO| ADS(A0)
+  ORP[ORP elektrode\n(PH4502C AO)] -->|AO| ADS(A1)
+  subgraph ADS1115
+    ADS
+  end
+  ADS -- SDA --> MCU
+  ADS -- SCL --> MCU
+  ADS ---|3V3| VDD
+  ADS ---|GND| GND
+  subgraph ESP32 (C6/S3)
+    MCU
+  end
+```
+
+- ESP32‑C6: SDA=GPIO18, SCL=GPIO19, A0=pH, A1=ORP, VDD=3.3V, GND common
+- ESP32‑S3: idem (pas desgewenst SDA/SCL aan en zet flags)
+- Flags per env:
+  - `-D USE_ADS1115=1`
+  - `-D ADS_ADDR=0x48`
+  - `-D ADS_SDA=18`
+  - `-D ADS_SCL=19`
+  - `-D ADS_CH_PH=0`
+  - `-D ADS_CH_ORP=1`
+
+Optie B — Interne ADC (ESP32)
+
+```mermaid
+flowchart LR
+  PH[pH elektrode\n(PH4502C AO)] -->|AO| ADC1
+  ORP[ORP elektrode\n(PH4502C AO)] -->|AO| ADC2
+  subgraph ESP32 (C6/S3)
+    ADC1
+    ADC2
+  end
+  V33[3.3V] --- ESP32
+  GND --- ESP32
+```
+
+- ESP32‑C6: `PH_ADC_PIN=0`, `ORP_ADC_PIN=7`
+- ESP32‑S3: `PH_ADC_PIN=1`, `ORP_ADC_PIN=2`
+- Flags per env:
+  - `-D USE_ANALOG_SENSORS=1`
+  - `-D PH_ADC_PIN=<pin>`
+  - `-D ORP_ADC_PIN=<pin>`
+
+Algemeen
+- Deel GND tussen sensoren, ADS1115 en ESP32.
+- I2C‑pull‑ups naar 3.3 V (niet 5 V).
+- Met OPA2333 op 3.3 V zijn spanningsdelers niet nodig; AO blijft binnen 0..3.3 V.

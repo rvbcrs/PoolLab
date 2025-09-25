@@ -48,6 +48,13 @@ void configureHandlers(const Handlers &h);
 void setInitialSpeeds(uint8_t m1, uint8_t m2);
 void setInitialMode(bool zigbee);
 
+// Calibration UI API
+void showPhCalibration();
+void showOrpCalibration();
+// Populate saved calibration values in settings (optional helpers)
+void setSavedPhCalibration(float v_at4, float v_at10);
+void setSavedOrpCalibration(float v_at0, float mv_per_v);
+
 } // namespace ui
 
 

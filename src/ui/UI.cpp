@@ -5,8 +5,11 @@
 #include <math.h>
 #include "domain/Metrics.h"
 #include "core/Storage.h"
+#if USE_ANALOG_SENSORS
+#include "io/AnalogPhOrpSensor.h"
+#endif
 
-extern core::Storage storage;
+extern ::core::Storage g_storage;
 
 namespace ui {
 
@@ -18,6 +21,7 @@ static lv_obj_t *lv_lbl_orp_unit = nullptr;
 static lv_obj_t *lv_lbl_temp = nullptr;
 static lv_obj_t *lv_card_temp = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
+static lv_obj_t *lv_lbl_mqtt = nullptr;
 static lv_obj_t *lv_slider_m1 = nullptr;
 static lv_obj_t *lv_slider_m2 = nullptr;
 static lv_obj_t *lv_lbl_val_m1 = nullptr;
@@ -46,6 +50,114 @@ static lv_obj_t *lv_modal_active = nullptr; // generic modal holder
 
 void init(lv_disp_t* disp){ (void)disp; }
 static lv_timer_t *g_update_timer = nullptr;
+
+// --- Speed dial (floating action) ---
+static void anim_set_pos_y(void *obj, int32_t v){ lv_obj_set_y((lv_obj_t*)obj, v); }
+static void anim_set_pos_x(void *obj, int32_t v){ lv_obj_set_x((lv_obj_t*)obj, v); }
+
+static void ui_create_speed_dial(lv_obj_t *parent){
+  lv_obj_t *box = lv_obj_create(parent);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_size(box, 160, 160);
+  lv_obj_align(box, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+  // Main FAB
+  lv_obj_t *fab = lv_btn_create(box);
+  lv_obj_set_size(fab, 60, 60);
+  lv_obj_set_style_radius(fab, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(fab, lv_palette_main(LV_PALETTE_BLUE), 0);
+  lv_obj_set_style_bg_opa(fab, LV_OPA_COVER, 0);
+  lv_obj_align(fab, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+  lv_obj_t *lblFab = lv_label_create(fab);
+  lv_label_set_text(lblFab, LV_SYMBOL_PLUS);
+  lv_obj_set_style_text_color(lblFab, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lblFab, &lv_font_montserrat_28, 0);
+  lv_obj_center(lblFab);
+
+  auto make_option_sym = [&](const char *sym, const char *text, const lv_font_t *font)->lv_obj_t*{
+    lv_obj_t *btn = lv_btn_create(box);
+    lv_obj_set_size(btn, 52, 52);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_BLUE, 3), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, 4, 4);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *li = lv_label_create(btn); lv_label_set_text(li, sym);
+    if (font) lv_obj_set_style_text_font(li, font, 0);
+    lv_obj_set_style_text_color(li, lv_color_white(), 0);
+    lv_obj_center(li);
+    lv_obj_t *cap = lv_label_create(box); lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0); lv_obj_set_style_text_color(cap, lv_palette_lighten(LV_PALETTE_GREY, 2), 0); lv_label_set_text(cap, text);
+    lv_obj_align_to(cap, btn, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+    lv_obj_add_flag(cap, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_user_data(btn, cap);
+    return btn;
+  };
+
+  auto make_option_img = [&](const lv_img_dsc_t *img, const char *text)->lv_obj_t*{
+    lv_obj_t *btn = lv_btn_create(box);
+    lv_obj_set_size(btn, 52, 52);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_BLUE, 3), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, 4, 4);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *im = lv_img_create(btn); lv_img_set_src(im, img);
+    lv_obj_set_style_img_recolor_opa(im, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(im, lv_color_white(), 0);
+    lv_obj_center(im);
+    lv_obj_t *cap = lv_label_create(box); lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0); lv_obj_set_style_text_color(cap, lv_palette_lighten(LV_PALETTE_GREY, 2), 0); lv_label_set_text(cap, text);
+    lv_obj_align_to(cap, btn, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+    lv_obj_add_flag(cap, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_user_data(btn, cap);
+    return btn;
+  };
+
+  lv_obj_t *btnSettings = make_option_sym(LV_SYMBOL_SETTINGS, "Settings", &lv_font_montserrat_28);
+  lv_obj_t *btnPhCal   = make_option_img(&water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40, "pH Cal");
+  lv_obj_t *btnOrpCal  = make_option_img(&water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40, "ORP Cal");
+
+  struct DialCtx { lv_obj_t *b1; lv_obj_t *b2; lv_obj_t *b3; };
+  DialCtx *ctx = (DialCtx*)lv_mem_alloc(sizeof(DialCtx));
+  ctx->b1 = btnSettings; ctx->b2 = btnPhCal; ctx->b3 = btnOrpCal;
+
+  // Wire actions
+  lv_obj_add_event_cb(btnSettings, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; if (handlers.onSettings) handlers.onSettings(); }, 0, NULL); lv_timer_set_repeat_count(t, 1); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(btnPhCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showPhCalibration(); }, 0, NULL); lv_timer_set_repeat_count(t, 1); } }, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(btnOrpCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showOrpCalibration(); }, 0, NULL); lv_timer_set_repeat_count(t, 1); } }, LV_EVENT_ALL, NULL);
+
+  // Toggle expansion
+  lv_obj_add_event_cb(fab, [](lv_event_t *e){
+    static bool expanded = false;
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    expanded = !expanded;
+    DialCtx *d = (DialCtx*)lv_event_get_user_data(e);
+    if (!d) return;
+    auto set_btn = [&](lv_obj_t *btn, int x_off, int y_off){
+      lv_obj_t *cap = (lv_obj_t*)lv_obj_get_user_data(btn);
+      if (expanded) {
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_HIDDEN);
+        if (cap) { lv_obj_clear_flag(cap, LV_OBJ_FLAG_HIDDEN); lv_obj_align_to(cap, btn, LV_ALIGN_OUT_BOTTOM_MID, 0, 4); }
+        // position relative to bottom-right
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, x_off, y_off);
+      } else {
+        // collapse back onto FAB and hide
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, 4, 4);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+        if (cap) lv_obj_add_flag(cap, LV_OBJ_FLAG_HIDDEN);
+      }
+    };
+    // quarter circle with spacing tuned for 52px buttons
+    set_btn(d->b1,   0, -74);
+    set_btn(d->b2, -54, -54);
+    set_btn(d->b3, -74,   0);
+  }, LV_EVENT_ALL, ctx);
+}
 
 void build(bool safeBaseline){
   lv_obj_t *scr = lv_scr_act();
@@ -225,14 +337,26 @@ void build(bool safeBaseline){
     }
   }, LV_EVENT_CLICKED, NULL);
 
-  // Settings button
-  lv_obj_t *btn = lv_btn_create(root); lv_obj_set_width(btn, LV_PCT(100)); lv_obj_set_height(btn, 44); lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -8); lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_t *lblb = lv_label_create(btn); lv_label_set_text(lblb, "Settings"); lv_obj_center(lblb);
-  lv_obj_add_event_cb(btn, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onSettings) handlers.onSettings(); } }, LV_EVENT_CLICKED, NULL);
+  // Replace Settings button with floating speed-dial
+  ui_create_speed_dial(root);
+  // Adjust IP label anchor: align to root bottom area instead of removed button
+  if (lv_lbl_ip) {
+    lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -56);
+  }
 
-  // IP label (content width), placed just above the Settings button on the left (slightly higher)
+  // IP label (content width), placed near bottom-left above the speed dial
   lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align_to(lv_lbl_ip, btn, LV_ALIGN_OUT_TOP_LEFT, 0, -10); lv_label_set_text(lv_lbl_ip, "IP: --");
+  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -56); lv_label_set_text(lv_lbl_ip, "IP: --");
+
+  // MQTT host label onder IP
+  lv_lbl_mqtt = lv_label_create(root);
+  lv_obj_set_style_text_color(lv_lbl_mqtt, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_text_font(lv_lbl_mqtt, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(lv_lbl_mqtt, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(lv_lbl_mqtt, LV_SIZE_CONTENT);
+  lv_obj_set_style_text_align(lv_lbl_mqtt, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_align_to(lv_lbl_mqtt, lv_lbl_ip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
+  lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
 
   // SSID label above IP (stacked), left aligned
   lv_lbl_ssid = lv_label_create(root);
@@ -314,6 +438,15 @@ void updateValues(){
     String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
     char bi[64]; snprintf(bi, sizeof(bi), "IP: %s", ip.c_str());
     lv_label_set_text(lv_lbl_ip, bi);
+  }
+  if (lv_lbl_mqtt) {
+    String host = ::g_storage.getMqttHost("");
+    if (host.length() > 0) {
+      char bm[96]; snprintf(bm, sizeof(bm), "MQTT: %s", host.c_str());
+      lv_label_set_text(lv_lbl_mqtt, bm);
+    } else {
+      lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
+    }
   }
   if (lv_lbl_ssid) {
     String s = (WiFi.status()==WL_CONNECTED)? WiFi.SSID() : String("--");
@@ -469,6 +602,24 @@ void showSettings(){
   lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508);
   lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532);
 
+#if USE_ANALOG_SENSORS
+  // Calibration section (pH and ORP), positioned directly under MQTT password field
+  lv_obj_t *sep = lv_obj_create(content); lv_obj_remove_style_all(sep); lv_obj_set_size(sep, lv_pct(100), 2);
+  lv_obj_set_style_bg_color(sep, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
+  lv_obj_align_to(sep, lv_ta_mqtt_pw, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+
+  lv_obj_t *lblCal = lv_label_create(content); lv_label_set_text(lblCal, "Calibration");
+  lv_obj_align_to(lblCal, sep, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+  // Two buttons: pH Cal and ORP Cal in a row
+  lv_obj_t *rowCal = lv_obj_create(content); lv_obj_remove_style_all(rowCal);
+  lv_obj_set_width(rowCal, LV_PCT(100)); lv_obj_set_height(rowCal, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(rowCal, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowCal, 10, 0);
+  lv_obj_align_to(rowCal, lblCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  lv_obj_t *btnPhCal = lv_btn_create(rowCal); lv_obj_set_size(btnPhCal, 120, 36); { lv_obj_t *t=lv_label_create(btnPhCal); lv_label_set_text(t, "pH Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnPhCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showPhCalibration(); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *btnOrpCal = lv_btn_create(rowCal); lv_obj_set_size(btnOrpCal, 120, 36); { lv_obj_t *t=lv_label_create(btnOrpCal); lv_label_set_text(t, "ORP Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnOrpCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showOrpCalibration(); }, LV_EVENT_CLICKED, NULL);
+#endif
+
   // Footer
   lv_obj_t *footer = lv_obj_create(scr);
   lv_obj_remove_style_all(footer);
@@ -560,6 +711,99 @@ void showSettings(){
   }, LV_EVENT_ALL, NULL);
   // Fields will be populated by caller after opening settings
 }
+// --- Calibration Dialogs ---
+static void modal_close_async(lv_obj_t *modal){ lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ lv_obj_t *obj=(lv_obj_t*)tm->user_data; if (obj) lv_obj_del(obj); }, 0, modal); lv_timer_set_repeat_count(t, 1); }
+
+void showPhCalibration(){
+  if (lv_modal_active) { lv_obj_del(lv_modal_active); lv_modal_active=nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top()); lv_modal_active = modal;
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *dlg = lv_obj_create(modal); lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40); lv_obj_center(dlg); lv_obj_set_style_radius(dlg, 10, 0); lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg); lv_label_set_text(title, "pH Calibration"); lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_t *lbl1 = lv_label_create(dlg); lv_label_set_text(lbl1, "Place in pH 4.00 buffer and press SAMPLE"); lv_obj_align(lbl1, LV_ALIGN_TOP_LEFT, 0, 32);
+  lv_obj_t *val4 = lv_label_create(dlg); lv_label_set_text(val4, "V4: ---.-- V"); lv_obj_align(val4, LV_ALIGN_TOP_LEFT, 0, 56);
+  lv_obj_t *btn4 = lv_btn_create(dlg); lv_obj_set_size(btn4, 110, 36); lv_obj_align(btn4, LV_ALIGN_TOP_RIGHT, -8, 48); { lv_obj_t *t=lv_label_create(btn4); lv_label_set_text(t, "Sample"); lv_obj_center(t);} 
+  lv_obj_t *lbl2 = lv_label_create(dlg); lv_label_set_text(lbl2, "Place in pH 10.00 buffer and press SAMPLE"); lv_obj_align(lbl2, LV_ALIGN_TOP_LEFT, 0, 92);
+  lv_obj_t *val10 = lv_label_create(dlg); lv_label_set_text(val10, "V10: ---.-- V"); lv_obj_align(val10, LV_ALIGN_TOP_LEFT, 0, 116);
+  lv_obj_t *btn10 = lv_btn_create(dlg); lv_obj_set_size(btn10, 110, 36); lv_obj_align(btn10, LV_ALIGN_TOP_RIGHT, -8, 108); { lv_obj_t *t=lv_label_create(btn10); lv_label_set_text(t, "Sample"); lv_obj_center(t);} 
+
+  lv_obj_t *btnCancel = lv_btn_create(dlg); lv_obj_set_size(btnCancel, 120, 44); lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_LEFT, 0, 0); { lv_obj_t *t=lv_label_create(btnCancel); lv_label_set_text(t, "Cancel"); lv_obj_center(t);} 
+  lv_obj_t *btnSave   = lv_btn_create(dlg); lv_obj_set_size(btnSave, 120, 44); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_RIGHT, 0, 0); { lv_obj_t *t=lv_label_create(btnSave); lv_label_set_text(t, "Save"); lv_obj_center(t);} 
+
+  struct Ctx { lv_obj_t *modal; lv_obj_t *v4; lv_obj_t *v10; float s4=0, s10=0; };
+  Ctx *ctx = (Ctx*)lv_mem_alloc(sizeof(Ctx)); ctx->modal=modal; ctx->v4=val4; ctx->v10=val10; ctx->s4=0; ctx->s10=0;
+  lv_obj_add_event_cb(btn4, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
+#if USE_ANALOG_SENSORS
+    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsPh();
+#else
+    float v = 0.0f;
+#endif
+    c->s4 = v; char b[24]; snprintf(b,sizeof(b),"V4: %.3f V", v); lv_label_set_text(c->v4,b);} }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btn10, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
+#if USE_ANALOG_SENSORS
+    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsPh();
+#else
+    float v = 0.0f;
+#endif
+    c->s10 = v; char b[24]; snprintf(b,sizeof(b),"V10: %.3f V", v); lv_label_set_text(c->v10,b);} }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); modal_close_async(c->modal); lv_mem_free(c); } }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); ::g_storage.setPhVAt4(c->s4 > 0 ? c->s4 : ::g_storage.getPhVAt4(3.00f)); ::g_storage.setPhVAt10(c->s10 > 0 ? c->s10 : ::g_storage.getPhVAt10(2.00f));
+#if USE_ANALOG_SENSORS
+    extern io::AnalogPhOrpSensor g_analog; io::AnalogPhOrpSensor::PhCal cal = g_analog.getPhCalibration(); cal.voltsAtPh4 = ::g_storage.getPhVAt4(cal.voltsAtPh4); cal.voltsAtPh10 = ::g_storage.getPhVAt10(cal.voltsAtPh10); g_analog.setPhCalibration(cal);
+#endif
+    modal_close_async(c->modal); lv_mem_free(c);} }, LV_EVENT_CLICKED, ctx);
+}
+
+void showOrpCalibration(){
+  if (lv_modal_active) { lv_obj_del(lv_modal_active); lv_modal_active=nullptr; }
+  lv_obj_t *modal = lv_obj_create(lv_layer_top()); lv_modal_active = modal;
+  lv_obj_set_size(modal, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_style_bg_opa(modal, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(modal, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *dlg = lv_obj_create(modal); lv_obj_set_size(dlg, lv_disp_get_hor_res(NULL)-40, lv_disp_get_ver_res(NULL)-40); lv_obj_center(dlg); lv_obj_set_style_radius(dlg, 10, 0); lv_obj_set_style_pad_all(dlg, 12, 0);
+  lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_t *title = lv_label_create(dlg); lv_label_set_text(title, "ORP Calibration"); lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_t *lbl1 = lv_label_create(dlg); lv_label_set_text(lbl1, "Place in 0 mV solution and press SAMPLE"); lv_obj_align(lbl1, LV_ALIGN_TOP_LEFT, 0, 32);
+  lv_obj_t *val0 = lv_label_create(dlg); lv_label_set_text(val0, "V0: ---.-- V"); lv_obj_align(val0, LV_ALIGN_TOP_LEFT, 0, 56);
+  lv_obj_t *btn0 = lv_btn_create(dlg); lv_obj_set_size(btn0, 110, 36); lv_obj_align(btn0, LV_ALIGN_TOP_RIGHT, -8, 48); { lv_obj_t *t=lv_label_create(btn0); lv_label_set_text(t, "Sample"); lv_obj_center(t);} 
+  lv_obj_t *lbl2 = lv_label_create(dlg); lv_label_set_text(lbl2, "Adjust mV/V scale if needed"); lv_obj_align(lbl2, LV_ALIGN_TOP_LEFT, 0, 92);
+  lv_obj_t *taScale = lv_textarea_create(dlg); lv_textarea_set_one_line(taScale, true); lv_obj_set_width(taScale, 120); lv_obj_align(taScale, LV_ALIGN_TOP_LEFT, 0, 116); lv_textarea_set_text(taScale, "1000");
+
+  lv_obj_t *btnCancel = lv_btn_create(dlg); lv_obj_set_size(btnCancel, 120, 44); lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_LEFT, 0, 0); { lv_obj_t *t=lv_label_create(btnCancel); lv_label_set_text(t, "Cancel"); lv_obj_center(t);} 
+  lv_obj_t *btnSave   = lv_btn_create(dlg); lv_obj_set_size(btnSave, 120, 44); lv_obj_align(btnSave, LV_ALIGN_BOTTOM_RIGHT, 0, 0); { lv_obj_t *t=lv_label_create(btnSave); lv_label_set_text(t, "Save"); lv_obj_center(t);} 
+
+  struct Ctx { lv_obj_t *modal; lv_obj_t *v0; lv_obj_t *ta; float s0=0; };
+  Ctx *ctx = (Ctx*)lv_mem_alloc(sizeof(Ctx)); ctx->modal=modal; ctx->v0=val0; ctx->ta=taScale; ctx->s0=0;
+  lv_obj_add_event_cb(btn0, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
+#if USE_ANALOG_SENSORS
+    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsOrp();
+#else
+    float v = 0.0f;
+#endif
+    c->s0 = v; char b[24]; snprintf(b,sizeof(b),"V0: %.3f V", v); lv_label_set_text(c->v0,b);} }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); modal_close_async(c->modal); lv_mem_free(c); } }, LV_EVENT_CLICKED, ctx);
+  lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); float mvperv = 1000.0f; const char *t=lv_textarea_get_text(c->ta); if (t && *t) { mvperv = (float)atof(t); if (mvperv < 100.0f) mvperv = 100.0f; if (mvperv > 5000.0f) mvperv = 5000.0f; } ::g_storage.setOrpVAt0(c->s0 > 0 ? c->s0 : ::g_storage.getOrpVAt0(2.50f)); ::g_storage.setOrpMvPerV(mvperv);
+#if USE_ANALOG_SENSORS
+    extern io::AnalogPhOrpSensor g_analog; io::AnalogPhOrpSensor::OrpCal cal = g_analog.getOrpCalibration(); cal.voltsAt0mV = ::g_storage.getOrpVAt0(cal.voltsAt0mV); cal.mVPerVolt = ::g_storage.getOrpMvPerV(cal.mVPerVolt); g_analog.setOrpCalibration(cal);
+#endif
+    modal_close_async(c->modal); lv_mem_free(c);} }, LV_EVENT_CLICKED, ctx);
+}
+
+void setSavedPhCalibration(float v_at4, float v_at10){ (void)v_at4; (void)v_at10; }
+void setSavedOrpCalibration(float v_at0, float mv_per_v){ (void)v_at0; (void)mv_per_v; }
 
 void showMain(){
   onSettings = false;

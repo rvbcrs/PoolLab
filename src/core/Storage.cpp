@@ -91,6 +91,16 @@ void Storage::setMqttPass(const String &pass) {
   }
 }
 
+// ---- Analog sensor calibration ----
+float Storage::getPhVAt4(float def) const { return _prefs.getFloat("ph_v_at4", def); }
+float Storage::getPhVAt10(float def) const { return _prefs.getFloat("ph_v_at10", def); }
+void  Storage::setPhVAt4(float v) { _prefs.putFloat("ph_v_at4", v); }
+void  Storage::setPhVAt10(float v) { _prefs.putFloat("ph_v_at10", v); }
+float Storage::getOrpVAt0(float def) const { return _prefs.getFloat("orp_v_at0", def); }
+float Storage::getOrpMvPerV(float def) const { return _prefs.getFloat("orp_mv_per_v", def); }
+void  Storage::setOrpVAt0(float v) { _prefs.putFloat("orp_v_at0", v); }
+void  Storage::setOrpMvPerV(float v) { _prefs.putFloat("orp_mv_per_v", v); }
+
 } // namespace core
 
 
