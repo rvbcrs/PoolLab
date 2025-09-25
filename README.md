@@ -212,18 +212,12 @@ Optie A — ADS1115 (aanbevolen)
 
 ```mermaid
 flowchart LR
-  PH[pH elektrode\n(PH4502C AO)] -->|AO| ADS(A0)
-  ORP[ORP elektrode\n(PH4502C AO)] -->|AO| ADS(A1)
-  subgraph ADS1115
-    ADS
-  end
-  ADS -- SDA --> MCU
+  PH["pH elektrode (PH4502C AO)"] -->|A0| ADS[ADS1115]
+  ORP["ORP elektrode (PH4502C AO)"] -->|A1| ADS
+  ADS -- SDA --> MCU[ESP32 C6/S3]
   ADS -- SCL --> MCU
-  ADS ---|3V3| VDD
-  ADS ---|GND| GND
-  subgraph ESP32 (C6/S3)
-    MCU
-  end
+  ADS --- V33["3.3V"]
+  ADS --- GND1["GND"]
 ```
 
 - ESP32‑C6: SDA=GPIO18, SCL=GPIO19, A0=pH, A1=ORP, VDD=3.3V, GND common
@@ -240,14 +234,10 @@ Optie B — Interne ADC (ESP32)
 
 ```mermaid
 flowchart LR
-  PH[pH elektrode\n(PH4502C AO)] -->|AO| ADC1
-  ORP[ORP elektrode\n(PH4502C AO)] -->|AO| ADC2
-  subgraph ESP32 (C6/S3)
-    ADC1
-    ADC2
-  end
-  V33[3.3V] --- ESP32
-  GND --- ESP32
+  PH["pH elektrode (PH4502C AO)"] -->|PH_ADC_PIN| MCU[ESP32 C6/S3]
+  ORP["ORP elektrode (PH4502C AO)"] -->|ORP_ADC_PIN| MCU
+  MCU --- V33["3.3V"]
+  MCU --- GND1["GND"]
 ```
 
 - ESP32‑C6: `PH_ADC_PIN=0`, `ORP_ADC_PIN=7`
