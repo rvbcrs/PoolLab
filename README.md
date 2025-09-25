@@ -80,6 +80,13 @@ Notities
   - `pool/cmd/orp_min` ↔ `pool/cfg/orp_min`
   - `pool/cmd/orp_max` ↔ `pool/cfg/orp_max`
 
+#### Belangrijke recente wijzigingen
+- Unieke clientId per device op basis van chip‑ID (geen ID‑conflict meer bij meerdere devices).
+- Exponential backoff bij mislukte connect (start 5 s → max 5 min); voorkomt UI‑stalls.
+- Eenmalige, duidelijke MQTT‑log bij boot: toont host/poort/user/pass‑lengte en eerste connect‑uitkomst.
+- WebUI Settings bevat nu ook MQTT‑velden (host/port/user/pass). Opslaan → NVS + directe reconnect.
+- Lege poort betekent: bewaar poort `0` en laat het device geen port‑suffix aan host toevoegen (intern gebruiken we 1883 als default TCP, tenzij je TLS/streams configureert; zie hieronder).
+
 ### WebUI (via WiFi)
 - Home: tegels in donkere LVGL‑stijl met live updates (WebSocket) voor pH, ORP en Temp.
 - Settings: Mode (Zigbee/WiFi), pH min/max, ORP min/max, motor‑snelheden; opslaan → NVS + directe applicatie.
@@ -87,6 +94,72 @@ Notities
   - `http://<ip>/`
   - `http://<ip>/settings`
   - WebSocket op poort 81 (client wordt automatisch geopend door de homepage).
+
+#### WebUI → MQTT instellingen
+- Host, Port (mag leeg), User, Password kun je nu in de browser instellen.
+- Opslaan triggert directe reconnect zonder reboot.
+- Diagnose: zet tijdelijk MQTT‑debug aan in code of check de boot‑log (éénmalige probe).
+
+### LVGL UI (C6 en S3)
+- ESP32‑C6: compacte LVGL‑UI met TileView (pH/ORP), grijze achtergrond; eigen builder.
+- ESP32‑S3 (3.5") : 3‑card UI (pH/ORP/Temp) met moderne tegels.
+- Legacy (Adafruit_GFX) UI is verwijderd (bestanden weggehaald).
+- Touch fixes: geen key‑repeat, debouncing in touch driver (geen dubbele toetsaanslagen).
+- Watchdogs:
+  - C6: herbouwt UI als `lv_timer_handler()` >5 s geen activiteit heeft. Logt: `LVGL watchdog: rebuild complete (C6)`.
+  - S3: heartbeat vanuit LVGL‑task/BSP‑timer; herbouwt UI als heartbeat >8 s stilstaat. Logt: `S3 LVGL watchdog: rebuild complete`.
+
+### Cloudflare + Nginx Proxy Manager (NPM) voor MQTT
+MQTT is raw TCP. HTTP “Proxy Hosts” werken niet voor MQTT‑TCP. Gebruik Streams of WebSockets.
+
+1) Streams (TCP) zonder TLS (snelste, eenvoudig):
+- Cloudflare DNS record: zet op “DNS only” (grijze wolk). CF proxy (oranje) werkt niet voor raw TCP.
+- NPM → Streams → Add Stream:
+  - Incoming Port: `1883`
+  - Forward Host/IP: interne MQTT‑broker (bijv. `192.168.x.y`)
+  - Forward Port: `1883`
+  - Protocol: `TCP`
+- Router/NAT: forward extern `1883` → NPM‑host:1883.
+- Device: host = jouw domein, port = 1883.
+
+2) Streams (TCP) met TLS (8883), zodat 1883 niet open hoeft:
+- Optie A (TLS offload in NPM):
+  - NPM → SSL Certificates → Let’s Encrypt voor `mqtt.yourdomain.tld`.
+  - Streams: Listen `8883` (TCP) → Forward `1883` (TCP) + koppel SSL‑cert.
+  - Device: TLS‑client vereist (WiFiClientSecure). (Firmware‑TODO als je dit wilt gebruiken.)
+- Optie B (TLS passthrough):
+  - Broker luistert zelf op `8883` met geldig cert.
+  - NPM Streams: Listen `8883` → Forward `8883` (geen SSL in NPM).
+  - Device: TLS‑client vereist + juiste CA.
+
+3) WebSockets via HTTP Proxy Host (alleen als je WS‑MQTT client gebruikt):
+- Broker moet `protocol websockets` listener hebben (bijv. `9001`).
+- NPM → Proxy Hosts → domein → Forward naar `9001`, “Websockets” aanvinken, LE‑cert.
+- Let op: de gebruikte embedded MQTT‑client (PubSubClient) ondersteunt geen WS; dit is primair voor browser/desktop MQTT‑clients.
+
+### Troubleshooting
+- WiFi “NO_AP_FOUND”: controleer SSID/ontvangst. De code probeert auto‑reconnect en periodieke hard restarts.
+- MQTT extern werkt niet, lokaal wel:
+  - Cloudflare DNS moet “DNS only” zijn voor TCP‑streams.
+  - NPM: gebruik Streams (TCP), geen Proxy Host.
+  - Broker‑auth/ACL: zorg dat de gebruiker bestaat en rechten heeft (HA Mosquitto: ACL in `/share/mosquitto/acl.conf`).
+  - Test extern met `mosquitto_sub/pub` (met user/pass) voordat je het device test.
+- UI bevriest na lange uptime: check of de watchdog een rebuild logt. Zo niet, open een issue met serielog.
+
+### Dependencies (zie `platformio.ini`)
+- `GFX Library for Arduino` (moononournation / Arduino_GFX)
+- `PubSubClient`
+- `lvgl`
+- (Zigbee libs indien gecompileerd)
+
+### Changelog (samengevat)
+- Verwijderd: Legacy C6 GFX UI en Adafruit_GFX dependency.
+- Toegevoegd: C6 LVGL tileview hersteld; S3 3‑card UI.
+- Touch debouncing en keyboard repeat uit.
+- WebUI: MQTT‑instellingen + directe herlaad (`requestMqttReload`).
+- MQTT: unieke clientId, exponential backoff, éénmalige boot‑probe.
+- Watchdogs voor C6 en S3 met console‑log bij rebuild.
+- Reset WiFi knop: leegt NVS en reboot direct (captieve portal start schoon op).
 
 ### Projectstructuur (belangrijkste componenten)
 - `src/main.cpp`: Orkestratie. UI‑handlers, bootvolgorde, WiFi/MQTT, Zigbee‑commissioning, Tuya‑feed, periodieke publish.
@@ -99,21 +172,3 @@ Notities
 - `src/io/ZigbeeClient.{h,cpp}`: Abstractie voor Arduino Zigbee (indien beschikbaar); commissioning‑venster e.d.
 - `src/ui/UI.{h,cpp}`: Eenvoudige LVGL UI met toggles/sliders; handlers configureerbaar vanuit `main.cpp`.
 - `src/fonts`, `src/images`: UI assets.
-
-### Troubleshooting
-- WiFi “NO_AP_FOUND”: controleer SSID/ontvangst. De code probeert auto‑reconnect en periodieke hard restarts.
-- “STA already disconnected”: informatief (safe to ignore) als WiFi al uit stond.
-- NVS volledig wissen: gebruik “Erase Flash” in PlatformIO upload instellingen (let op: alle opgeslagen waardes weg).
-
-### Dependencies (zie `platformio.ini`)
-- `GFX Library for Arduino` (moononournation / Arduino_GFX)
-- `Adafruit GFX Library`
-- `PubSubClient`
-- `lvgl`
-- Zigbee libs via framework‑linker flags indien aanwezig
-
-### Multi‑board support
-- Kies het gewenste environment in `platformio.ini`:
-  - `esp32-c6-devkitc-1` → `BOARD=ESP32C6_TOUCH_1_47`, `HAS_ZIGBEE=1` (Zigbee UI zichtbaar)
-  - `esp32-s3-35` → `BOARD=ESP32S3_35`, `HAS_ZIGBEE=0` (Zigbee UI verborgen)
-- `BoardSelect.h` levert de display‑config (resolutie/offsets/rotatie) en capability flags. Zo kun je eenvoudig andere schermen/boards toevoegen.

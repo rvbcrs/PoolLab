@@ -16,6 +16,7 @@ static lv_obj_t *lv_lbl_ph = nullptr;
 static lv_obj_t *lv_lbl_orp = nullptr;
 static lv_obj_t *lv_lbl_orp_unit = nullptr;
 static lv_obj_t *lv_lbl_temp = nullptr;
+static lv_obj_t *lv_card_temp = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_slider_m1 = nullptr;
 static lv_obj_t *lv_slider_m2 = nullptr;
@@ -197,6 +198,8 @@ void build(bool safeBaseline){
   if (!small_layout && card_tmp) {
     lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
     lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
+    // Store temp card for dynamic color updates
+    lv_card_temp = card_tmp;
   }
 
   // Subtext: two-line layout (label, then values)
@@ -295,6 +298,13 @@ void updateValues(){
       int t_i = t10 / 10; int t_f = abs(t10 % 10);
       char b[20]; snprintf(b, sizeof(b), "%d.%d C", t_i, t_f);
       lv_label_set_text(lv_lbl_temp, b);
+      if (lv_card_temp) {
+        // Color thresholds: <15C blue, 15..25C amber, >25C red
+        lv_color_t c = lv_palette_darken(LV_PALETTE_AMBER, 4);
+        if (M.tempC < 15.0f) c = lv_palette_darken(LV_PALETTE_BLUE, 3);
+        else if (M.tempC > 25.0f) c = lv_palette_darken(LV_PALETTE_RED, 1);
+        lv_obj_set_style_bg_color(lv_card_temp, c, 0);
+      }
     } else {
       lv_label_set_text(lv_lbl_temp, "--.- C");
     }

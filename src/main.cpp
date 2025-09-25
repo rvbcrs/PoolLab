@@ -356,6 +356,9 @@ static String MQTT_USER     = "";  // optional
 static String MQTT_PASS     = "";  // optional
 static char MQTT_CLIENTID_BUF[48] = {0};
 static const char* MQTT_CLIENTID = MQTT_CLIENTID_BUF;
+#if defined(BOARD_ESP32S3_35)
+static volatile uint32_t g_s3_lvgl_heartbeat_ms = 0;
+#endif
 
 // MQTT is handled by io::MqttClient now
 static core::Storage storage("poolcfg");
@@ -1892,6 +1895,7 @@ void loop() {
   if (USE_LVGL_UI) {
     #if !defined(BOARD_ESP32S3_35)
     lv_timer_handler();
+    g_ui_last_lvgl_ms = millis();
     #endif
     // Let LVGL task run; then light yield
     delay(0);
@@ -2215,7 +2219,52 @@ void loop() {
     #endif
   }
 
+  // C6-only: UI watchdog to recover from rare LVGL stalls
+  #if !defined(BOARD_ESP32S3_35)
+  if (USE_LVGL_UI) {
+    static uint32_t next_watchdog_action = 0;
+    uint32_t now_ms = millis();
+    if (now_ms >= next_watchdog_action) {
+      // If lv_timer_handler() hasn't executed in >5s, rebuild UI
+      if (g_ui_last_lvgl_ms != 0 && (now_ms - g_ui_last_lvgl_ms) > 5000) {
+        ESP_LOGW("UI", "LVGL watchdog: UI inactive for >5s, rebuilding screen");
+        lv_obj_clean(lv_scr_act());
+        ui::build(false);
+        ui::updateValues();
+        ESP_LOGI("UI", "LVGL watchdog: rebuild complete (C6)");
+        g_ui_last_lvgl_ms = now_ms;
+        next_watchdog_action = now_ms + 10000; // cool-down to avoid thrash
+      } else {
+        next_watchdog_action = now_ms + 1000;
+      }
+    }
+  }
+  #endif
 
+  // S3-only: LVGL watchdog to recover from UI stalls (both BSP and non-BSP paths)
+  #if defined(BOARD_ESP32S3_35)
+  if (USE_LVGL_UI) {
+    static uint32_t s3_next_watchdog = 0;
+    uint32_t now_ms = millis();
+    if (now_ms >= s3_next_watchdog) {
+      // If heartbeat older than 8s, try to rebuild UI safely under lock
+      if (g_s3_lvgl_heartbeat_ms != 0 && (now_ms - g_s3_lvgl_heartbeat_ms) > 8000) {
+        ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled, rebuilding UI");
+        if (LVGL_LOCK()) {
+          lv_obj_clean(lv_scr_act());
+          ui::build(false);
+          ui::updateValues();
+          LVGL_UNLOCK();
+          ESP_LOGI("UI", "S3 LVGL watchdog: rebuild complete");
+          g_s3_lvgl_heartbeat_ms = now_ms;
+        }
+        s3_next_watchdog = now_ms + 15000; // cool-down
+      } else {
+        s3_next_watchdog = now_ms + 2000;
+      }
+    }
+  }
+  #endif
 }
 
 // Legacy pagination removed
