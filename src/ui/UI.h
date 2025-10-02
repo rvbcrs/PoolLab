@@ -27,6 +27,7 @@ void setSavedWifi(const char *ssid, const char *pass);
 void setSavedMqtt(const char *host, uint16_t port, const char *user, const char *pass);
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax);
 void setPumpActive(bool phActive, bool orpActive);
+void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, float orpSession, float orpFlow);
 
 // New: extracted dialogs/helpers
 void showRangeEditor(bool isPh);
@@ -42,6 +43,9 @@ struct Handlers {
   void (*onMqttSave)(const char *host, uint16_t port, const char *user, const char *pass) = nullptr; // save MQTT broker
   void (*onSaveSettings)() = nullptr;                  // new: after saving, navigate/notify
   void (*onCancelSettings)() = nullptr;                // new: cancel and return
+  void (*onPumpCalStart)(int motor_num) = nullptr;     // start pump calibration (1=M1, 2=M2)
+  void (*onPumpCalStop)(int motor_num) = nullptr;      // stop pump calibration
+  void (*onSaveFlowRate)(int motor_num, float rate) = nullptr; // save flow rate (ml/min)
 };
 
 void configureHandlers(const Handlers &h);

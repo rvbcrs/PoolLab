@@ -599,29 +599,66 @@ static void lvgl_port_touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *
         /* Read data from touch controller */
         bool touchpad_pressed = esp_lcd_touch_get_coordinates(touch_ctx->handle, touchpad_x, touchpad_y, NULL, &touchpad_cnt, 1);
 
+        // Shared state variables for both branches
+        static uint32_t last_touch_ms = 0;
+        static uint16_t last_x = 0, last_y = 0;
+        static bool was_pressed = false;
+        static uint32_t first_release_ms = 0;
+        
+        // Enhanced debouncing parameters
+        const uint32_t TOUCH_DEBOUNCE_MS = 300;      // Increased from 200ms for better stability
+        const uint32_t RELEASE_TIMEOUT_MS = 150;     // Time to confirm release
+        const uint16_t JITTER_TOL = 15;              // Increased from 5px for better noise filtering
+        
         if (touchpad_pressed && touchpad_cnt > 0) {
-            static uint32_t last_touch_ms = 0;
-            static uint16_t last_x = 0, last_y = 0;
-            const uint32_t DEBOUNCE_MS = 200;
-            const uint16_t JITTER_TOL = 5; // Pixel tolerance for jitter
             uint32_t now = esp_timer_get_time() / 1000; // ms
-            if (now - last_touch_ms < DEBOUNCE_MS &&
-                abs(touchpad_x[0] - last_x) <= JITTER_TOL &&
-                abs(touchpad_y[0] - last_y) <= JITTER_TOL) {
-                // Ignore repeat of same point within debounce window
-                esp_rom_printf("Ignored repeated touch\n");
-                data->state = LV_INDEV_STATE_RELEASED;
+            int dx = abs((int)touchpad_x[0] - (int)last_x);
+            int dy = abs((int)touchpad_y[0] - (int)last_y);
+            
+            // Check if this is within debounce window (same location)
+            if (was_pressed && 
+                (now - last_touch_ms < TOUCH_DEBOUNCE_MS) &&
+                dx <= JITTER_TOL && 
+                dy <= JITTER_TOL) {
+                // Ignore repeat - maintain current pressed state with last coordinates
+                data->point.x = last_x;
+                data->point.y = last_y;
+                data->state = LV_INDEV_STATE_PRESSED;
+                first_release_ms = 0;  // Reset release timer
                 return;
             }
-            last_touch_ms = now;
-            last_x = touchpad_x[0];
-            last_y = touchpad_y[0];
-
-            data->point.x = touchpad_x[0];
-            data->point.y = touchpad_y[0];
-            data->state = LV_INDEV_STATE_PRESSED;
-            esp_rom_printf("Touchpad pressed: x=%d, y=%d\n", data->point.x, data->point.y);
+            
+            // Valid new touch (outside debounce window or different location)
+            if (!was_pressed || (now - last_touch_ms >= TOUCH_DEBOUNCE_MS) || 
+                dx > JITTER_TOL || dy > JITTER_TOL) {
+                last_touch_ms = now;
+                last_x = touchpad_x[0];
+                last_y = touchpad_y[0];
+                was_pressed = true;
+                first_release_ms = 0;  // Reset release timer
+                data->point.x = touchpad_x[0];
+                data->point.y = touchpad_y[0];
+                data->state = LV_INDEV_STATE_PRESSED;
+            }
         } else {
+            // No touch detected - handle release with timeout
+            uint32_t now = esp_timer_get_time() / 1000;
+            
+            if (was_pressed) {
+                if (first_release_ms == 0) {
+                    first_release_ms = now;
+                }
+                // Maintain press state during release timeout to avoid flicker
+                if (now - first_release_ms < RELEASE_TIMEOUT_MS) {
+                    data->state = LV_INDEV_STATE_PRESSED;
+                    data->point.x = last_x;
+                    data->point.y = last_y;
+                    return;
+                }
+            }
+            // Confirmed release
+            was_pressed = false;
+            first_release_ms = 0;
             data->state = LV_INDEV_STATE_RELEASED;
         }
     }

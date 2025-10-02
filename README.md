@@ -251,3 +251,31 @@ Algemeen
 - Deel GND tussen sensoren, ADS1115 en ESP32.
 - I2C‑pull‑ups naar 3.3 V (niet 5 V).
 - Met OPA2333 op 3.3 V zijn spanningsdelers niet nodig; AO blijft binnen 0..3.3 V.
+
+### ESP32‑S3 specifieke bekabeling (header IO5/6/7/9/14/15/16/46)
+
+ADS1115 (aanbevolen op S3)
+- VDD → 3.3 V, GND → GND
+- SDA → GPIO5 (S3 header IO5)
+- SCL → GPIO6 (S3 header IO6)
+- A0 → pH AO, A1 → ORP AO
+- Flags in `[env:esp32-s3-35]` (platformio.ini):
+  - `-D USE_ADS1115=1`
+  - `-D ADS_ADDR=0x48`
+  - `-D ADS_SDA=5`
+  - `-D ADS_SCL=6`
+  - `-D ADS_CH_PH=0`
+  - `-D ADS_CH_ORP=1`
+
+ROB‑14450 / TB6612FNG (voorbeeld S3‑mapping)
+- Logica 3.3 V, GND gemeenschappelijk
+- STBY → GPIO14 (S3 header IO14)
+- M1 (pH pomp)
+  - IN1 → GPIO15 (IO15)
+  - IN2 → GPIO16 (IO16)
+  - PWM → GPIO5  (IO5)  [LEDC PWM]
+- M2 (ORP pomp)
+  - IN1 → GPIO6  (IO6)
+  - IN2 → GPIO7  (IO7)
+  - PWM → GPIO9  (IO9)  [LEDC PWM]
+- Opmerking: vermijd GPIO46 (input‑only) voor driver‑uitgangen/PWM. Pas de pin‑constanten in `src/main.cpp` aan wanneer je de motorsturing inschakelt (`MOTOR_ENABLE=true`).

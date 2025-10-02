@@ -23,6 +23,31 @@ int Storage::getM2Speed(int def) const { return _prefs.getInt("m2_speed", def); 
 void Storage::setM1Speed(int v) { _prefs.putInt("m1_speed", v); }
 void Storage::setM2Speed(int v) { _prefs.putInt("m2_speed", v); }
 
+float Storage::getM1FlowRate(float def) const { return _prefs.getFloat("m1_flow", def); }
+float Storage::getM2FlowRate(float def) const { return _prefs.getFloat("m2_flow", def); }
+void Storage::setM1FlowRate(float v) { _prefs.putFloat("m1_flow", v); }
+void Storage::setM2FlowRate(float v) { _prefs.putFloat("m2_flow", v); }
+
+float Storage::getM1TotalVolume(float def) const { return _prefs.getFloat("m1_total", def); }
+float Storage::getM2TotalVolume(float def) const { return _prefs.getFloat("m2_total", def); }
+void Storage::setM1TotalVolume(float v) { _prefs.putFloat("m1_total", v); }
+void Storage::setM2TotalVolume(float v) { _prefs.putFloat("m2_total", v); }
+
+float Storage::getM1DailyVolume(float def) const { return _prefs.getFloat("m1_daily", def); }
+float Storage::getM2DailyVolume(float def) const { return _prefs.getFloat("m2_daily", def); }
+void Storage::setM1DailyVolume(float v) { _prefs.putFloat("m1_daily", v); }
+void Storage::setM2DailyVolume(float v) { _prefs.putFloat("m2_daily", v); }
+
+int Storage::getLastResetDay(int def) const { return _prefs.getInt("last_day", def); }
+void Storage::setLastResetDay(int v) { _prefs.putInt("last_day", v); }
+
+bool Storage::getMotorsEnabled(bool def) const {
+  return _prefs.getBool("motors_en", def);
+}
+void Storage::setMotorsEnabled(bool en) {
+  _prefs.putBool("motors_en", en);
+}
+
 Storage::Mode Storage::getMode(Mode def) const {
   int v = _prefs.getInt("mode", static_cast<int>(def));
   return (v == static_cast<int>(MODE_ZIGBEE)) ? MODE_ZIGBEE : MODE_WIFI_MQTT;

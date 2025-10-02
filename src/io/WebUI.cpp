@@ -1,4 +1,5 @@
 #include "WebUI.h"
+#include "MotorController.h"
 #include <WiFi.h>
 
 namespace io {
@@ -25,7 +26,7 @@ static String fmtFloat(float v, int d){ char b[24]; dtostrf(v, 0, d, b); return 
 
 void WebUI::sendStyleHeader(String &h){
   h  = F("<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>");
-  h += F("<style>body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#e3e3e3;margin:0;padding:16px;} .card{background:#1b1b1b;border-radius:10px;padding:16px;max-width:900px;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.4);} h2,h3{margin:0 0 12px 0;} label{display:block;margin:10px 0 6px;} input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box;} .row{display:flex;gap:8px;} .row>*{flex:1;} .btn{cursor:pointer;border:none;} .btn.red{background:#b00020;} .btn.blue{background:#1976d2;} .muted{color:#aaa;font-size:12px;margin-top:8px;display:block;} .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:8px 0 14px;} .tile{position:relative;border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 1px 6px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.04);} .tile .title{color:#d6d6d6;font-size:13px;margin:6px 0 2px;display:block;letter-spacing:.3px} .tile .val{font-size:28px;font-weight:700;letter-spacing:.3px;margin:2px 0 6px} .icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;margin-bottom:4px;font-size:18px} .tile .pump{position:absolute;left:10px;bottom:10px;opacity:.9;font-size:18px;display:none} .warn{color:#ffa000} .bad{color:#ff5252} .tile.blue{background:linear-gradient(180deg,#1d2938,#141a22);} .tile.blue .icon{background:#0c2a3f;color:#5ec8ff;} .tile.orange{background:linear-gradient(180deg,#2e2418,#1c1711);} .tile.orange .icon{background:#3a220c;color:#ffb74d;} .tile.teal{background:linear-gradient(180deg,#19312e,#121e1c);} .tile.teal .icon{background:#0c2f28;color:#7fe3cf;}</style></head><body>");
+  h += F("<style>body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#e3e3e3;margin:0;padding:16px;} .card{background:#1b1b1b;border-radius:10px;padding:16px;max-width:900px;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.4);} h2,h3{margin:0 0 12px 0;} label{display:block;margin:10px 0 6px;} input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box;} .row{display:flex;gap:8px;} .row>*{flex:1;} .btn{cursor:pointer;border:none;} .btn.red{background:#b00020;} .btn.blue{background:#1976d2;} .muted{color:#aaa;font-size:12px;margin-top:8px;display:block;} .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:8px 0 14px;} .tile{position:relative;border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 1px 6px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.04);} .tile .title{color:#d6d6d6;font-size:13px;margin:6px 0 2px;display:block;letter-spacing:.3px} .tile .val{font-size:28px;font-weight:700;letter-spacing:.3px;margin:2px 0 6px} .icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;margin-bottom:4px;font-size:18px} .tile .pump{position:absolute;left:10px;bottom:10px;opacity:.9;font-size:18px;display:none} .warn{color:#ffa000} .bad{color:#ff5252} .tile.blue{background:linear-gradient(180deg,#1d2938,#141a22);} .tile.blue .icon{background:#0c2a3f;color:#5ec8ff;} .tile.orange{background:linear-gradient(180deg,#2e2418,#1c1711);} .tile.orange .icon{background:#3a220c;color:#ffb74d;} .tile.teal{background:linear-gradient(180deg,#19312e,#121e1c);} .tile.teal .icon{background:#0c2f28;color:#7fe3cf;} .pump-stats{background:#222;border-radius:8px;padding:12px;margin:8px 0 14px;} .stat-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #333;} .stat-row:last-child{border-bottom:none;} .stat-label{color:#aaa;font-size:14px;} .stat-val{color:#e3e3e3;font-size:14px;font-weight:600;text-align:right;}</style></head><body>");
 }
 void WebUI::sendFooter(String &h){ h += F("</body></html>"); }
 
@@ -42,7 +43,11 @@ void WebUI::handleIndex(){
   html += F("</span></div><div class='pump' id='pump_orp'>🌀</div></div>");
   // Temp tile
   html += F("<div class='tile teal'><div class='icon'>🌡️</div><span class='title'>Temp</span><div class='val' id='tempVal'>--.- °C</div></div>");
-  html += F("</div><div class='row'><a href='/settings'><button class='btn blue'>Settings</button></a></div>");
+  html += F("</div>");
+  // Pump stats display
+  html += F("<div class='pump-stats'><div class='stat-row'><div class='stat-label'>pH Pump:</div><div class='stat-val' id='ph_stats'>--</div></div>");
+  html += F("<div class='stat-row'><div class='stat-label'>ORP Pump:</div><div class='stat-val' id='orp_stats'>--</div></div></div>");
+  html += F("<div class='row'><a href='/settings'><button class='btn blue'>Settings</button></a></div>");
   html += F("<span class='muted'>IP: "); html += WiFi.localIP().toString(); html += F("</span></div>");
   // thresholds for client-side coloring
   float phMin = _phMin? *_phMin : 6.80f; float phMax = _phMax? *_phMax : 7.60f; int orpMin = _orpMin? *_orpMin : 250; int orpMax = _orpMax? *_orpMax : 850;
@@ -50,7 +55,7 @@ void WebUI::handleIndex(){
   html += "var PH_MIN="+String(phMin,2)+",PH_MAX="+String(phMax,2)+",ORP_MIN="+String(orpMin)+",ORP_MAX="+String(orpMax)+";";
   html += F("function cls(el,c){el.classList.remove('bad');el.classList.remove('warn'); if(c) el.classList.add(c);} ");
   html += F("function nearPh(v){return (v<=PH_MIN+0.05)||(v>=PH_MAX-0.05);} function nearOrp(v){return (v<=ORP_MIN+20)||(v>=ORP_MAX-20);} ");
-  html += F("var ws=new WebSocket('ws://'+location.host+':81/'); ws.onmessage=function(e){try{var d=JSON.parse(e.data); if(d.ph!==undefined){var el=document.getElementById('phVal'); if(d.ph===null){el.innerText='--.--'; cls(el,null);} else {el.innerText=d.ph; var v=parseFloat(d.ph); if(isFinite(v)){ if(v<PH_MIN||v>PH_MAX){cls(el,'bad');} else if(nearPh(v)){cls(el,'warn');} else {cls(el,null);} var pump=(v<PH_MIN||v>PH_MAX); document.getElementById('pump_ph').style.display=pump?'block':'none'; }}} if(d.orp!==undefined){var el2=document.getElementById('orpVal'); if(d.orp===null){el2.innerText='----'; cls(el2,null);} else {el2.innerText=d.orp+' mV'; var v2=parseInt(d.orp); if(isFinite(v2)){ if(v2<ORP_MIN||v2>ORP_MAX){cls(el2,'bad');} else if(nearOrp(v2)){cls(el2,'warn');} else {cls(el2,null);} var pump2=(v2<ORP_MIN||v2>ORP_MAX); document.getElementById('pump_orp').style.display=pump2?'block':'none'; }}} if(d.temp!==undefined){document.getElementById('tempVal').innerText=d.temp===null?'--.- °C':(d.temp+' °C');}}catch(_){} };</script>");
+  html += F("var ws=new WebSocket('ws://'+location.host+':81/'); ws.onmessage=function(e){try{var d=JSON.parse(e.data); if(d.ph!==undefined){var el=document.getElementById('phVal'); if(d.ph===null){el.innerText='--.--'; cls(el,null);} else {el.innerText=d.ph; var v=parseFloat(d.ph); if(isFinite(v)){ if(v<PH_MIN||v>PH_MAX){cls(el,'bad');} else if(nearPh(v)){cls(el,'warn');} else {cls(el,null);} var pump=(v<PH_MIN||v>PH_MAX); document.getElementById('pump_ph').style.display=pump?'block':'none'; }}} if(d.orp!==undefined){var el2=document.getElementById('orpVal'); if(d.orp===null){el2.innerText='----'; cls(el2,null);} else {el2.innerText=d.orp+' mV'; var v2=parseInt(d.orp); if(isFinite(v2)){ if(v2<ORP_MIN||v2>ORP_MAX){cls(el2,'bad');} else if(nearOrp(v2)){cls(el2,'warn');} else {cls(el2,null);} var pump2=(v2<ORP_MIN||v2>ORP_MAX); document.getElementById('pump_orp').style.display=pump2?'block':'none'; }}} if(d.temp!==undefined){document.getElementById('tempVal').innerText=d.temp===null?'--.- °C':(d.temp+' °C');} if(d.pump_ph){var st=''; if(d.pump_ph.active){st+='🌀 '+d.pump_ph.session.toFixed(1)+'ml @ '+d.pump_ph.flow.toFixed(1)+'ml/min | Daily: '+d.pump_ph.daily.toFixed(1)+'ml | Total: '+d.pump_ph.total.toFixed(1)+'ml';} else {st='Idle | Daily: '+d.pump_ph.daily.toFixed(1)+'ml | Total: '+d.pump_ph.total.toFixed(1)+'ml';} document.getElementById('ph_stats').innerText=st;} if(d.pump_orp){var st2=''; if(d.pump_orp.active){st2+='🌀 '+d.pump_orp.session.toFixed(1)+'ml @ '+d.pump_orp.flow.toFixed(1)+'ml/min | Daily: '+d.pump_orp.daily.toFixed(1)+'ml | Total: '+d.pump_orp.total.toFixed(1)+'ml';} else {st2='Idle | Daily: '+d.pump_orp.daily.toFixed(1)+'ml | Total: '+d.pump_orp.total.toFixed(1)+'ml';} document.getElementById('orp_stats').innerText=st2;}}catch(_){} };</script>");
   sendFooter(html);
   _http.send(200, "text/html; charset=UTF-8", html);
 }
@@ -71,6 +76,16 @@ void WebUI::handleSettings(){
   html += F("<label>ORP Max (mV)</label><input name='orp_max' value='"); html += _orpMax? String(*_orpMax) : String(850); html += F("'>");
   html += F("<label>pH Motor %</label><input name='m1' value='"); html += _m1? String((int)*_m1) : String(60); html += F("'>");
   html += F("<label>ORP Motor %</label><input name='m2' value='"); html += _m2? String((int)*_m2) : String(60); html += F("'>");
+  // Flow rates
+  html += F("<label>pH Flow Rate (ml/min @ 100%)</label><input name='m1_flow' value='"); html += _m1Flow? fmtFloat(*_m1Flow,1) : String(50.0f); html += F("'>");
+  html += F("<label>ORP Flow Rate (ml/min @ 100%)</label><input name='m2_flow' value='"); html += _m2Flow? fmtFloat(*_m2Flow,1) : String(50.0f); html += F("'>");
+  // Motors enabled toggle
+  {
+    bool en = _storage ? _storage->getMotorsEnabled(true) : true;
+    html += F("<label>Motors enabled</label><div class='row'><label style='display:flex;align-items:center;gap:8px'><input type='checkbox' name='motors_en' value='1'");
+    if (en) html += F(" checked");
+    html += F("> Enable pH/ORP dosing motors</label></div>");
+  }
   // MQTT settings
   String mh = _storage ? _storage->getMqttHost("") : String("");
   uint16_t mp = _storage ? _storage->getMqttPort(1883) : 1883;
@@ -118,6 +133,19 @@ void WebUI::handleApiSave(){
   if (_http.hasArg("m2") && _m2 && _storage) {
     int v = parseIntOr(_http.arg("m2"), *_m2); v = constrain(v,0,100); *_m2 = (uint8_t)v; _storage->setM2Speed(*_m2);
   }
+  // Flow rates
+  if (_http.hasArg("m1_flow") && _m1Flow && _storage) {
+    float v = parseFloatOr(_http.arg("m1_flow"), *_m1Flow); v = constrain(v, 0.1f, 500.0f); *_m1Flow = v; _storage->setM1FlowRate(*_m1Flow);
+  }
+  if (_http.hasArg("m2_flow") && _m2Flow && _storage) {
+    float v = parseFloatOr(_http.arg("m2_flow"), *_m2Flow); v = constrain(v, 0.1f, 500.0f); *_m2Flow = v; _storage->setM2FlowRate(*_m2Flow);
+  }
+  // Motors enabled checkbox (present only if checked)
+  if (_storage) {
+    bool en = _http.hasArg("motors_en");
+    _storage->setMotorsEnabled(en);
+    if (_motorsEnabled) *_motorsEnabled = en;
+  }
   #if HAS_ZIGBEE
   if (_http.hasArg("mode") && _storage) {
     String m = _http.arg("mode"); m.toLowerCase();
@@ -146,6 +174,31 @@ void WebUI::broadcastMetrics(){
   j += "\"ph\":"; j += domain::Metrics::instance().havePh ? fmtFloat(domain::Metrics::instance().phVal,2) : String("null");
   j += ",\"orp\":"; j += domain::Metrics::instance().haveOrp ? String((int)lrintf(domain::Metrics::instance().orpMv)) : String("null");
   j += ",\"temp\":"; j += domain::Metrics::instance().haveTemp ? fmtFloat(domain::Metrics::instance().tempC,1) : String("null");
+  
+  // Pump stats (if motor controller available)
+  if (_motor) {
+    domain::PumpStats m1 = _motor->getM1Stats();
+    domain::PumpStats m2 = _motor->getM2Stats();
+    bool m1Running = _motor->isM1Running();
+    bool m2Running = _motor->isM2Running();
+    
+    j += ",\"pump_ph\":{";
+    j += "\"active\":"; j += m1Running ? "true" : "false";
+    j += ",\"session\":"; j += fmtFloat(m1.sessionVolumeMl, 1);
+    j += ",\"flow\":"; j += fmtFloat(m1.currentFlowMlMin, 1);
+    j += ",\"daily\":"; j += fmtFloat(m1.dailyVolumeMl, 1);
+    j += ",\"total\":"; j += fmtFloat(m1.totalVolumeMl, 1);
+    j += "}";
+    
+    j += ",\"pump_orp\":{";
+    j += "\"active\":"; j += m2Running ? "true" : "false";
+    j += ",\"session\":"; j += fmtFloat(m2.sessionVolumeMl, 1);
+    j += ",\"flow\":"; j += fmtFloat(m2.currentFlowMlMin, 1);
+    j += ",\"daily\":"; j += fmtFloat(m2.dailyVolumeMl, 1);
+    j += ",\"total\":"; j += fmtFloat(m2.totalVolumeMl, 1);
+    j += "}";
+  }
+  
   j += "}";
   _ws.broadcastTXT(j);
 }

@@ -27,6 +27,32 @@ public:
   int getM2Speed(int def) const;
   void setM1Speed(int v);
   void setM2Speed(int v);
+  
+  // Pump flow rates (ml/min at 100% speed)
+  float getM1FlowRate(float def) const;
+  float getM2FlowRate(float def) const;
+  void setM1FlowRate(float v);
+  void setM2FlowRate(float v);
+  
+  // Pump total volumes (ml)
+  float getM1TotalVolume(float def) const;
+  float getM2TotalVolume(float def) const;
+  void setM1TotalVolume(float v);
+  void setM2TotalVolume(float v);
+  
+  // Pump daily volumes (ml)
+  float getM1DailyVolume(float def) const;
+  float getM2DailyVolume(float def) const;
+  void setM1DailyVolume(float v);
+  void setM2DailyVolume(float v);
+  
+  // Last reset date (day of year)
+  int getLastResetDay(int def) const;
+  void setLastResetDay(int v);
+
+  // Motors enabled flag
+  bool getMotorsEnabled(bool def) const;
+  void setMotorsEnabled(bool en);
 
   // Connectivity mode
   enum Mode { MODE_WIFI_MQTT = 0, MODE_ZIGBEE = 1 };

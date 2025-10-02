@@ -34,9 +34,9 @@ static lv_obj_t *lv_ta_mqtt_user = nullptr;
 static lv_obj_t *lv_ta_mqtt_pw = nullptr;
 static float g_phMin = 6.80f, g_phMax = 7.60f; static int g_orpMin = 250, g_orpMax = 850;
 static bool g_pumpPh = false, g_pumpOrp = false;
+static float g_phSession = 0, g_phFlow = 0, g_orpSession = 0, g_orpFlow = 0;
 static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
-// no timer; use lv_async_call to toggle in LVGL task
-static bool g_pump_pending = false;
+static lv_obj_t *lv_pump_ph_stats = nullptr, *lv_pump_orp_stats = nullptr;
 // Debounce for on-screen keyboard (avoid double insert)
 static uint32_t g_kb_last_ms = 0; static int16_t g_kb_last_id = -1;
 static lv_obj_t *lv_ta_ssid = nullptr;
@@ -47,9 +47,47 @@ static uint8_t initial_m1=60, initial_m2=60;
 static Handlers handlers;
 static bool initial_mode_zigbee = true;
 static lv_obj_t *lv_modal_active = nullptr; // generic modal holder
+// Pump calibration state
+static lv_timer_t *g_cal_timer = nullptr;
+static int g_cal_motor = 0;  // 0=none, 1=M1, 2=M2
+static int g_cal_countdown = 0;
+static lv_obj_t *lv_lbl_cal_m1_status = nullptr;
+static lv_obj_t *lv_lbl_cal_m2_status = nullptr;
 
 void init(lv_disp_t* disp){ (void)disp; }
 static lv_timer_t *g_update_timer = nullptr;
+
+// Pump calibration timer callback (60-second countdown)
+static void pump_cal_timer_cb(lv_timer_t *timer) {
+  (void)timer;
+  g_cal_countdown--;
+  
+  // Update status label
+  char buf[64];
+  if (g_cal_motor == 1 && lv_lbl_cal_m1_status) {
+    if (g_cal_countdown > 0) {
+      snprintf(buf, sizeof(buf), "Running... %ds", g_cal_countdown);
+      lv_label_set_text(lv_lbl_cal_m1_status, buf);
+    } else {
+      lv_label_set_text(lv_lbl_cal_m1_status, "Completed! Measure volume.");
+    }
+  } else if (g_cal_motor == 2 && lv_lbl_cal_m2_status) {
+    if (g_cal_countdown > 0) {
+      snprintf(buf, sizeof(buf), "Running... %ds", g_cal_countdown);
+      lv_label_set_text(lv_lbl_cal_m2_status, buf);
+    } else {
+      lv_label_set_text(lv_lbl_cal_m2_status, "Completed! Measure volume.");
+    }
+  }
+  
+  // Stop when countdown reaches 0
+  if (g_cal_countdown <= 0) {
+    if (handlers.onPumpCalStop) handlers.onPumpCalStop(g_cal_motor);
+    g_cal_motor = 0;
+    lv_timer_del(g_cal_timer);
+    g_cal_timer = nullptr;
+  }
+}
 
 // --- Speed dial (floating action) ---
 static void anim_set_pos_y(void *obj, int32_t v){ lv_obj_set_y((lv_obj_t*)obj, v); }
@@ -276,7 +314,7 @@ void build(bool safeBaseline){
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_shadow_width(card, 10, 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
-    lv_obj_set_size(card, cw, 160);
+    lv_obj_set_size(card, cw, 195);  // Increased from 160 to 195 for pump stats and spacing
     return card;
   };
 
@@ -302,9 +340,12 @@ void build(bool safeBaseline){
   lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
-  // Pump icons (module UI) — place below target labels
-  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  // Pump stats labels (above pump icon, with descriptive text)
+  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+  // Pump icons (module UI) — placed below stats labels with more spacing from bottom
+  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
 
   // Temp label: only in 3-card layout; in small layout we skip
   if (!small_layout && card_tmp) {
@@ -341,12 +382,12 @@ void build(bool safeBaseline){
   ui_create_speed_dial(root);
   // Adjust IP label anchor: align to root bottom area instead of removed button
   if (lv_lbl_ip) {
-    lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -56);
+    lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24);
   }
 
-  // IP label (content width), placed near bottom-left above the speed dial
+  // IP label (content width), placed near bottom-left above the speed dial with more spacing from cards
   lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -56); lv_label_set_text(lv_lbl_ip, "IP: --");
+  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24); lv_label_set_text(lv_lbl_ip, "IP: --");
 
   // MQTT host label onder IP
   lv_lbl_mqtt = lv_label_create(root);
@@ -358,15 +399,15 @@ void build(bool safeBaseline){
   lv_obj_align_to(lv_lbl_mqtt, lv_lbl_ip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
   lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
 
-  // SSID label above IP (stacked), left aligned
+  // SSID label above IP (stacked), left aligned with proper spacing
   lv_lbl_ssid = lv_label_create(root);
   lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
   lv_obj_set_style_text_font(lv_lbl_ssid, &lv_font_montserrat_14, 0);
   lv_label_set_long_mode(lv_lbl_ssid, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(lv_lbl_ssid, LV_SIZE_CONTENT);
   lv_obj_set_style_text_align(lv_lbl_ssid, LV_TEXT_ALIGN_LEFT, 0);
-  // place directly above the IP label on the left (slightly higher)
-  lv_obj_align_to(lv_lbl_ssid, lv_lbl_ip, LV_ALIGN_OUT_TOP_LEFT, 0, -6);
+  // place directly above the IP label on the left with more spacing
+  lv_obj_align_to(lv_lbl_ssid, lv_lbl_ip, LV_ALIGN_OUT_TOP_LEFT, 0, -8);
   lv_label_set_text(lv_lbl_ssid, "SSID: --");
 
   // Ensure periodic value updates
@@ -382,12 +423,14 @@ void updateValues(){
   if (onSettings) return;
   auto &M = domain::Metrics::instance();
   // pH as integer + 2 decimals (avoid float printf)
+  // pH with 2 decimals - thread-safe with static buffer
+  static char buf_ph[16] = "--.--";
   if (lv_lbl_ph) {
     if (M.havePh) {
       int ph100 = (int)((M.phVal * 100.0f) + (M.phVal >= 0 ? 0.5f : -0.5f));
       int ph_i = ph100 / 100; int ph_f = abs(ph100 % 100);
-      char b[16]; snprintf(b, sizeof(b), "%d.%02d", ph_i, ph_f);
-      lv_label_set_text(lv_lbl_ph, b);
+      snprintf(buf_ph, sizeof(buf_ph), "%d.%02d", ph_i, ph_f);
+      lv_label_set_text_static(lv_lbl_ph, buf_ph);
       // Colorize by thresholds
       lv_color_t c = lv_color_white();
       bool below = M.phVal < g_phMin; bool above = M.phVal > g_phMax;
@@ -395,14 +438,16 @@ void updateValues(){
       if (below || above) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
       lv_obj_set_style_text_color(lv_lbl_ph, c, 0);
     } else {
-      lv_label_set_text(lv_lbl_ph, "--.--");
+      strncpy(buf_ph, "--.--", sizeof(buf_ph) - 1);
+      lv_label_set_text_static(lv_lbl_ph, buf_ph);
     }
   }
-  // ORP as integer
+  // ORP as integer - thread-safe with static buffer
+  static char buf_orp[16] = "----";
   if (lv_lbl_orp) {
     if (M.haveOrp) {
-      char b[16]; snprintf(b, sizeof(b), "%d", (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f)));
-      lv_label_set_text(lv_lbl_orp, b);
+      snprintf(buf_orp, sizeof(buf_orp), "%d", (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f)));
+      lv_label_set_text_static(lv_lbl_orp, buf_orp);
       if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
       // Colorize by thresholds
       int v = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
@@ -412,16 +457,18 @@ void updateValues(){
       if (low || high) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
       lv_obj_set_style_text_color(lv_lbl_orp, c, 0);
     } else {
-      lv_label_set_text(lv_lbl_orp, "----");
+      strncpy(buf_orp, "----", sizeof(buf_orp) - 1);
+      lv_label_set_text_static(lv_lbl_orp, buf_orp);
     }
   }
-  // Temp with 1 decimal and unit
+  // Temp with 1 decimal and unit - thread-safe with static buffer
+  static char buf_temp[20] = "--.- C";
   if (lv_lbl_temp) {
     if (M.haveTemp) {
       int t10 = (int)((M.tempC * 10.0f) + (M.tempC >= 0 ? 0.5f : -0.5f));
       int t_i = t10 / 10; int t_f = abs(t10 % 10);
-      char b[20]; snprintf(b, sizeof(b), "%d.%d C", t_i, t_f);
-      lv_label_set_text(lv_lbl_temp, b);
+      snprintf(buf_temp, sizeof(buf_temp), "%d.%d C", t_i, t_f);
+      lv_label_set_text_static(lv_lbl_temp, buf_temp);
       if (lv_card_temp) {
         // Color thresholds: <15C blue, 15..25C amber, >25C red
         lv_color_t c = lv_palette_darken(LV_PALETTE_AMBER, 4);
@@ -430,28 +477,82 @@ void updateValues(){
         lv_obj_set_style_bg_color(lv_card_temp, c, 0);
       }
     } else {
-      lv_label_set_text(lv_lbl_temp, "--.- C");
+      strncpy(buf_temp, "--.- C", sizeof(buf_temp) - 1);
+      lv_label_set_text_static(lv_lbl_temp, buf_temp);
     }
   }
-  // Refresh IP/SSID on each tick to restore after returning from settings
+  // Update pump icons and stats (runs in LVGL thread, no async needed!)
+  static bool last_pump_ph = false, last_pump_orp = false;
+  static char last_ph_text[32] = {0}, last_orp_text[32] = {0};
+  static char ph_buf[32] = {0}, orp_buf[32] = {0};
+  
+  if (lv_pump_ph && lv_pump_orp && lv_pump_ph_stats && lv_pump_orp_stats) {
+    // Check if pH pump state or stats changed
+    snprintf(ph_buf, sizeof(ph_buf), "%.0fml\n@%.0fml/min", g_phSession, g_phFlow);
+    if (g_pumpPh != last_pump_ph || strcmp(ph_buf, last_ph_text) != 0) {
+      last_pump_ph = g_pumpPh;
+      strncpy(last_ph_text, ph_buf, sizeof(last_ph_text) - 1);
+      if (g_pumpPh) {
+        lv_obj_clear_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_static(lv_pump_ph_stats, ph_buf);
+        lv_obj_clear_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
+    // Check if ORP pump state or stats changed
+    snprintf(orp_buf, sizeof(orp_buf), "%.0fml\n@%.0fml/min", g_orpSession, g_orpFlow);
+    if (g_pumpOrp != last_pump_orp || strcmp(orp_buf, last_orp_text) != 0) {
+      last_pump_orp = g_pumpOrp;
+      strncpy(last_orp_text, orp_buf, sizeof(last_orp_text) - 1);
+      if (g_pumpOrp) {
+        lv_obj_clear_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_static(lv_pump_orp_stats, orp_buf);
+        lv_obj_clear_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
+  }
+  
+  // Refresh IP/SSID on each tick - thread-safe with static buffers
+  static char buf_ip[64] = "IP: --";
+  static char buf_mqtt[96] = "MQTT: --";
+  static char buf_ssid[96] = "SSID: --";
+  static char temp_str[80] = {0};
+  
   if (lv_lbl_ip) {
-    String ip = (WiFi.status()==WL_CONNECTED)? WiFi.localIP().toString() : String("--");
-    char bi[64]; snprintf(bi, sizeof(bi), "IP: %s", ip.c_str());
-    lv_label_set_text(lv_lbl_ip, bi);
+    if (WiFi.status() == WL_CONNECTED) {
+      IPAddress ip = WiFi.localIP();
+      snprintf(temp_str, sizeof(temp_str), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+      snprintf(buf_ip, sizeof(buf_ip), "IP: %s", temp_str);
+    } else {
+      strncpy(buf_ip, "IP: --", sizeof(buf_ip) - 1);
+    }
+    lv_label_set_text_static(lv_lbl_ip, buf_ip);
   }
   if (lv_lbl_mqtt) {
     String host = ::g_storage.getMqttHost("");
     if (host.length() > 0) {
-      char bm[96]; snprintf(bm, sizeof(bm), "MQTT: %s", host.c_str());
-      lv_label_set_text(lv_lbl_mqtt, bm);
+      strncpy(temp_str, host.c_str(), sizeof(temp_str) - 1);
+      temp_str[sizeof(temp_str) - 1] = '\0';
+      snprintf(buf_mqtt, sizeof(buf_mqtt), "MQTT: %s", temp_str);
     } else {
-      lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
+      strncpy(buf_mqtt, "MQTT: --", sizeof(buf_mqtt) - 1);
     }
+    lv_label_set_text_static(lv_lbl_mqtt, buf_mqtt);
   }
   if (lv_lbl_ssid) {
-    String s = (WiFi.status()==WL_CONNECTED)? WiFi.SSID() : String("--");
-    char bs[96]; snprintf(bs, sizeof(bs), "SSID: %s", s.c_str());
-    lv_label_set_text(lv_lbl_ssid, bs);
+    if (WiFi.status() == WL_CONNECTED) {
+      strncpy(temp_str, WiFi.SSID().c_str(), sizeof(temp_str) - 1);
+      temp_str[sizeof(temp_str) - 1] = '\0';
+      snprintf(buf_ssid, sizeof(buf_ssid), "SSID: %s", temp_str);
+    } else {
+      strncpy(buf_ssid, "SSID: --", sizeof(buf_ssid) - 1);
+    }
+    lv_label_set_text_static(lv_lbl_ssid, buf_ssid);
   }
 }
 
@@ -459,26 +560,24 @@ void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
   g_phMin = phMin; g_phMax = phMax; g_orpMin = orpMin; g_orpMax = orpMax;
 }
 
-static void pump_toggle_async(void *ud){
-  (void)ud;
-  g_pump_pending = false;
-  if (lv_pump_ph) {
-    if (g_pumpPh) lv_obj_clear_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  }
-  if (lv_pump_orp) {
-    if (g_pumpOrp) lv_obj_clear_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
-  }
+void setPumpActive(bool phActive, bool orpActive){
+  // Just store values - they'll be applied by updateValues() which runs in LVGL thread
+  if (onSettings) return;
+  g_pumpPh = phActive; 
+  g_pumpOrp = orpActive;
 }
 
-void setPumpActive(bool phActive, bool orpActive){
-  // Avoid updates while in settings screen
+void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, float orpSession, float orpFlow){
   if (onSettings) return;
-  if (phActive == g_pumpPh && orpActive == g_pumpOrp) return;
-  g_pumpPh = phActive; g_pumpOrp = orpActive;
-  if (g_pump_pending) return;
-  g_pump_pending = true;
-  // Defer to LVGL task; thread-safe per LVGL
-  lv_async_call(pump_toggle_async, NULL);
+  
+  // Just store values - they'll be applied by updateValues() which runs in LVGL thread
+  // This is MUCH safer than async calls which can cause memory corruption
+  g_pumpPh = phActive;
+  g_pumpOrp = orpActive;
+  g_phSession = phSession;
+  g_phFlow = phFlow;
+  g_orpSession = orpSession;
+  g_orpFlow = orpFlow;
 }
 
 void setIp(const char *ipText){
@@ -602,11 +701,69 @@ void showSettings(){
   lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508);
   lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532);
 
+  // Pump Flow Rate Calibration section
+  lv_obj_t *sepPump = lv_obj_create(content); lv_obj_remove_style_all(sepPump); lv_obj_set_size(sepPump, lv_pct(100), 2);
+  lv_obj_set_style_bg_color(sepPump, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sepPump, LV_OPA_COVER, 0);
+  lv_obj_align_to(sepPump, lv_ta_mqtt_pw, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+  
+  lv_obj_t *lblPumpCal = lv_label_create(content); lv_label_set_text(lblPumpCal, "Pump Flow Rate Calibration");
+  lv_obj_align_to(lblPumpCal, sepPump, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  
+  // M1 (pH pump) calibration
+  lv_obj_t *lblM1Cal = lv_label_create(content); lv_label_set_text(lblM1Cal, "pH Pump (M1)");
+  lv_obj_align_to(lblM1Cal, lblPumpCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+  
+  lv_lbl_cal_m1_status = lv_label_create(content); 
+  lv_label_set_text(lv_lbl_cal_m1_status, "Ready");
+  lv_obj_set_style_text_color(lv_lbl_cal_m1_status, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align_to(lv_lbl_cal_m1_status, lblM1Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+  
+  lv_obj_t *btnM1Cal = lv_btn_create(content); 
+  lv_obj_set_size(btnM1Cal, lv_pct(100), 40);
+  lv_obj_align_to(btnM1Cal, lv_lbl_cal_m1_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  lv_obj_t *lblBtnM1 = lv_label_create(btnM1Cal); 
+  lv_label_set_text(lblBtnM1, "Start Calibratie (60s @ 100%)"); 
+  lv_obj_center(lblBtnM1);
+  lv_obj_add_event_cb(btnM1Cal, [](lv_event_t *e){
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (g_cal_motor != 0) return; // Already running
+    g_cal_motor = 1;
+    g_cal_countdown = 60;
+    if (lv_lbl_cal_m1_status) lv_label_set_text(lv_lbl_cal_m1_status, "Running... 60s");
+    if (handlers.onPumpCalStart) handlers.onPumpCalStart(1);
+    if (!g_cal_timer) g_cal_timer = lv_timer_create(pump_cal_timer_cb, 1000, NULL);
+  }, LV_EVENT_CLICKED, NULL);
+  
+  // M2 (ORP pump) calibration
+  lv_obj_t *lblM2Cal = lv_label_create(content); lv_label_set_text(lblM2Cal, "ORP Pump (M2)");
+  lv_obj_align_to(lblM2Cal, btnM1Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+  
+  lv_lbl_cal_m2_status = lv_label_create(content); 
+  lv_label_set_text(lv_lbl_cal_m2_status, "Ready");
+  lv_obj_set_style_text_color(lv_lbl_cal_m2_status, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align_to(lv_lbl_cal_m2_status, lblM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+  
+  lv_obj_t *btnM2Cal = lv_btn_create(content); 
+  lv_obj_set_size(btnM2Cal, lv_pct(100), 40);
+  lv_obj_align_to(btnM2Cal, lv_lbl_cal_m2_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  lv_obj_t *lblBtnM2 = lv_label_create(btnM2Cal); 
+  lv_label_set_text(lblBtnM2, "Start Calibratie (60s @ 100%)"); 
+  lv_obj_center(lblBtnM2);
+  lv_obj_add_event_cb(btnM2Cal, [](lv_event_t *e){
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (g_cal_motor != 0) return; // Already running
+    g_cal_motor = 2;
+    g_cal_countdown = 60;
+    if (lv_lbl_cal_m2_status) lv_label_set_text(lv_lbl_cal_m2_status, "Running... 60s");
+    if (handlers.onPumpCalStart) handlers.onPumpCalStart(2);
+    if (!g_cal_timer) g_cal_timer = lv_timer_create(pump_cal_timer_cb, 1000, NULL);
+  }, LV_EVENT_CLICKED, NULL);
+
 #if USE_ANALOG_SENSORS
-  // Calibration section (pH and ORP), positioned directly under MQTT password field
+  // Calibration section (pH and ORP sensors), positioned under pump calibration
   lv_obj_t *sep = lv_obj_create(content); lv_obj_remove_style_all(sep); lv_obj_set_size(sep, lv_pct(100), 2);
   lv_obj_set_style_bg_color(sep, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
-  lv_obj_align_to(sep, lv_ta_mqtt_pw, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+  lv_obj_align_to(sep, btnM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
 
   lv_obj_t *lblCal = lv_label_create(content); lv_label_set_text(lblCal, "Calibration");
   lv_obj_align_to(lblCal, sep, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
@@ -634,11 +791,12 @@ void showSettings(){
 
   // Reset WiFi button
   lv_obj_t *btnReset = lv_btn_create(footer); lv_obj_set_height(btnReset, footer_h-16); lv_obj_set_flex_grow(btnReset, 1); lv_obj_set_style_bg_color(btnReset, lv_palette_main(LV_PALETTE_GREY), 0); lv_obj_add_flag(btnReset, LV_OBJ_FLAG_CLICKABLE);
-  { lv_obj_t *lbl = lv_label_create(btnReset); lv_label_set_text(lbl, "Reset WiFi"); lv_obj_center(lbl); }
+  { lv_obj_t *lbl = lv_label_create(btnReset); lv_label_set_text(lbl, "Reset WiFi"); lv_obj_center(lbl); lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE); }
   lv_obj_add_event_cb(btnReset, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_set_style_bg_color(btnSave, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btnSave, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_t *lblSave = lv_label_create(btnSave); lv_label_set_text(lblSave, "Save"); lv_obj_center(lblSave);
+  lv_obj_clear_flag(lblSave, LV_OBJ_FLAG_CLICKABLE);  // Let touches pass through to button
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
       const char *s = lv_textarea_get_text(lv_ta_ssid);
@@ -656,6 +814,7 @@ void showSettings(){
 
   lv_obj_t *btnCancel = lv_btn_create(footer); lv_obj_set_height(btnCancel, footer_h-16); lv_obj_set_flex_grow(btnCancel, 1); lv_obj_set_style_bg_color(btnCancel, lv_palette_main(LV_PALETTE_RED), 0); lv_obj_add_flag(btnCancel, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_t *lblCancel = lv_label_create(btnCancel); lv_label_set_text(lblCancel, "Back"); lv_obj_center(lblCancel);
+  lv_obj_clear_flag(lblCancel, LV_OBJ_FLAG_CLICKABLE);  // Let touches pass through to button
   lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
       if (handlers.onCancelSettings) handlers.onCancelSettings();

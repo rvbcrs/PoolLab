@@ -20,9 +20,6 @@
 #endif
 #include <HardwareSerial.h>
 #include <SPI.h>
-#if !defined(USE_JC3248W535)
-#include <Wire.h>
-#endif
 #include <vector>
 #if !defined(USE_JC3248W535)
 // Legacy Adafruit fonts removed; LVGL handles fonts across boards
@@ -288,6 +285,8 @@ static lv_obj_t *lv_img_ph_icon_shadow = nullptr;
 static lv_obj_t *lv_img_orp_icon_shadow = nullptr;
 static lv_obj_t *lv_img_pump_ph_shadow = nullptr;
 static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
+static lv_obj_t *lv_lbl_pump_ph_stats = nullptr;   // Session volume + flow rate label
+static lv_obj_t *lv_lbl_pump_orp_stats = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_img_link = nullptr;
 static lv_obj_t *lv_link_wrap = nullptr;
@@ -347,17 +346,28 @@ static void tile_tap_cb(lv_event_t *e){
 }
 
 // ---- TB6612FNG motor driver (optional dosing pumps) ----
-static const bool MOTOR_ENABLE = false; // disable motor control to free BOOT pin GPIO9
-static const bool MOTOR_TEST   = true; // jog both motors at boot to verify wiring
+static const bool MOTOR_ENABLE = true; // compile-time guard; runtime toggle via storage
+static const bool MOTOR_TEST   = false; // jog both motors at boot to verify wiring
 // Force Motor A continuously on (test). Set true for hard-on at 100% duty.
 static const bool FORCE_MOTOR_A_ON = false;
 
 // Pinout (change to suit your wiring). All pins must be 3.3V tolerant GPIOs.
-// TB6612 → ESP32-C6 mapping:
+// TB6612 → ESP32 mapping (C6 defaults; S3 remapped per board below):
 //  STBY  → TB_STBY
 //  AIN1  → M1_IN1,  AIN2 → M1_IN2,  PWMA → M1_PWM  (Motor 1)
 //  BIN1  → M2_IN1,  BIN2 → M2_IN2,  PWMB → M2_PWM  (Motor 2)
 // Choose pins that are free; these are not used by LCD/UART.
+#if defined(BOARD_ESP32S3_35)
+// S3 3.5" mapping (header IO5/6/7/9/14/15/16/46): avoid IO46 (input-only)
+static const int TB_STBY = 14;
+static const int M1_IN1  = 15;
+static const int M1_IN2  = 16;
+static const int M1_PWM  = 5;   // LEDC PWM
+static const int M2_IN1  = 6;
+static const int M2_IN2  = 7;
+static const int M2_PWM  = 9;   // LEDC PWM
+#else
+// C6 defaults
 static const int TB_STBY = 3;  // use free GPIO3 (SPI MISO pad) for STBY
 static const int M1_IN1  = 7;
 static const int M1_IN2  = 8;
@@ -365,22 +375,26 @@ static const int M1_PWM  = 5;  // LEDC PWM
 static const int M2_IN1  = 4;
 static const int M2_IN2  = 6;
 static const int M2_PWM  = 9;  // LEDC PWM
+#endif
 
 // Control policy thresholds and timing
 static float PH_MIN = 6.80f, PH_MAX = 7.60f;   // outside → run Motor1
 static int   ORP_MIN = 250, ORP_MAX = 850;     // mV outside → run Motor2
-static const uint32_t MOTOR_RUN_MS = 5000;     // run time per correction burst
+// static const uint32_t MOTOR_RUN_MS = 5000;     // run time per correction burst (disabled: policy controls)
 static uint8_t  M1_SPEED_PC = 60;     // PWM duty % (pH)
 static uint8_t  M2_SPEED_PC = 60;     // PWM duty % (ORP)
-static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst
+// Pump flow rates (ml/min at 100% speed) - default 50ml/min for 5x3mm tube
+static float M1_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 1
+static float M2_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 2
+// static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst (disabled)
 
 // PWM setup (use Arduino analogWrite APIs for C6)
-static const int PWM_FREQ = 10000; // 10 kHz (safe with 8-bit on C6)
-static const int PWM_BITS = 8;     // 0..255
+static const int PWM_FREQ = 6000; // 6 kHz (smoother for TB6612)
+static const int PWM_BITS = 10;   // 0..1023 finer control
 
 // Internal motor state
-static uint32_t m1StopAt = 0, m2StopAt = 0;
-static uint32_t m1CoolUntil = 0, m2CoolUntil = 0;
+// static uint32_t m1StopAt = 0, m2StopAt = 0;     // disabled
+// static uint32_t m1CoolUntil = 0, m2CoolUntil = 0; // disabled
 static bool m1Running = false, m2Running = false;
 static bool emergencyStop = false; // when true, force both motors off until reboot or future clear
 // Hysteresis for continuous control (no burst/cooldown)
@@ -417,6 +431,7 @@ static io::WebUI webui;
 static core::Storage::Mode runMode = core::Storage::MODE_WIFI_MQTT;
 static core::Storage::Mode savedMode = core::Storage::MODE_WIFI_MQTT;
 static bool modeForced = false;
+static bool motorsEnabled = true; // persisted via Storage
 // Minimal UI heartbeat (JC simple mode)
 #if defined(USE_JC3248W535)
 static bool g_minimal_ui_active = false;
@@ -1210,6 +1225,8 @@ void setup() {
     ORP_MAX = g_storage.getOrpMax(ORP_MAX);
     M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
     M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+    M1_FLOW_RATE = g_storage.getM1FlowRate(M1_FLOW_RATE);
+    M2_FLOW_RATE = g_storage.getM2FlowRate(M2_FLOW_RATE);
   // Force WiFi on S3 (match C6 WiFi-first behavior for UI)
   #if defined(BOARD_ESP32S3_35)
   runMode = core::Storage::MODE_WIFI_MQTT;
@@ -1275,6 +1292,51 @@ void setup() {
     };
     h.onCancelSettings = [](){ 
       requestShowMain();
+    };
+    h.onPumpCalStart = [](int motor_num){
+      ESP_LOGI("UI", "Starting pump calibration for M%d (60s @ 100%%)", motor_num);
+      // Force motor on at 100% speed for calibration
+      if (motor_num == 1) {
+        // M1: pH pump
+        digitalWrite(M1_IN1, M1_DIR_A ? HIGH : LOW);
+        digitalWrite(M1_IN2, M1_DIR_A ? LOW : HIGH);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+      } else if (motor_num == 2) {
+        // M2: ORP pump
+        digitalWrite(M2_IN1, M2_DIR_A ? HIGH : LOW);
+        digitalWrite(M2_IN2, M2_DIR_A ? LOW : HIGH);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+      }
+      digitalWrite(TB_STBY, HIGH);  // Ensure driver enabled
+    };
+    h.onPumpCalStop = [](int motor_num){
+      ESP_LOGI("UI", "Stopping pump calibration for M%d", motor_num);
+      // Stop motor
+      if (motor_num == 1) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        digitalWrite(M1_IN1, LOW);
+        digitalWrite(M1_IN2, LOW);
+      } else if (motor_num == 2) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        digitalWrite(M2_IN1, LOW);
+        digitalWrite(M2_IN2, LOW);
+      }
+      // User should now measure the pumped volume and calculate: volume_ml / 1 min = ml/min
+      // The flow rate will be saved via WebUI settings page
+    };
+    h.onSaveFlowRate = [](int motor_num, float rate){
+      ESP_LOGI("UI", "Saving flow rate for M%d: %.1f ml/min", motor_num, rate);
+      if (motor_num == 1) {
+        M1_FLOW_RATE = rate;
+        g_storage.setM1FlowRate(M1_FLOW_RATE);
+      } else if (motor_num == 2) {
+        M2_FLOW_RATE = rate;
+        g_storage.setM2FlowRate(M2_FLOW_RATE);
+      }
     };
     ui::configureHandlers(h);
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
@@ -1348,6 +1410,72 @@ void setup() {
             last_print = millis();
             // Avoid heavy logging of touch events; it stalls UI if no CDC consumer
             //ESP_LOGI("TOUCH", "LVGL: PRESSED at x=%d, y=%d, points=%d", x, y, n);
+        }
+      };
+      (void)lv_indev_drv_register(&indev_drv);
+    }
+    #else
+    // S3 JC path: BSP touch disabled; register our own LVGL indev using io::Touch (new i2c_master)
+    {
+      static lv_indev_drv_t indev_drv;
+      lv_indev_drv_init(&indev_drv);
+      indev_drv.type = LV_INDEV_TYPE_POINTER;
+      indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data){
+        (void)d;
+        
+        // State tracking for debouncing
+        static uint32_t last_touch_ms = 0;
+        static int16_t last_x = 0, last_y = 0;
+        static bool was_pressed = false;
+        
+        // Debouncing parameters (tuned for responsive but stable touch)
+        const uint32_t TOUCH_DEBOUNCE_MS = 150;      // Minimum time between new touch events
+        const uint32_t RELEASE_TIMEOUT_MS = 100;      // Time without touch before considering released
+        const uint16_t JITTER_TOLERANCE_PX = 8;       // Ignore small movements (jitter)
+        
+        io::TouchPoint p{};
+        uint32_t now = millis();
+        
+        if (io::readTouchOnce(p) && p.pressed) {
+          // Touch detected
+          int16_t dx = abs(p.x - last_x);
+          int16_t dy = abs(p.y - last_y);
+          
+          // Check if this is a new touch or just jitter/bounce
+          if (was_pressed && 
+              (now - last_touch_ms < TOUCH_DEBOUNCE_MS) &&
+              dx <= JITTER_TOLERANCE_PX && 
+              dy <= JITTER_TOLERANCE_PX) {
+            // Within debounce window and same location - maintain current state
+            data->point.x = last_x;
+            data->point.y = last_y;
+            data->state = LV_INDEV_STATE_PRESSED;
+            return;
+          }
+          
+          // Valid new touch or continued press outside jitter zone
+          if (!was_pressed || (now - last_touch_ms >= TOUCH_DEBOUNCE_MS) || 
+              dx > JITTER_TOLERANCE_PX || dy > JITTER_TOLERANCE_PX) {
+            last_touch_ms = now;
+            last_x = p.x;
+            last_y = p.y;
+            was_pressed = true;
+            data->point.x = p.x;
+            data->point.y = p.y;
+            data->state = LV_INDEV_STATE_PRESSED;
+          }
+        } else {
+          // No touch detected
+          if (was_pressed && (now - last_touch_ms < RELEASE_TIMEOUT_MS)) {
+            // Still within release timeout - maintain press state to avoid flicker
+            data->point.x = last_x;
+            data->point.y = last_y;
+            data->state = LV_INDEV_STATE_PRESSED;
+          } else {
+            // Confirmed release
+            was_pressed = false;
+            data->state = LV_INDEV_STATE_RELEASED;
+          }
         }
       };
       (void)lv_indev_drv_register(&indev_drv);
@@ -1560,6 +1688,16 @@ void setup() {
       lv_obj_align(lv_img_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+      // Stats label above pump icon (compact: "15@30" = 15ml @ 30ml/min)
+      lv_lbl_pump_ph_stats = lv_label_create(ph_tile);
+      lv_label_set_text(lv_lbl_pump_ph_stats, "");
+      lv_obj_set_style_text_font(lv_lbl_pump_ph_stats, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(lv_lbl_pump_ph_stats, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(lv_lbl_pump_ph_stats, LV_OPA_80, 0);
+      lv_obj_set_style_bg_color(lv_lbl_pump_ph_stats, lv_color_black(), 0);
+      lv_obj_set_style_pad_all(lv_lbl_pump_ph_stats, 2, 0);
+      lv_obj_align(lv_lbl_pump_ph_stats, LV_ALIGN_BOTTOM_LEFT, 0, -26);
+      lv_obj_add_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
 
       // Pump icon for ORP (M2) at bottom-left of ORP tile with silhouette shadow
       lv_img_pump_orp_shadow = lv_img_create(orp_tile);
@@ -1575,6 +1713,16 @@ void setup() {
       lv_obj_align(lv_img_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+      // Stats label above pump icon (compact: "15@30" = 15ml @ 30ml/min)
+      lv_lbl_pump_orp_stats = lv_label_create(orp_tile);
+      lv_label_set_text(lv_lbl_pump_orp_stats, "");
+      lv_obj_set_style_text_font(lv_lbl_pump_orp_stats, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(lv_lbl_pump_orp_stats, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(lv_lbl_pump_orp_stats, LV_OPA_80, 0);
+      lv_obj_set_style_bg_color(lv_lbl_pump_orp_stats, lv_color_black(), 0);
+      lv_obj_set_style_pad_all(lv_lbl_pump_orp_stats, 2, 0);
+      lv_obj_align(lv_lbl_pump_orp_stats, LV_ALIGN_BOTTOM_LEFT, 0, -26);
+      lv_obj_add_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
 
       ui::updateValues();
 
@@ -1887,7 +2035,8 @@ void setup() {
           }
           // Ensure WebUI started on both boards identiek
           webui.setStorage(&g_storage);
-          webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC);
+          webui.setMotor(&g_motor);
+          webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC, &motorsEnabled, &M1_FLOW_RATE, &M2_FLOW_RATE);
           if (!webui.isActive()) webui.begin();
         }
         ensureMqtt();
@@ -1911,37 +2060,12 @@ void setup() {
   // Load custom speeds if present
   M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
   M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+  motorsEnabled = g_storage.getMotorsEnabled(true);
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
     g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
-
-    if (MOTOR_TEST && !FORCE_MOTOR_A_ON) {
-      uint8_t duty = (uint8_t)(M1_SPEED_PC * 255 / 100);
-      // M1 forward
-      digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, LOW);
-      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(300);
-      // M1 reverse
-      digitalWrite(M1_IN1, LOW); digitalWrite(M1_IN2, HIGH);
-      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(500);
-      // M2 forward
-      digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, LOW);
-      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0); delay(300);
-      // M2 reverse
-      digitalWrite(M2_IN1, LOW); digitalWrite(M2_IN2, HIGH);
-      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0);
-    }
-
-    // Hard force Motor A on continuously for test (AIN1=LOW, AIN2=HIGH, 100% duty)
-    if (FORCE_MOTOR_A_ON) {
-      digitalWrite(M1_IN1, LOW);
-      digitalWrite(M1_IN2, HIGH);
-      ledcWrite(M1_PWM, 255);
-      // Prevent the control loop from turning it off
-      m1StopAt = UINT32_MAX;
-      m1Running = true;
-    }
   }
 
   // Optionally send Tuya queries after boot (requires TX pin wired!)
@@ -2229,8 +2353,8 @@ void loop() {
   #endif
 
   // Motor control policy (skip if forced-on test is active)
-  if (MOTOR_ENABLE) {
-    domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
+  if (MOTOR_ENABLE && motorsEnabled) {
+    domain::ControlConfig cfg{PH_MIN, PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC, M1_FLOW_RATE, M2_FLOW_RATE};
     if (!emergencyStop) {
       g_motor.tick(cfg,
                       domain::Metrics::instance().havePh,
@@ -2246,18 +2370,85 @@ void loop() {
     }
     if (USE_LVGL_UI) {
       updateLvglValues();
-      // Toggle pump icons visibility (both legacy main UI and module UI)
-      if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
-        if (m1Running) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
-        else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
-      }
-      if (lv_img_pump_orp && lv_img_pump_orp_shadow) {
-        if (m2Running) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
-        else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
-      }
-      // Module UI pump icons
-      ui::setPumpActive(m1Running, m2Running);
+      // Get pump stats for tile display
+      domain::PumpStats m1Stats = g_motor.getM1Stats();
+      domain::PumpStats m2Stats = g_motor.getM2Stats();
+      
+      // Module UI pump icons with stats (S3 uses ui:: module, C6 uses direct LVGL objects)
+      #ifdef USE_JC3248W535
+        // S3: Use module UI
+        ui::setPumpStats(m1Running, m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin, 
+                         m2Running, m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
+      #else
+        // C6: Legacy direct LVGL object manipulation
+        if (lv_img_pump_ph && lv_img_pump_ph_shadow && lv_lbl_pump_ph_stats) {
+          if (m1Running) { 
+            lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(lv_lbl_pump_ph_stats, "%.0f@%.0f", m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin);
+          }
+          else { 
+            lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+          }
+        }
+        if (lv_img_pump_orp && lv_img_pump_orp_shadow && lv_lbl_pump_orp_stats) {
+          if (m2Running) { 
+            lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(lv_lbl_pump_orp_stats, "%.0f@%.0f", m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
+          }
+          else { 
+            lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+          }
+        }
+      #endif
     }
+    
+    // Periodically save and log pump statistics
+    static uint32_t lastPumpStatsSave = 0;
+    static uint32_t lastPumpStatsLog = 0;
+    if (now - lastPumpStatsSave > 60000) {  // Save every minute
+      lastPumpStatsSave = now;
+      domain::PumpStats m1 = g_motor.getM1Stats();
+      domain::PumpStats m2 = g_motor.getM2Stats();
+      g_storage.setM1TotalVolume(m1.totalVolumeMl);
+      g_storage.setM2TotalVolume(m2.totalVolumeMl);
+    }
+    if (now - lastPumpStatsLog > 10000) {  // Log every 10 seconds
+      lastPumpStatsLog = now;
+      domain::PumpStats m1 = g_motor.getM1Stats();
+      domain::PumpStats m2 = g_motor.getM2Stats();
+      ESP_LOGI("PUMP", "M1(pH): Session=%.1fml Flow=%.1fml/min Daily=%.1fml Total=%.1fml", 
+               m1.sessionVolumeMl, m1.currentFlowMlMin, m1.dailyVolumeMl, m1.totalVolumeMl);
+      ESP_LOGI("PUMP", "M2(ORP): Session=%.1fml Flow=%.1fml/min Daily=%.1fml Total=%.1fml", 
+               m2.sessionVolumeMl, m2.currentFlowMlMin, m2.dailyVolumeMl, m2.totalVolumeMl);
+    }
+    
+    // Daily reset check (at midnight)
+    static int lastDay = -1;
+    time_t nowTime = time(NULL);
+    struct tm *timeinfo = localtime(&nowTime);
+    int currentDay = timeinfo->tm_yday;  // Day of year (0-365)
+    if (lastDay == -1) {
+      lastDay = g_storage.getLastResetDay(currentDay);
+    }
+    if (currentDay != lastDay) {
+      ESP_LOGI("PUMP", "Daily reset: Day changed from %d to %d", lastDay, currentDay);
+      g_motor.resetAllDaily();
+      g_storage.setLastResetDay(currentDay);
+      lastDay = currentDay;
+    }
+  } else if (MOTOR_ENABLE && !motorsEnabled) {
+    // Ensure outputs are off when disabled
+    g_motor.stopAll();
+    m1Running = false; m2Running = false;
+    if (USE_LVGL_UI) ui::setPumpStats(false, 0, 0, false, 0, 0);
   }
 
   // OTA + captive portal services

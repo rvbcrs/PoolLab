@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <Wire.h>
 #include "domain/SensorSource.h"
 #include "domain/Telemetry.h"
 
@@ -27,7 +26,7 @@ public:
   : _addr(i2cAddr), _sda(sdaPin), _scl(sclPin), _chPh(chPh), _chOrp(chOrp), _gain(gain), _samples(samples), _period(periodMs) {}
 
   void begin() override {
-    Wire.begin(_sda, _scl);
+    beginBus();
     _lastMs = 0;
   }
 
@@ -72,8 +71,12 @@ private:
     return acc / (float)_samples;
   }
 
-  void writeReg16(uint8_t reg, uint16_t val){ Wire.beginTransmission(_addr); Wire.write(reg); Wire.write((uint8_t)(val>>8)); Wire.write((uint8_t)(val&0xFF)); Wire.endTransmission(); }
-  uint16_t readReg16(uint8_t reg){ Wire.beginTransmission(_addr); Wire.write(reg); Wire.endTransmission(false); Wire.requestFrom((int)_addr, 2); uint16_t hi=Wire.read(); uint16_t lo=Wire.read(); return (uint16_t)((hi<<8)|lo); }
+  void writeReg16(uint8_t reg, uint16_t val){ writeBytes(reg, (uint8_t[]){ (uint8_t)(val>>8), (uint8_t)(val&0xFF) }, 2); }
+  uint16_t readReg16(uint8_t reg){ uint8_t b[2]={0}; readBytes(reg, b, 2); return (uint16_t)((((uint16_t)b[0])<<8)|b[1]); }
+
+  void beginBus();
+  void writeBytes(uint8_t reg, const uint8_t *data, size_t len);
+  void readBytes(uint8_t reg, uint8_t *data, size_t len);
 
   float convertVoltsToPh(float v) const {
     float v4=_phCal.voltsAtPh4, v10=_phCal.voltsAtPh10; float slope = (10.0f-4.0f)/((v10 - v4) + 1e-6f); float v7=(v10+v4)*0.5f; float b = 7.0f - slope*v7; return slope*v + b;
@@ -82,6 +85,8 @@ private:
 
   uint8_t _addr; int _sda, _scl; uint8_t _chPh, _chOrp; Gain _gain; uint8_t _samples; uint32_t _period; uint32_t _lastMs=0;
   PhCal _phCal; OrpCal _orpCal;
+  void * _bus = nullptr; // i2c_master_bus_handle_t
+  void * _dev = nullptr; // i2c_master_dev_handle_t
 };
 
 } // namespace io
