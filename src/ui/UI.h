@@ -27,6 +27,8 @@ void setSavedWifi(const char *ssid, const char *pass);
 void setSavedMqtt(const char *host, uint16_t port, const char *user, const char *pass);
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax);
 void setPumpActive(bool phActive, bool orpActive);
+void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, float orpSession, float orpFlow);
+void setEmergencyStop(bool active, const char* alertMsg);  // Show/hide emergency stop banner
 
 // New: extracted dialogs/helpers
 void showRangeEditor(bool isPh);
@@ -42,11 +44,23 @@ struct Handlers {
   void (*onMqttSave)(const char *host, uint16_t port, const char *user, const char *pass) = nullptr; // save MQTT broker
   void (*onSaveSettings)() = nullptr;                  // new: after saving, navigate/notify
   void (*onCancelSettings)() = nullptr;                // new: cancel and return
+  void (*onPumpCalStart)(int motor_num) = nullptr;     // start pump calibration (1=M1, 2=M2)
+  void (*onPumpCalStop)(int motor_num) = nullptr;      // stop pump calibration
+  void (*onSaveFlowRate)(int motor_num, float rate) = nullptr; // save flow rate (ml/min)
+  void (*onClearEmergencyStop)() = nullptr;            // clear emergency stop state
+  void (*onTestSafety)(int test_type) = nullptr;       // test safety triggers (1=daily, 2=session, 3=timeout, 4=pH, 5=ORP)
 };
 
 void configureHandlers(const Handlers &h);
 void setInitialSpeeds(uint8_t m1, uint8_t m2);
 void setInitialMode(bool zigbee);
+
+// Calibration UI API
+void showPhCalibration();
+void showOrpCalibration();
+// Populate saved calibration values in settings (optional helpers)
+void setSavedPhCalibration(float v_at4, float v_at10);
+void setSavedOrpCalibration(float v_at0, float mv_per_v);
 
 } // namespace ui
 

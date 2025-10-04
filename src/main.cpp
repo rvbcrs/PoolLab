@@ -20,9 +20,6 @@
 #endif
 #include <HardwareSerial.h>
 #include <SPI.h>
-#if !defined(USE_JC3248W535)
-#include <Wire.h>
-#endif
 #include <vector>
 #if !defined(USE_JC3248W535)
 // Legacy Adafruit fonts removed; LVGL handles fonts across boards
@@ -131,6 +128,8 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/MqttClient.h"
 #include "io/Touch.h"
 #include "io/Tuya.h"
+#include "io/AnalogPhOrpSensor.h"
+#include "io/AdsPhOrpSensor.h"
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
 #include "ui/UI.h"
@@ -146,6 +145,7 @@ extern "C" {
 #include "boards/BoardSelect.h"
 #include "io/Buttons.h"
 #include "io/MotorController.h"
+#include <HTTPClient.h>  // For WhatsApp CallMeBot notifications
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
 extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
@@ -202,6 +202,43 @@ static const uint8_t DP_PH_ALT1  = 118; // alternative pH
 
 // If true, show only the key metrics (pH, ORP, Temp) on screen
 static const bool SIMPLE_VIEW = true;
+
+// ===== Analog sensor (PH4502C/ORP) integration =====
+// Enable to read pH and ORP from two ADC pins instead of Tuya UART
+#ifndef USE_ANALOG_SENSORS
+#define USE_ANALOG_SENSORS 0
+#endif
+#ifndef USE_ADS1115
+#define USE_ADS1115 0
+#endif
+#if USE_ANALOG_SENSORS
+  // Define ADC-capable GPIOs here (set to actual free ADC pins on your board)
+  #ifndef PH_ADC_PIN
+  #define PH_ADC_PIN -1
+  #endif
+  #ifndef ORP_ADC_PIN
+  #define ORP_ADC_PIN -1
+  #endif
+  io::AnalogPhOrpSensor g_analog(PH_ADC_PIN, ORP_ADC_PIN);
+#endif
+#if USE_ADS1115
+  #ifndef ADS_ADDR
+  #define ADS_ADDR 0x48
+  #endif
+  #ifndef ADS_SDA
+  #define ADS_SDA 18
+  #endif
+  #ifndef ADS_SCL
+  #define ADS_SCL 19
+  #endif
+  #ifndef ADS_CH_PH
+  #define ADS_CH_PH 0
+  #endif
+  #ifndef ADS_CH_ORP
+  #define ADS_CH_ORP 1
+  #endif
+  io::AdsPhOrpSensor g_ads(ADS_ADDR, ADS_SDA, ADS_SCL, ADS_CH_PH, ADS_CH_ORP, io::AdsPhOrpSensor::GAIN_1, 8, 1000);
+#endif
 #if defined(BOARD_ESP32C6_TOUCH_1_47)
 static const bool USE_LVGL_UI = true;  // C6 uses LVGL UI as on master
 #else
@@ -249,6 +286,8 @@ static lv_obj_t *lv_img_ph_icon_shadow = nullptr;
 static lv_obj_t *lv_img_orp_icon_shadow = nullptr;
 static lv_obj_t *lv_img_pump_ph_shadow = nullptr;
 static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
+static lv_obj_t *lv_lbl_pump_ph_stats = nullptr;   // Session volume + flow rate label
+static lv_obj_t *lv_lbl_pump_orp_stats = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_img_link = nullptr;
 static lv_obj_t *lv_link_wrap = nullptr;
@@ -274,7 +313,11 @@ static void on_speed_save_cb(lv_event_t *e);
 static void updateLvglValues();
 static void showRangeEditorProxy(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
-static const bool DUMMY_MODE = true;  // set true to simulate values
+#if USE_ANALOG_SENSORS
+static const bool DUMMY_MODE = false;  // real sensors active
+#else
+static const bool DUMMY_MODE = true;   // simulate values
+#endif
 static domain::DummySensor g_dummySensor(6.80f, 7.60f, 250);
 // Tap vs swipe detection for tiles
 struct TileTapCtx { bool isPh; lv_point_t start; uint32_t start_ms; bool maybe_tap; };
@@ -304,17 +347,28 @@ static void tile_tap_cb(lv_event_t *e){
 }
 
 // ---- TB6612FNG motor driver (optional dosing pumps) ----
-static const bool MOTOR_ENABLE = false; // disable motor control to free BOOT pin GPIO9
-static const bool MOTOR_TEST   = true; // jog both motors at boot to verify wiring
+static const bool MOTOR_ENABLE = true; // compile-time guard; runtime toggle via storage
+static const bool MOTOR_TEST   = false; // jog both motors at boot to verify wiring
 // Force Motor A continuously on (test). Set true for hard-on at 100% duty.
 static const bool FORCE_MOTOR_A_ON = false;
 
 // Pinout (change to suit your wiring). All pins must be 3.3V tolerant GPIOs.
-// TB6612 → ESP32-C6 mapping:
+// TB6612 → ESP32 mapping (C6 defaults; S3 remapped per board below):
 //  STBY  → TB_STBY
 //  AIN1  → M1_IN1,  AIN2 → M1_IN2,  PWMA → M1_PWM  (Motor 1)
 //  BIN1  → M2_IN1,  BIN2 → M2_IN2,  PWMB → M2_PWM  (Motor 2)
 // Choose pins that are free; these are not used by LCD/UART.
+#if defined(BOARD_ESP32S3_35)
+// S3 3.5" mapping (header IO5/6/7/9/14/15/16/46): avoid IO46 (input-only)
+static const int TB_STBY = 14;
+static const int M1_IN1  = 15;
+static const int M1_IN2  = 16;
+static const int M1_PWM  = 5;   // LEDC PWM
+static const int M2_IN1  = 6;
+static const int M2_IN2  = 7;
+static const int M2_PWM  = 9;   // LEDC PWM
+#else
+// C6 defaults
 static const int TB_STBY = 3;  // use free GPIO3 (SPI MISO pad) for STBY
 static const int M1_IN1  = 7;
 static const int M1_IN2  = 8;
@@ -322,22 +376,41 @@ static const int M1_PWM  = 5;  // LEDC PWM
 static const int M2_IN1  = 4;
 static const int M2_IN2  = 6;
 static const int M2_PWM  = 9;  // LEDC PWM
+#endif
 
 // Control policy thresholds and timing
 static float PH_MIN = 6.80f, PH_MAX = 7.60f;   // outside → run Motor1
 static int   ORP_MIN = 250, ORP_MAX = 850;     // mV outside → run Motor2
-static const uint32_t MOTOR_RUN_MS = 5000;     // run time per correction burst
+// static const uint32_t MOTOR_RUN_MS = 5000;     // run time per correction burst (disabled: policy controls)
 static uint8_t  M1_SPEED_PC = 60;     // PWM duty % (pH)
 static uint8_t  M2_SPEED_PC = 60;     // PWM duty % (ORP)
-static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst
+// Pump flow rates (ml/min at 100% speed) - default 50ml/min for 5x3mm tube
+static float M1_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 1
+static float M2_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 2
+// static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst (disabled)
+
+// Safety limits (loaded from storage, with sensible defaults)
+static float MAX_DAILY_VOLUME = 500.0f;       // ml per day per pump (prevents runaway)
+static float MAX_SESSION_VOLUME = 50.0f;      // ml per session (prevents single overdose)
+static int MAX_SESSION_DURATION = 300;        // seconds (5 minutes max continuous run)
+static float PH_SANITY_MIN = 4.0f;            // pH below this is sensor error
+static float PH_SANITY_MAX = 10.0f;           // pH above this is sensor error
+static int ORP_SANITY_MIN = -200;             // mV below this is sensor error
+static int ORP_SANITY_MAX = 1200;             // mV above this is sensor error
+static int SENSOR_TIMEOUT = 300;              // seconds without valid sensor data before stop
+
+// WhatsApp notifications (CallMeBot API)
+static const char* CALLMEBOT_API_KEY = "1378196";  // User's API key
+static String WHATSAPP_PHONE = "";             // +31... format (loaded from storage)
+static bool WHATSAPP_ENABLED = false;          // Enable/disable notifications
 
 // PWM setup (use Arduino analogWrite APIs for C6)
-static const int PWM_FREQ = 10000; // 10 kHz (safe with 8-bit on C6)
-static const int PWM_BITS = 8;     // 0..255
+static const int PWM_FREQ = 6000; // 6 kHz (smoother for TB6612)
+static const int PWM_BITS = 10;   // 0..1023 finer control
 
 // Internal motor state
-static uint32_t m1StopAt = 0, m2StopAt = 0;
-static uint32_t m1CoolUntil = 0, m2CoolUntil = 0;
+// static uint32_t m1StopAt = 0, m2StopAt = 0;     // disabled
+// static uint32_t m1CoolUntil = 0, m2CoolUntil = 0; // disabled
 static bool m1Running = false, m2Running = false;
 static bool emergencyStop = false; // when true, force both motors off until reboot or future clear
 // Hysteresis for continuous control (no burst/cooldown)
@@ -361,7 +434,7 @@ static volatile uint32_t g_s3_lvgl_heartbeat_ms = 0;
 #endif
 
 // MQTT is handled by io::MqttClient now
-static core::Storage storage("poolcfg");
+core::Storage g_storage("poolcfg");
 #if !defined(USE_JC3248W535)
 static core::DisplayBridge *displayBridge = nullptr;
 #endif
@@ -374,6 +447,7 @@ static io::WebUI webui;
 static core::Storage::Mode runMode = core::Storage::MODE_WIFI_MQTT;
 static core::Storage::Mode savedMode = core::Storage::MODE_WIFI_MQTT;
 static bool modeForced = false;
+static bool motorsEnabled = true; // persisted via Storage
 // Minimal UI heartbeat (JC simple mode)
 #if defined(USE_JC3248W535)
 static bool g_minimal_ui_active = false;
@@ -462,10 +536,10 @@ static void lv_update_speed_labels(){
   if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
   if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
 }
-static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
-static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
-static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
-static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_ph_minus_cb(lv_event_t *e){ (void)e; if (M1_SPEED_PC>=5) M1_SPEED_PC-=5; else M1_SPEED_PC=0; g_storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_ph_plus_cb (lv_event_t *e){ (void)e; if (M1_SPEED_PC<=95) M1_SPEED_PC+=5; else M1_SPEED_PC=100; g_storage.setM1Speed(M1_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_minus_cb(lv_event_t *e){ (void)e; if (M2_SPEED_PC>=5) M2_SPEED_PC-=5; else M2_SPEED_PC=0; g_storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
+static void on_orp_plus_cb (lv_event_t *e){ (void)e; if (M2_SPEED_PC<=95) M2_SPEED_PC+=5; else M2_SPEED_PC=100; g_storage.setM2Speed(M2_SPEED_PC); lv_update_speed_labels(); }
 static void on_all_off_cb(lv_event_t *e){
   (void)e;
   // Immediate stop of both motors (emergency)
@@ -489,7 +563,7 @@ static void on_all_off_cb(lv_event_t *e){
     if (lv_img_pump_orp_shadow) { lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
   }
 }
-static void on_speed_save_cb(lv_event_t *e){ (void)e; storage.setM1Speed(M1_SPEED_PC); storage.setM2Speed(M2_SPEED_PC); }
+static void on_speed_save_cb(lv_event_t *e){ (void)e; g_storage.setM1Speed(M1_SPEED_PC); g_storage.setM2Speed(M2_SPEED_PC); }
 
 // Alert margins and border thickness for near/exceed thresholds (used by LVGL updater)
 static const float WARN_MARGIN_PH = 0.05f;   // pH within 0.05 of min/max
@@ -841,14 +915,14 @@ static void updateValueAreas() { updateLvglValues(); }
 // WiFi helpers are fully handled by WiFiManager now
 
 static void ensureMqtt() {
-  mqttClient.setStorage(&storage);
+  mqttClient.setStorage(&g_storage);
   mqttClient.setThresholdRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX);
   // Load MQTT config from storage (fallback to defaults)
   {
-    String h = storage.getMqttHost(MQTT_HOST);
-    uint16_t p = storage.getMqttPort(MQTT_PORT);
-    String u = storage.getMqttUser(MQTT_USER);
-    String pw= storage.getMqttPass(MQTT_PASS);
+    String h = g_storage.getMqttHost(MQTT_HOST);
+    uint16_t p = g_storage.getMqttPort(MQTT_PORT);
+    String u = g_storage.getMqttUser(MQTT_USER);
+    String pw= g_storage.getMqttPass(MQTT_PASS);
     MQTT_HOST = h; MQTT_PORT = p; MQTT_USER = u; MQTT_PASS = pw;
   }
   // Skip MQTT setup entirely if no host configured
@@ -878,7 +952,7 @@ static void publishStatesIfReady() { mqttClient.publishStatesIfReady(domain::Met
 extern "C" void requestModeChange(int mode){
   // mode: 1 = Zigbee, 0 = WiFi
   runMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-  storage.setMode(runMode);
+  g_storage.setMode(runMode);
   if (runMode == core::Storage::MODE_ZIGBEE) {
     if (WiFi.isConnected()) WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
@@ -890,12 +964,12 @@ extern "C" void requestModeChange(int mode){
 #endif // C6 legacy GFX-only
   } else {
     wifiOff = false;
-    WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-    WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+    WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+    WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
     #if ZB_ENABLED
     if (zbStarted) { ESP.restart(); }
     #endif
-    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); } }
+    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); } }
     else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiMgr.ensureSta(); ensureMqtt(); }
   }
 }
@@ -967,6 +1041,131 @@ static inline void drawScreen() {}
 // (legacy parser verwijderd; io/Tuya wordt gebruikt)
 
 // Parser moved to io/Tuya
+
+// Async WhatsApp sender task (runs in separate task to avoid LVGL stack overflow)
+static void sendWhatsAppAsync(void* param) {
+  domain::SafetyAlert alert = *((domain::SafetyAlert*)param);
+  free(param);
+  
+  const char* alertMessages[] = {
+    "No alert",
+    "pH pump (M1) daily limit exceeded",
+    "ORP pump (M2) daily limit exceeded",
+    "pH pump (M1) session volume limit exceeded",
+    "ORP pump (M2) session volume limit exceeded",
+    "pH pump (M1) session duration limit exceeded",
+    "ORP pump (M2) session duration limit exceeded",
+    "pH sensor reading below sanity limit",
+    "pH sensor reading above sanity limit",
+    "ORP sensor reading below sanity limit",
+    "ORP sensor reading above sanity limit",
+    "pH sensor timeout - no valid data",
+    "ORP sensor timeout - no valid data"
+  };
+  
+  int alertIdx = (int)alert;
+  if (alertIdx < 0 || alertIdx >= 13) {
+    vTaskDelete(NULL);
+    return;
+  }
+  
+  const char* alertMsg = alertMessages[alertIdx];
+  
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    // URL encode the message
+    String encodedMsg = "POOLLAB+ALERT:+";
+    encodedMsg += String(alertMsg).c_str();
+    encodedMsg.replace(" ", "+");
+    encodedMsg.replace(",", "%2C");
+    encodedMsg.replace("-", "%2D");
+    
+    // Build CallMeBot URL
+    String url = "https://api.callmebot.com/whatsapp.php?phone=";
+    url += WHATSAPP_PHONE;
+    url += "&text=";
+    url += encodedMsg;
+    url += "&apikey=";
+    url += CALLMEBOT_API_KEY;
+    
+    ESP_LOGI("SAFETY", "Sending WhatsApp notification to %s...", WHATSAPP_PHONE.c_str());
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    
+    if (httpCode > 0) {
+      ESP_LOGI("SAFETY", "WhatsApp API response: %d", httpCode);
+      if (httpCode == 200) {
+        String response = http.getString();
+        ESP_LOGI("SAFETY", "WhatsApp sent successfully: %s", response.c_str());
+      }
+    } else {
+      ESP_LOGE("SAFETY", "WhatsApp API failed: %s", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
+    ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  }
+  
+  vTaskDelete(NULL);  // Delete this task when done
+}
+
+// Safety alert callback: sends MQTT alerts and WhatsApp notifications
+void handleSafetyAlert(domain::SafetyAlert alert) {
+  // Map alert enum to human-readable strings
+  const char* alertNames[] = {
+    "none", "daily_limit_m1", "daily_limit_m2", 
+    "session_volume_m1", "session_volume_m2",
+    "session_duration_m1", "session_duration_m2",
+    "ph_sanity_low", "ph_sanity_high",
+    "orp_sanity_low", "orp_sanity_high",
+    "ph_sensor_timeout", "orp_sensor_timeout"
+  };
+  
+  const char* alertMessages[] = {
+    "No alert",
+    "pH pump (M1) daily limit exceeded",
+    "ORP pump (M2) daily limit exceeded",
+    "pH pump (M1) session volume limit exceeded",
+    "ORP pump (M2) session volume limit exceeded",
+    "pH pump (M1) session duration limit exceeded",
+    "ORP pump (M2) session duration limit exceeded",
+    "pH sensor reading below sanity limit",
+    "pH sensor reading above sanity limit",
+    "ORP sensor reading below sanity limit",
+    "ORP sensor reading above sanity limit",
+    "pH sensor timeout - no valid data",
+    "ORP sensor timeout - no valid data"
+  };
+  
+  int alertIdx = (int)alert;
+  if (alertIdx < 0 || alertIdx >= (int)(sizeof(alertNames)/sizeof(alertNames[0]))) return;
+  
+  const char* alertType = alertNames[alertIdx];
+  const char* alertMsg = alertMessages[alertIdx];
+  
+  ESP_LOGE("SAFETY", "🚨 ALERT TRIGGERED: %s - %s", alertType, alertMsg);
+  
+  // 1. Publish to MQTT (if connected)
+  if (mqttClient.isConnected()) {
+    mqttClient.publishAlert(alertType, alertMsg);
+    ESP_LOGI("SAFETY", "Alert published to MQTT: pool/alert/%s", alertType);
+  }
+  
+  // 2. Send WhatsApp notification via CallMeBot (async in separate task to avoid stack overflow)
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+    // Create a copy of the alert for the async task
+    domain::SafetyAlert* alertCopy = (domain::SafetyAlert*)malloc(sizeof(domain::SafetyAlert));
+    *alertCopy = alert;
+    
+    // Launch WhatsApp sender in separate task with 8KB stack (enough for SSL/TLS)
+    xTaskCreate(sendWhatsAppAsync, "whatsapp_send", 8192, alertCopy, 1, NULL);
+    ESP_LOGI("SAFETY", "WhatsApp notification task launched");
+  } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
+    ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  }
+}
 
 void setup() {
   // USB serial (do not block UI waiting for monitor)
@@ -1160,30 +1359,44 @@ void setup() {
     }
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
-    storage.begin(false);
-    PH_MIN = storage.getPhMin(PH_MIN);
-    PH_MAX = storage.getPhMax(PH_MAX);
-    ORP_MIN = storage.getOrpMin(ORP_MIN);
-    ORP_MAX = storage.getOrpMax(ORP_MAX);
-    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+    g_storage.begin(false);
+    PH_MIN = g_storage.getPhMin(PH_MIN);
+    PH_MAX = g_storage.getPhMax(PH_MAX);
+    ORP_MIN = g_storage.getOrpMin(ORP_MIN);
+    ORP_MAX = g_storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+    M1_FLOW_RATE = g_storage.getM1FlowRate(M1_FLOW_RATE);
+    M2_FLOW_RATE = g_storage.getM2FlowRate(M2_FLOW_RATE);
+    // Load safety limits
+    MAX_DAILY_VOLUME = g_storage.getMaxDailyVolume(MAX_DAILY_VOLUME);
+    MAX_SESSION_VOLUME = g_storage.getMaxSessionVolume(MAX_SESSION_VOLUME);
+    MAX_SESSION_DURATION = g_storage.getMaxSessionDuration(MAX_SESSION_DURATION);
+    PH_SANITY_MIN = g_storage.getPhSanityMin(PH_SANITY_MIN);
+    PH_SANITY_MAX = g_storage.getPhSanityMax(PH_SANITY_MAX);
+    ORP_SANITY_MIN = g_storage.getOrpSanityMin(ORP_SANITY_MIN);
+    ORP_SANITY_MAX = g_storage.getOrpSanityMax(ORP_SANITY_MAX);
+    SENSOR_TIMEOUT = g_storage.getSensorTimeout(SENSOR_TIMEOUT);
+    // Load WhatsApp notification settings
+    WHATSAPP_PHONE = g_storage.getWhatsAppPhone("");
+    WHATSAPP_ENABLED = g_storage.getWhatsAppEnabled(false);
   // Force WiFi on S3 (match C6 WiFi-first behavior for UI)
   #if defined(BOARD_ESP32S3_35)
   runMode = core::Storage::MODE_WIFI_MQTT;
   #else
-    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
   #endif
     savedMode = runMode;
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
       value = constrain(value, 0, 100);
-      if (idx==1) { M1_SPEED_PC = (uint8_t)value; storage.setM1Speed(M1_SPEED_PC); }
-      else if (idx==2) { M2_SPEED_PC = (uint8_t)value; storage.setM2Speed(M2_SPEED_PC); }
+      if (idx==1) { M1_SPEED_PC = (uint8_t)value; g_storage.setM1Speed(M1_SPEED_PC); }
+      else if (idx==2) { M2_SPEED_PC = (uint8_t)value; g_storage.setM2Speed(M2_SPEED_PC); }
     };
     h.onModeToggle = [](bool zigbee){
       runMode = zigbee ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
       #if !defined(BOARD_ESP32S3_35)
-      storage.setMode(runMode);
+      g_storage.setMode(runMode);
       #else
       runMode = core::Storage::MODE_WIFI_MQTT; // ignore Zigbee on S3
       #endif
@@ -1209,22 +1422,22 @@ void setup() {
       }
     };
     h.onSettings = [](){ g_settingsRequested = true; };
-    h.onWifiReset = [](){ storage.setWifiSsid(""); storage.setWifiPass(""); g_startPortalRequested = true; ESP.restart(); };
+    h.onWifiReset = [](){ g_storage.setWifiSsid(""); g_storage.setWifiPass(""); g_startPortalRequested = true; ESP.restart(); };
     h.onWifiSave = [](const char *s, const char *p){
       ESP_LOGI("UI", "Saving WiFi: SSID='%s', Pass='%s'", s ? s : "", p ? p : "");
-      storage.setWifiSsid(s?s:""); 
-      storage.setWifiPass(p?p:"");
+      g_storage.setWifiSsid(s?s:""); 
+      g_storage.setWifiPass(p?p:"");
     };
     h.onMqttSave = [](const char *host, uint16_t port, const char *user, const char *pass){
       ESP_LOGI("UI", "Saving MQTT: Host='%s', Port=%u, User='%s', Pass='%s'", host ? host : "", port, user ? user : "", pass ? pass : "");
-      storage.setMqttHost(host?host:"");
-      storage.setMqttPort(port);
-      storage.setMqttUser(user?user:"");
-      storage.setMqttPass(pass?pass:"");
-      MQTT_HOST = storage.getMqttHost(MQTT_HOST);
-      MQTT_PORT = storage.getMqttPort(MQTT_PORT);
-      MQTT_USER = storage.getMqttUser(MQTT_USER);
-      MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+      g_storage.setMqttHost(host?host:"");
+      g_storage.setMqttPort(port);
+      g_storage.setMqttUser(user?user:"");
+      g_storage.setMqttPass(pass?pass:"");
+      MQTT_HOST = g_storage.getMqttHost(MQTT_HOST);
+      MQTT_PORT = g_storage.getMqttPort(MQTT_PORT);
+      MQTT_USER = g_storage.getMqttUser(MQTT_USER);
+      MQTT_PASS = g_storage.getMqttPass(MQTT_PASS);
     };
     h.onSaveSettings = [](){ 
       // Optional: additional saves or restart logic
@@ -1232,6 +1445,98 @@ void setup() {
     };
     h.onCancelSettings = [](){ 
       requestShowMain();
+    };
+    h.onPumpCalStart = [](int motor_num){
+      ESP_LOGI("UI", "Starting pump calibration for M%d (60s @ 100%%)", motor_num);
+      // Force motor on at 100% speed for calibration
+      if (motor_num == 1) {
+        // M1: pH pump
+        digitalWrite(M1_IN1, M1_DIR_A ? HIGH : LOW);
+        digitalWrite(M1_IN2, M1_DIR_A ? LOW : HIGH);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+      } else if (motor_num == 2) {
+        // M2: ORP pump
+        digitalWrite(M2_IN1, M2_DIR_A ? HIGH : LOW);
+        digitalWrite(M2_IN2, M2_DIR_A ? LOW : HIGH);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+      }
+      digitalWrite(TB_STBY, HIGH);  // Ensure driver enabled
+    };
+    h.onPumpCalStop = [](int motor_num){
+      ESP_LOGI("UI", "Stopping pump calibration for M%d", motor_num);
+      // Stop motor
+      if (motor_num == 1) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        digitalWrite(M1_IN1, LOW);
+        digitalWrite(M1_IN2, LOW);
+      } else if (motor_num == 2) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        digitalWrite(M2_IN1, LOW);
+        digitalWrite(M2_IN2, LOW);
+      }
+      // User should now measure the pumped volume and calculate: volume_ml / 1 min = ml/min
+      // The flow rate will be saved via WebUI settings page
+    };
+    h.onSaveFlowRate = [](int motor_num, float rate){
+      ESP_LOGI("UI", "Saving flow rate for M%d: %.1f ml/min", motor_num, rate);
+      if (motor_num == 1) {
+        M1_FLOW_RATE = rate;
+        g_storage.setM1FlowRate(M1_FLOW_RATE);
+      } else if (motor_num == 2) {
+        M2_FLOW_RATE = rate;
+        g_storage.setM2FlowRate(M2_FLOW_RATE);
+      }
+    };
+    h.onClearEmergencyStop = [](){
+      ESP_LOGW("SAFETY", "User requested Emergency Stop reset via UI");
+      g_motor.clearEmergencyStop();
+      ui::setEmergencyStop(false, "");
+      ESP_LOGI("SAFETY", "Emergency Stop cleared - pumps can resume operation");
+    };
+    h.onTestSafety = [](int test_type){
+      ESP_LOGW("SAFETY", "🧪 User triggered safety test: type=%d", test_type);
+      domain::SafetyAlert alert = domain::SafetyAlert::NONE;
+      const char* alertMsg = "";
+      
+      switch(test_type) {
+        case 1: // Daily limit
+          alert = domain::SafetyAlert::DAILY_LIMIT_M1;
+          alertMsg = "Daily limit M1";
+          break;
+        case 2: // Session volume
+          alert = domain::SafetyAlert::SESSION_VOLUME_M1;
+          alertMsg = "Session volume M1";
+          break;
+        case 3: // Sensor timeout
+          alert = domain::SafetyAlert::PH_SENSOR_TIMEOUT;
+          alertMsg = "pH sensor timeout";
+          break;
+        case 4: // pH sanity
+          alert = domain::SafetyAlert::PH_SANITY_HIGH;
+          alertMsg = "pH sanity high";
+          break;
+        case 5: // ORP sanity
+          alert = domain::SafetyAlert::ORP_SANITY_LOW;
+          alertMsg = "ORP sanity low";
+          break;
+        default:
+          ESP_LOGW("SAFETY", "Unknown test type: %d", test_type);
+          return;
+      }
+      
+      // Trigger emergency stop in ControlPolicy (this calls handleSafetyAlert via callback)
+      g_motor.triggerTestAlert(alert);
+      
+      // Force UI update to show banner immediately
+      ui::setEmergencyStop(true, alertMsg);
+      
+      ESP_LOGI("SAFETY", "🧪 Test alert triggered: %s", alertMsg);
+      ESP_LOGI("SAFETY", "📱 Check MQTT topics: pool/alert/* and WhatsApp notifications");
+      ESP_LOGI("SAFETY", "⚠️ Emergency stop ACTIVE - use 'Reset' button to clear");
     };
     ui::configureHandlers(h);
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
@@ -1305,6 +1610,72 @@ void setup() {
             last_print = millis();
             // Avoid heavy logging of touch events; it stalls UI if no CDC consumer
             //ESP_LOGI("TOUCH", "LVGL: PRESSED at x=%d, y=%d, points=%d", x, y, n);
+        }
+      };
+      (void)lv_indev_drv_register(&indev_drv);
+    }
+    #else
+    // S3 JC path: BSP touch disabled; register our own LVGL indev using io::Touch (new i2c_master)
+    {
+      static lv_indev_drv_t indev_drv;
+      lv_indev_drv_init(&indev_drv);
+      indev_drv.type = LV_INDEV_TYPE_POINTER;
+      indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data){
+        (void)d;
+        
+        // State tracking for debouncing
+        static uint32_t last_touch_ms = 0;
+        static int16_t last_x = 0, last_y = 0;
+        static bool was_pressed = false;
+        
+        // Debouncing parameters (tuned for responsive but stable touch)
+        const uint32_t TOUCH_DEBOUNCE_MS = 150;      // Minimum time between new touch events
+        const uint32_t RELEASE_TIMEOUT_MS = 100;      // Time without touch before considering released
+        const uint16_t JITTER_TOLERANCE_PX = 8;       // Ignore small movements (jitter)
+        
+        io::TouchPoint p{};
+        uint32_t now = millis();
+        
+        if (io::readTouchOnce(p) && p.pressed) {
+          // Touch detected
+          int16_t dx = abs(p.x - last_x);
+          int16_t dy = abs(p.y - last_y);
+          
+          // Check if this is a new touch or just jitter/bounce
+          if (was_pressed && 
+              (now - last_touch_ms < TOUCH_DEBOUNCE_MS) &&
+              dx <= JITTER_TOLERANCE_PX && 
+              dy <= JITTER_TOLERANCE_PX) {
+            // Within debounce window and same location - maintain current state
+            data->point.x = last_x;
+            data->point.y = last_y;
+            data->state = LV_INDEV_STATE_PRESSED;
+            return;
+          }
+          
+          // Valid new touch or continued press outside jitter zone
+          if (!was_pressed || (now - last_touch_ms >= TOUCH_DEBOUNCE_MS) || 
+              dx > JITTER_TOLERANCE_PX || dy > JITTER_TOLERANCE_PX) {
+            last_touch_ms = now;
+            last_x = p.x;
+            last_y = p.y;
+            was_pressed = true;
+            data->point.x = p.x;
+            data->point.y = p.y;
+            data->state = LV_INDEV_STATE_PRESSED;
+          }
+        } else {
+          // No touch detected
+          if (was_pressed && (now - last_touch_ms < RELEASE_TIMEOUT_MS)) {
+            // Still within release timeout - maintain press state to avoid flicker
+            data->point.x = last_x;
+            data->point.y = last_y;
+            data->state = LV_INDEV_STATE_PRESSED;
+          } else {
+            // Confirmed release
+            was_pressed = false;
+            data->state = LV_INDEV_STATE_RELEASED;
+          }
         }
       };
       (void)lv_indev_drv_register(&indev_drv);
@@ -1517,6 +1888,16 @@ void setup() {
       lv_obj_align(lv_img_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+      // Stats label above pump icon (compact: "15@30" = 15ml @ 30ml/min)
+      lv_lbl_pump_ph_stats = lv_label_create(ph_tile);
+      lv_label_set_text(lv_lbl_pump_ph_stats, "");
+      lv_obj_set_style_text_font(lv_lbl_pump_ph_stats, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(lv_lbl_pump_ph_stats, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(lv_lbl_pump_ph_stats, LV_OPA_80, 0);
+      lv_obj_set_style_bg_color(lv_lbl_pump_ph_stats, lv_color_black(), 0);
+      lv_obj_set_style_pad_all(lv_lbl_pump_ph_stats, 2, 0);
+      lv_obj_align(lv_lbl_pump_ph_stats, LV_ALIGN_BOTTOM_LEFT, 0, -26);
+      lv_obj_add_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
 
       // Pump icon for ORP (M2) at bottom-left of ORP tile with silhouette shadow
       lv_img_pump_orp_shadow = lv_img_create(orp_tile);
@@ -1532,6 +1913,16 @@ void setup() {
       lv_obj_align(lv_img_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0);
       lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+      // Stats label above pump icon (compact: "15@30" = 15ml @ 30ml/min)
+      lv_lbl_pump_orp_stats = lv_label_create(orp_tile);
+      lv_label_set_text(lv_lbl_pump_orp_stats, "");
+      lv_obj_set_style_text_font(lv_lbl_pump_orp_stats, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(lv_lbl_pump_orp_stats, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(lv_lbl_pump_orp_stats, LV_OPA_80, 0);
+      lv_obj_set_style_bg_color(lv_lbl_pump_orp_stats, lv_color_black(), 0);
+      lv_obj_set_style_pad_all(lv_lbl_pump_orp_stats, 2, 0);
+      lv_obj_align(lv_lbl_pump_orp_stats, LV_ALIGN_BOTTOM_LEFT, 0, -26);
+      lv_obj_add_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
 
       ui::updateValues();
 
@@ -1567,7 +1958,7 @@ void setup() {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
         runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-        storage.setMode(runMode);
+        g_storage.setMode(runMode);
         if (runMode == core::Storage::MODE_ZIGBEE) {
           // Switch radios: stop WiFi and start Zigbee immediately if already joined
           if (WiFi.isConnected()) WiFi.disconnect(true, true);
@@ -1586,8 +1977,8 @@ void setup() {
           // Switch to WiFi/MQTT immediately
           wifiOff = false;
           // Load latest creds from NVS
-          WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-          WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+    WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+    WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
           // If Zigbee stack is running, perform a quick reboot to release radio cleanly
           #if ZB_ENABLED
           if (zbStarted) {
@@ -1598,7 +1989,7 @@ void setup() {
           #endif
           if (WIFI_SSID.length() == 0) {
             // No creds → start captive portal
-            if (!portal.isActive()) { portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }
+            if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }
           } else {
             // Ensure portal is stopped and bring up STA now
             if (portal.isActive()) portal.stop();
@@ -1653,7 +2044,7 @@ void setup() {
       lv_lbl_speed1 = lv_label_create(row_ph); lv_obj_set_style_text_color(lv_lbl_speed1, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC);
       lv_obj_t *btn1m = lv_btn_create(row_ph); lv_obj_set_size(btn1m, 28, 24); { lv_obj_t *t = lv_label_create(btn1m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn1m, on_ph_minus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_t *btn1p = lv_btn_create(row_ph); lv_obj_set_size(btn1p, 28, 24); { lv_obj_t *t = lv_label_create(btn1p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn1p, on_ph_plus_cb, LV_EVENT_CLICKED, NULL);
-      lv_obj_add_event_cb(lv_sl_speed1, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M1_SPEED_PC = (uint8_t)v; storage.setM1Speed(M1_SPEED_PC); if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC); }, LV_EVENT_ALL, NULL);
+      lv_obj_add_event_cb(lv_sl_speed1, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M1_SPEED_PC = (uint8_t)v; g_storage.setM1Speed(M1_SPEED_PC); if (lv_lbl_speed1) lv_label_set_text_fmt(lv_lbl_speed1, "%u%%", (unsigned)M1_SPEED_PC); }, LV_EVENT_ALL, NULL);
       // Row: ORP
       lv_obj_t *row_orp = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_orp); lv_obj_set_width(row_orp, LV_PCT(100)); lv_obj_set_height(row_orp, 36); lv_obj_set_flex_flow(row_orp, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_orp, 12, 0); lv_obj_set_style_pad_ver(row_orp, 6, 0);
       lv_obj_t *lbl2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lbl2, lv_color_black(), 0); lv_label_set_text(lbl2, "ORP Speed");
@@ -1661,7 +2052,7 @@ void setup() {
       lv_lbl_speed2 = lv_label_create(row_orp); lv_obj_set_style_text_color(lv_lbl_speed2, lv_color_black(), 0); lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC);
       lv_obj_t *btn2m = lv_btn_create(row_orp); lv_obj_set_size(btn2m, 28, 24); { lv_obj_t *t = lv_label_create(btn2m); lv_label_set_text(t, "-"); lv_obj_center(t);} lv_obj_add_event_cb(btn2m, on_orp_minus_cb, LV_EVENT_CLICKED, NULL);
       lv_obj_t *btn2p = lv_btn_create(row_orp); lv_obj_set_size(btn2p, 28, 24); { lv_obj_t *t = lv_label_create(btn2p); lv_label_set_text(t, "+"); lv_obj_center(t);} lv_obj_add_event_cb(btn2p, on_orp_plus_cb, LV_EVENT_CLICKED, NULL);
-      lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
+      lv_obj_add_event_cb(lv_sl_speed2, [](lv_event_t *e){ if (lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED) return; int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); v = constrain(v,0,100); M2_SPEED_PC = (uint8_t)v; g_storage.setM2Speed(M2_SPEED_PC); if (lv_lbl_speed2) lv_label_set_text_fmt(lv_lbl_speed2, "%u%%", (unsigned)M2_SPEED_PC); }, LV_EVENT_ALL, NULL);
 
       // Row: ALL OFF emergency button
       lv_obj_t *row_off = lv_obj_create(sec_pumps); lv_obj_remove_style_all(row_off); lv_obj_set_width(row_off, LV_PCT(100)); lv_obj_set_height(row_off, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_off, LV_FLEX_FLOW_ROW);
@@ -1686,7 +2077,7 @@ void setup() {
       lv_obj_t *row_net = lv_obj_create(sec_net); lv_obj_remove_style_all(row_net); lv_obj_set_width(row_net, LV_PCT(100)); lv_obj_set_height(row_net, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_net, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_net, 12, 0);
       lv_obj_t *lblNet = lv_label_create(row_net); lv_obj_set_style_text_color(lblNet, lv_color_black(), 0); lv_label_set_text(lblNet, "WiFi setup portal"); lv_obj_set_flex_grow(lblNet, 1);
       lv_obj_t *btnCfgWifi = lv_btn_create(row_net); lv_obj_set_size(btnCfgWifi, 120, 28); lv_label_set_text(lv_label_create(btnCfgWifi), "Configure WiFi");
-      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
+      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
@@ -1753,14 +2144,39 @@ void setup() {
   }
   #endif
 
+  #if !USE_ANALOG_SENSORS
   if (!DIAG_MODE) {
     // UARTs (RX only) unless TX pins are provided
     TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
     if (USE_CHANNEL_B) TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
   }
+  #endif
 
   // Configure Tuya DP ids for new parser module
+  #if !USE_ANALOG_SENSORS
   io::tuyaConfigure(DP_TEMP, DP_ORP, DP_PH, DP_ORP_ALT1, DP_PH_ALT1);
+  #endif
+
+  // Initialize analog sensors when enabled
+  #if USE_ANALOG_SENSORS
+  g_analog.begin();
+  // Load calibration from storage
+  {
+    io::AnalogPhOrpSensor::PhCal ph{}; ph.voltsAtPh4 = g_storage.getPhVAt4(3.00f); ph.voltsAtPh10 = g_storage.getPhVAt10(2.00f);
+    io::AnalogPhOrpSensor::OrpCal orp{}; orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f); orp.mVPerVolt = g_storage.getOrpMvPerV(1000.0f);
+    g_analog.setPhCalibration(ph);
+    g_analog.setOrpCalibration(orp);
+  }
+  #endif
+  #if USE_ADS1115
+  g_ads.begin();
+  {
+    io::AdsPhOrpSensor::PhCal ph{}; ph.voltsAtPh4 = g_storage.getPhVAt4(3.00f); ph.voltsAtPh10 = g_storage.getPhVAt10(2.00f);
+    io::AdsPhOrpSensor::OrpCal orp{}; orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f); orp.mVPerVolt = g_storage.getOrpMvPerV(1000.0f);
+    g_ads.setPhCalibration(ph);
+    g_ads.setOrpCalibration(orp);
+  }
+  #endif
 
   #if defined(BOARD_ESP32C6_TOUCH_1_47) && !defined(USE_JC3248W535)
   if (!USE_LVGL_UI) {
@@ -1771,14 +2187,14 @@ void setup() {
   #endif
   // Load persisted configuration early when not using LVGL UI (so boot mode is honored)
   if (!USE_LVGL_UI) {
-    storage.begin(false);
-    PH_MIN = storage.getPhMin(PH_MIN);
-    PH_MAX = storage.getPhMax(PH_MAX);
-    ORP_MIN = storage.getOrpMin(ORP_MIN);
-    ORP_MAX = storage.getOrpMax(ORP_MAX);
-    M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-    M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
-    runMode = storage.getMode(core::Storage::MODE_ZIGBEE);
+    g_storage.begin(false);
+    PH_MIN = g_storage.getPhMin(PH_MIN);
+    PH_MAX = g_storage.getPhMax(PH_MAX);
+    ORP_MIN = g_storage.getOrpMin(ORP_MIN);
+    ORP_MAX = g_storage.getOrpMax(ORP_MAX);
+    M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+    M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+    runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
     savedMode = runMode;
   }
 
@@ -1789,12 +2205,12 @@ void setup() {
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
       // Load persisted WiFi creds first so we can decide between STA vs captive portal
-      WIFI_SSID = storage.getWifiSsid(WIFI_SSID);
-      WIFI_PASSWORD = storage.getWifiPass(WIFI_PASSWORD);
+      WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
+      WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
       if (WIFI_SSID.length() == 0) {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
-        portal.setStorage(&storage);
+        portal.setStorage(&g_storage);
         portal.beginAP("PoolLab-Setup");
         if (USE_LVGL_UI) {
           #if defined(BOARD_ESP32S3_35)
@@ -1807,8 +2223,8 @@ void setup() {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: WiFi STA starting");
         {
-          String ssid = storage.getWifiSsid("");
-          String pass = storage.getWifiPass("");
+          String ssid = g_storage.getWifiSsid("");
+          String pass = g_storage.getWifiPass("");
           wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { g_ui_ip_text = ip; g_ui_ip_dirty = true; } });
           if (USE_LVGL_UI) {
             #if defined(BOARD_ESP32S3_35)
@@ -1818,8 +2234,9 @@ void setup() {
             #endif
           }
           // Ensure WebUI started on both boards identiek
-          webui.setStorage(&storage);
-          webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC);
+          webui.setStorage(&g_storage);
+          webui.setMotor(&g_motor);
+          webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC, &motorsEnabled, &M1_FLOW_RATE, &M2_FLOW_RATE);
           if (!webui.isActive()) webui.begin();
         }
         ensureMqtt();
@@ -1841,42 +2258,29 @@ void setup() {
   if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
   // Load custom speeds if present
-  M1_SPEED_PC = (uint8_t)storage.getM1Speed(M1_SPEED_PC);
-  M2_SPEED_PC = (uint8_t)storage.getM2Speed(M2_SPEED_PC);
+  M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
+  M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
+  motorsEnabled = g_storage.getMotorsEnabled(true);
+  
+  // TEMPORARY: Force motors enabled if accidentally disabled (remove after confirming working)
+  if (!motorsEnabled) {
+    ESP_LOGW("MAIN", "⚠️ Motors were disabled! Re-enabling...");
+    motorsEnabled = true;
+    g_storage.setMotorsEnabled(true);
+  }
+  
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
     g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
-
-    if (MOTOR_TEST && !FORCE_MOTOR_A_ON) {
-      uint8_t duty = (uint8_t)(M1_SPEED_PC * 255 / 100);
-      // M1 forward
-      digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, LOW);
-      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(300);
-      // M1 reverse
-      digitalWrite(M1_IN1, LOW); digitalWrite(M1_IN2, HIGH);
-      ledcWrite(M1_PWM, duty); delay(1000); ledcWrite(M1_PWM, 0); delay(500);
-      // M2 forward
-      digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, LOW);
-      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0); delay(300);
-      // M2 reverse
-      digitalWrite(M2_IN1, LOW); digitalWrite(M2_IN2, HIGH);
-      ledcWrite(M2_PWM, duty); delay(1000); ledcWrite(M2_PWM, 0);
-    }
-
-    // Hard force Motor A on continuously for test (AIN1=LOW, AIN2=HIGH, 100% duty)
-    if (FORCE_MOTOR_A_ON) {
-      digitalWrite(M1_IN1, LOW);
-      digitalWrite(M1_IN2, HIGH);
-      ledcWrite(M1_PWM, 255);
-      // Prevent the control loop from turning it off
-      m1StopAt = UINT32_MAX;
-      m1Running = true;
-    }
+    // Register safety alert callback for MQTT + WhatsApp notifications
+    g_motor.setAlertCallback(handleSafetyAlert);
+    ESP_LOGI("SAFETY", "Alert callback registered (MQTT + WhatsApp)");
   }
 
   // Optionally send Tuya queries after boot (requires TX pin wired!)
+  #if !USE_ANALOG_SENSORS
   if (SEND_ON_BOOT) {
     #if !defined(USE_JC3248W535)
     pushLine("TX: query product info"); drawScreen();
@@ -1889,6 +2293,7 @@ void setup() {
     io::tuyaSendDpQuery(TUYA_A);
     #endif
   }
+  #endif
 }
 
 void loop() {
@@ -1963,7 +2368,7 @@ void loop() {
     #if ZB_ENABLED
       savedMode = runMode;
       modeForced = true;
-      runMode = core::Storage::MODE_ZIGBEE; storage.setMode(runMode);
+      runMode = core::Storage::MODE_ZIGBEE; g_storage.setMode(runMode);
       if (WiFi.isConnected()) WiFi.disconnect(true, true);
       WiFi.mode(WIFI_OFF);
       wifiOff = true;
@@ -1980,7 +2385,7 @@ void loop() {
     if (modeForced) {
       // Restore user's previous mode selection
       runMode = savedMode;
-      storage.setMode(runMode);
+      g_storage.setMode(runMode);
       modeForced = false;
     }
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
@@ -2010,7 +2415,7 @@ void loop() {
         lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
         lv_timer_set_repeat_count(t, 1);
         // Populate fields shortly after the UI is created to ensure textareas exist
-        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
         lv_timer_set_repeat_count(t2, 1);
         LVGL_UNLOCK(); opened = true;
       }
@@ -2018,7 +2423,7 @@ void loop() {
       // Non-S3 path: still defer to next tick
       lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
       lv_timer_set_repeat_count(t, 1);
-      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(storage.getWifiSsid("").c_str(), storage.getWifiPass("").c_str()); ui::setSavedMqtt(storage.getMqttHost("").c_str(), storage.getMqttPort(1883), storage.getMqttUser("").c_str(), storage.getMqttPass("").c_str()); }, 20, NULL);
+      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
       lv_timer_set_repeat_count(t2, 1);
       opened = true;
       #endif
@@ -2028,32 +2433,35 @@ void loop() {
     }
   }
 
+  #if !USE_ANALOG_SENSORS
   {
     int processed = 0;
     #if !defined(USE_JC3248W535)
     while (TUYA_A.available()) {
-    uint8_t b = TUYA_A.read();
-    rxA_count++;
-    lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
-    io::tuyaFeedA(b);
-    // Reduce debug/printing when UI is active to avoid lag
-    if (!USE_LVGL_UI && DIAG_MODE) {
-      // ASCII line capture for quick human-readable sniffing
-      if (b == '\n' || b == '\r') {
-        if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
-      } else {
-        if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
-        if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+      uint8_t b = TUYA_A.read();
+      rxA_count++;
+      lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
+      io::tuyaFeedA(b);
+      // Reduce debug/printing when UI is active to avoid lag
+      if (!USE_LVGL_UI && DIAG_MODE) {
+        // ASCII line capture for quick human-readable sniffing
+        if (b == '\n' || b == '\r') {
+          if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+        } else {
+          if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
+          if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
+        }
+        // RAW hex dump to USB Serial (16 bytes per line)
+        if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
+        rawCountA++;
       }
-      // RAW hex dump to USB Serial (16 bytes per line)
-      if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
-      rawCountA++;
+      if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
     }
-    if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
+    #endif
   }
   #endif
-  }
   #if !defined(USE_JC3248W535)
+  #if !USE_ANALOG_SENSORS
   if (USE_CHANNEL_B && !USE_LVGL_UI) {
     while (TUYA_B.available()) {
       uint8_t b = TUYA_B.read();
@@ -2072,24 +2480,64 @@ void loop() {
     }
   }
   #endif
+  #endif
 
   // Avoid drawing directly with Arduino_GFX while LVGL UI is active
 
   // Dummy telemetry (optional) - enabled for all paths so baseline shows values
   if (DUMMY_MODE) {
+    static uint32_t lastDummyLog = 0;
     updateDummyTelemetry();
-    if (USE_LVGL_UI) updateLvglValues();
+    
+    // Debug log every 5 seconds BEFORE UI update
+    if (millis() - lastDummyLog > 5000) {
+      lastDummyLog = millis();
+      ESP_LOGI("DUMMY", "Generating: pH=%.2f ORP=%.0fmV Temp=%.1f°C", 
+               domain::Metrics::instance().phVal, 
+               domain::Metrics::instance().orpMv,
+               domain::Metrics::instance().tempC);
+    }
+    
+    // Update LVGL values (this might hang if LVGL task is stuck!)
+    if (USE_LVGL_UI) {
+      ESP_LOGV("DUMMY", "Calling updateLvglValues...");
+      updateLvglValues();
+      ESP_LOGV("DUMMY", "updateLvglValues done");
+    }
   } else {
     // Ensure LVGL reflects real telemetry as it updates
     if (USE_LVGL_UI) updateLvglValues();
   }
+
+  // Read sensors (internal ADC or ADS1115) and update Metrics when enabled
+  #if USE_ANALOG_SENSORS
+  {
+    static uint32_t lastRead = 0;
+    domain::Telemetry t{};
+    if (g_analog.read(t)) {
+      if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
+      if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
+      if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+    }
+  }
+  #endif
+  #if USE_ADS1115
+  {
+    domain::Telemetry t{};
+    if (g_ads.read(t)) {
+      if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
+      if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
+      if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+    }
+  }
+  #endif
 
   // Start captive portal on request (e.g., after WiFi reset)
   if (g_startPortalRequested) {
     g_startPortalRequested = false;
     // Clear WiFiManager credentials to avoid STA attempts with empty SSID
     wifiMgr.setCredentials("", "");
-    portal.setStorage(&storage);
+    portal.setStorage(&g_storage);
     if (!portal.isActive()) portal.beginAP("PoolLab-Setup");
     if (USE_LVGL_UI) ui::setIp(WiFi.softAPIP().toString().c_str());
   }
@@ -2132,8 +2580,21 @@ void loop() {
   #endif
 
   // Motor control policy (skip if forced-on test is active)
-  if (MOTOR_ENABLE) {
-    domain::ControlConfig cfg{PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC};
+  static uint32_t lastMotorCheckMs = 0;
+  if (millis() - lastMotorCheckMs > 5000) {
+    lastMotorCheckMs = millis();
+    ESP_LOGI("MOTOR", "Check: MOTOR_ENABLE=%d motorsEnabled=%d", MOTOR_ENABLE, motorsEnabled);
+  }
+  
+  if (MOTOR_ENABLE && motorsEnabled) {
+    static uint32_t lastLogMs = 0;
+    uint32_t nowMs = millis();
+    
+    domain::ControlConfig cfg{
+      PH_MIN, PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC, M1_FLOW_RATE, M2_FLOW_RATE,
+      MAX_DAILY_VOLUME, MAX_SESSION_VOLUME, MAX_SESSION_DURATION,
+      PH_SANITY_MIN, PH_SANITY_MAX, ORP_SANITY_MIN, ORP_SANITY_MAX, SENSOR_TIMEOUT
+    };
     if (!emergencyStop) {
       g_motor.tick(cfg,
                       domain::Metrics::instance().havePh,
@@ -2143,24 +2604,123 @@ void loop() {
                  (bool)(FORCE_MOTOR_A_ON && !emergencyStop));
       m1Running = g_motor.isM1Running();
       m2Running = g_motor.isM2Running();
+      
+      // Debug log every 5 seconds
+      if (nowMs - lastLogMs > 5000) {
+        lastLogMs = nowMs;
+        ESP_LOGI("MOTOR", "pH=%.2f (%.2f-%.2f) ORP=%.0f (%d-%d) M1=%d M2=%d", 
+                 domain::Metrics::instance().phVal, PH_MIN, PH_MAX,
+                 domain::Metrics::instance().orpMv, ORP_MIN, ORP_MAX,
+                 m1Running, m2Running);
+      }
     } else {
       g_motor.stopAll();
       m1Running = false; m2Running = false;
     }
     if (USE_LVGL_UI) {
       updateLvglValues();
-      // Toggle pump icons visibility (both legacy main UI and module UI)
-      if (lv_img_pump_ph && lv_img_pump_ph_shadow) {
-        if (m1Running) { lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
-        else { lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN); }
-      }
-      if (lv_img_pump_orp && lv_img_pump_orp_shadow) {
-        if (m2Running) { lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
-        else { lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN); }
-      }
-      // Module UI pump icons
-      ui::setPumpActive(m1Running, m2Running);
+      // Get pump stats for tile display
+      domain::PumpStats m1Stats = g_motor.getM1Stats();
+      domain::PumpStats m2Stats = g_motor.getM2Stats();
+      
+      // Module UI pump icons with stats (S3 uses ui:: module, C6 uses direct LVGL objects)
+      #ifdef USE_JC3248W535
+        // S3: Use module UI
+        ui::setPumpStats(m1Running, m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin, 
+                         m2Running, m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
+        // Update emergency stop status in UI
+        static bool lastEmergencyState = false;
+        bool currentEmergencyState = g_motor.isEmergencyStop();
+        if (currentEmergencyState != lastEmergencyState) {
+          if (currentEmergencyState) {
+            domain::SafetyAlert lastAlert = g_motor.getLastAlert();
+            const char* alertMessages[] = {
+              "", "Daily limit M1", "Daily limit M2", 
+              "Session volume M1", "Session volume M2",
+              "Session duration M1", "Session duration M2",
+              "pH sanity low", "pH sanity high",
+              "ORP sanity low", "ORP sanity high",
+              "pH sensor timeout", "ORP sensor timeout"
+            };
+            int alertIdx = (int)lastAlert;
+            const char* msg = (alertIdx >= 0 && alertIdx < 13) ? alertMessages[alertIdx] : "Unknown alert";
+            ui::setEmergencyStop(true, msg);
+            ESP_LOGW("UI", "Emergency stop banner shown: %s", msg);
+          } else {
+            ui::setEmergencyStop(false, "");
+          }
+          lastEmergencyState = currentEmergencyState;
+        }
+      #else
+        // C6: Legacy direct LVGL object manipulation
+        if (lv_img_pump_ph && lv_img_pump_ph_shadow && lv_lbl_pump_ph_stats) {
+          if (m1Running) { 
+            lv_obj_clear_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_clear_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(lv_lbl_pump_ph_stats, "%.0f@%.0f", m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin);
+          }
+          else { 
+            lv_obj_add_flag(lv_img_pump_ph, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_add_flag(lv_img_pump_ph_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lv_lbl_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+          }
+        }
+        if (lv_img_pump_orp && lv_img_pump_orp_shadow && lv_lbl_pump_orp_stats) {
+          if (m2Running) { 
+            lv_obj_clear_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_clear_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(lv_lbl_pump_orp_stats, "%.0f@%.0f", m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
+          }
+          else { 
+            lv_obj_add_flag(lv_img_pump_orp, LV_OBJ_FLAG_HIDDEN); 
+            lv_obj_add_flag(lv_img_pump_orp_shadow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lv_lbl_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+          }
+        }
+      #endif
     }
+    
+    // Periodically save and log pump statistics
+    static uint32_t lastPumpStatsSave = 0;
+    static uint32_t lastPumpStatsLog = 0;
+    if (now - lastPumpStatsSave > 60000) {  // Save every minute
+      lastPumpStatsSave = now;
+      domain::PumpStats m1 = g_motor.getM1Stats();
+      domain::PumpStats m2 = g_motor.getM2Stats();
+      g_storage.setM1TotalVolume(m1.totalVolumeMl);
+      g_storage.setM2TotalVolume(m2.totalVolumeMl);
+    }
+    if (now - lastPumpStatsLog > 10000) {  // Log every 10 seconds
+      lastPumpStatsLog = now;
+      domain::PumpStats m1 = g_motor.getM1Stats();
+      domain::PumpStats m2 = g_motor.getM2Stats();
+      ESP_LOGI("PUMP", "M1(pH): Session=%.1fml Flow=%.1fml/min Daily=%.1fml Total=%.1fml", 
+               m1.sessionVolumeMl, m1.currentFlowMlMin, m1.dailyVolumeMl, m1.totalVolumeMl);
+      ESP_LOGI("PUMP", "M2(ORP): Session=%.1fml Flow=%.1fml/min Daily=%.1fml Total=%.1fml", 
+               m2.sessionVolumeMl, m2.currentFlowMlMin, m2.dailyVolumeMl, m2.totalVolumeMl);
+    }
+    
+    // Daily reset check (at midnight)
+    static int lastDay = -1;
+    time_t nowTime = time(NULL);
+    struct tm *timeinfo = localtime(&nowTime);
+    int currentDay = timeinfo->tm_yday;  // Day of year (0-365)
+    if (lastDay == -1) {
+      lastDay = g_storage.getLastResetDay(currentDay);
+    }
+    if (currentDay != lastDay) {
+      ESP_LOGI("PUMP", "Daily reset: Day changed from %d to %d", lastDay, currentDay);
+      g_motor.resetAllDaily();
+      g_storage.setLastResetDay(currentDay);
+      lastDay = currentDay;
+    }
+  } else if (MOTOR_ENABLE && !motorsEnabled) {
+    // Ensure outputs are off when disabled
+    g_motor.stopAll();
+    m1Running = false; m2Running = false;
+    if (USE_LVGL_UI) ui::setPumpStats(false, 0, 0, false, 0, 0);
   }
 
   // OTA + captive portal services
@@ -2181,10 +2741,10 @@ void loop() {
     #if ZB_ENABLED
     if (zbStarted) {
       // Apply deferred AO changes safely in app thread context
-      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; storage.setPhMin(PH_MIN); }
-      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; storage.setPhMax(PH_MAX); }
-      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); storage.setOrpMin(ORP_MIN); }
-      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); storage.setOrpMax(ORP_MAX); }
+      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; g_storage.setPhMin(PH_MIN); }
+      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; g_storage.setPhMax(PH_MAX); }
+      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); g_storage.setOrpMin(ORP_MIN); }
+      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); g_storage.setOrpMax(ORP_MAX); }
       if (domain::Metrics::instance().havePh)   zbPh.setFlow(domain::Metrics::instance().phVal);
       if (domain::Metrics::instance().haveOrp)  zbOrp.setPressure((int16_t)lrintf(domain::Metrics::instance().orpMv));
       if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
@@ -2270,10 +2830,10 @@ void loop() {
 // Legacy pagination removed
 
 extern "C" void requestMqttReload(){
-  MQTT_HOST = storage.getMqttHost(MQTT_HOST);
-  MQTT_PORT = storage.getMqttPort(MQTT_PORT);
-  MQTT_USER = storage.getMqttUser(MQTT_USER);
-  MQTT_PASS = storage.getMqttPass(MQTT_PASS);
+  MQTT_HOST = g_storage.getMqttHost(MQTT_HOST);
+  MQTT_PORT = g_storage.getMqttPort(MQTT_PORT);
+  MQTT_USER = g_storage.getMqttUser(MQTT_USER);
+  MQTT_PASS = g_storage.getMqttPass(MQTT_PASS);
   if (WiFi.status() == WL_CONNECTED) {
     ensureMqtt();
   }

@@ -88,11 +88,9 @@ static bool i2c_initialized = false;
 
 esp_err_t bsp_i2c_init(void)
 {
-    /* I2C was initialized before */
     if (i2c_initialized) {
         return ESP_OK;
     }
-
     const i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = EXAMPLE_PIN_NUM_QSPI_TOUCH_SDA,
@@ -103,9 +101,7 @@ esp_err_t bsp_i2c_init(void)
     };
     BSP_ERROR_CHECK_RETURN_ERR(i2c_param_config(BSP_I2C_NUM, &i2c_conf));
     BSP_ERROR_CHECK_RETURN_ERR(i2c_driver_install(BSP_I2C_NUM, i2c_conf.mode, 0, 0, 0));
-
     i2c_initialized = true;
-
     return ESP_OK;
 }
 
@@ -457,7 +453,6 @@ esp_err_t bsp_touch_new(const bsp_display_cfg_t *config, esp_lcd_touch_handle_t 
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
     esp_lcd_touch_handle_t tp_handle = NULL;
     const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_AXS15231B_CONFIG();
-
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)BSP_I2C_NUM, &tp_io_config, &tp_io_handle), TAG, "");
     ESP_RETURN_ON_ERROR(esp_lcd_touch_new_i2c_axs15231b(tp_io_handle, &tp_cfg, &tp_handle), TAG, "New axs15231b failed");
 
@@ -497,6 +492,10 @@ err:
 
 static lv_indev_t *bsp_display_indev_init(const bsp_display_cfg_t *config, lv_disp_t *disp)
 {
+    #ifdef BSP_DISABLE_TOUCH
+    (void)config; (void)disp;
+    return NULL;
+    #endif
     BSP_ERROR_CHECK_RETURN_NULL(bsp_touch_new(config, &tp));
     assert(tp);
 
@@ -537,3 +536,5 @@ void bsp_display_unlock(void)
 {
     lvgl_port_unlock();
 }
+
+/* no public accessor needed for I2C bus */

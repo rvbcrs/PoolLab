@@ -14,7 +14,8 @@
 
 #include "sdkconfig.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "hal/i2c_types.h"
+#include "esp_lcd_panel_io.h"
 #include "lvgl.h"
 #include "lv_port.h"
 
@@ -134,6 +135,8 @@ lv_disp_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg);
  * @return Pointer to LVGL input device or NULL when not initialized
  */
 lv_indev_t *bsp_display_get_input_dev(void);
+
+// No direct I2C bus accessor needed in new path
 
 /**
  * @brief Take LVGL mutex

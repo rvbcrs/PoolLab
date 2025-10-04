@@ -123,6 +123,17 @@ void MqttClient::publishStatesIfReady(const domain::Metrics &m) {
   if (m.haveTemp) { char b[16]; snprintf(b,sizeof(b),"%.1f", m.tempC); _client.publish(TOPIC_STATE_TEMP, b, true); if (_debug) ESP_LOGI("MQTT","Published %s=%s", TOPIC_STATE_TEMP, b); }
 }
 
+void MqttClient::publishAlert(const char* alertType, const char* message) {
+  if (!_client.connected()) return;
+  
+  // Publish to pool/alert/<alert_type> topic
+  String topic = "pool/alert/";
+  topic += alertType;
+  
+  _client.publish(topic.c_str(), message, true);  // retained for persistence
+  ESP_LOGI("MQTT", "Published alert: %s = %s", topic.c_str(), message);
+}
+
 void MqttClient::loop() {
   _client.loop();
 }

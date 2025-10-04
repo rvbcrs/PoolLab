@@ -1,15 +1,9 @@
-#if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
-#include "Touch.h"
-namespace io {
-bool i2cRead(uint8_t, uint8_t, uint8_t*, uint32_t){ return false; }
-void touchBegin() {}
-bool readTouchOnce(TouchPoint &p){ p.pressed=false; return false; }
-bool getTouchPoint(TouchPoint &p){ p.pressed=false; return false; }
-}
-#else
 #include "Touch.h"
 #include <Arduino.h>
-#include <Wire.h>
+#if !defined(BOARD_ESP32S3_35)
+#include <driver/i2c_master.h>
+#include "core/I2CBus.h"
+#endif
 
 namespace io {
 
@@ -25,30 +19,50 @@ const uint8_t AXS5106L_TOUCH_DATA_REG = 0x01;
 static volatile bool touchIrq = false;
 static void IRAM_ATTR onTouchInt(){ touchIrq = true; }
 
+static void* s_i2c_bus = nullptr;   // i2c_master_bus_handle_t (non-S3)
+static void* s_i2c_dev = nullptr;   // i2c_master_dev_handle_t (non-S3)
+
 bool i2cWrite8(uint8_t addr, uint8_t reg, const uint8_t* data, uint32_t len){
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (len) Wire.write(data, len);
-  return Wire.endTransmission() == 0;
+#if defined(BOARD_ESP32S3_35)
+  (void)addr; (void)reg; (void)data; (void)len; return false;
+#else
+  if (s_i2c_dev == nullptr) return false;
+  uint8_t tmp[5];
+  tmp[0] = reg;
+  if (len && data){
+    uint32_t n = len > 4 ? 4 : len; // defensive bound
+    memcpy(&tmp[1], data, n);
+    return ESP_OK == i2c_master_transmit((i2c_master_dev_handle_t)s_i2c_dev, tmp, n+1, -1);
+  }
+  return ESP_OK == i2c_master_transmit((i2c_master_dev_handle_t)s_i2c_dev, tmp, 1, -1);
+#endif
 }
 
 bool i2cRead(uint8_t addr, uint8_t reg, uint8_t* buf, uint32_t len){
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission() != 0) return false;
-  uint32_t got = Wire.requestFrom(addr, (uint8_t)len);
-  if (got != len) return false;
-  for (uint32_t i=0;i<len;i++) buf[i] = Wire.read();
-  return true;
+#if defined(BOARD_ESP32S3_35)
+  (void)addr; (void)reg; (void)buf; (void)len; return false;
+#else
+  (void)addr; // device address fixed in handle
+  if (s_i2c_dev == nullptr) return false;
+  return ESP_OK == i2c_master_transmit_receive((i2c_master_dev_handle_t)s_i2c_dev, &reg, 1, buf, len, -1);
+#endif
 }
 
 void touchBegin(){
-  // Use Arduino Wire only on non-S3 boards; S3 BSP sets up I2C
-  #if !defined(BOARD_ESP32S3_35)
-  Wire.begin(TOUCH_SDA, TOUCH_SCL);
-  #else
+  // Initialize ESP-IDF I2C master bus and device
+#if defined(BOARD_ESP32S3_35)
+  // S3: no Touch I2C to avoid mixing drivers; rely on BSP or disabled touch
   (void)TOUCH_SDA; (void)TOUCH_SCL;
-  #endif
+#else
+  s_i2c_bus = core::i2c_bus_init(TOUCH_SDA, TOUCH_SCL);
+  if (s_i2c_dev == nullptr && s_i2c_bus){
+    i2c_device_config_t dev_cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = AXS5106L_ADDR, .scl_speed_hz = 400000, .scl_wait_us = 0, .flags = { 0 } };
+    i2c_master_dev_handle_t dev = nullptr;
+    if (ESP_OK == i2c_master_bus_add_device((i2c_master_bus_handle_t)s_i2c_bus, &dev_cfg, &dev)){
+      s_i2c_dev = dev;
+    }
+  }
+#endif
   pinMode(TOUCH_RST, OUTPUT);
   digitalWrite(TOUCH_RST, LOW); 
   delay(50); 
@@ -65,7 +79,6 @@ void touchBegin(){
 }
 
 bool readTouchOnce(TouchPoint &out) {
-#if defined(BOARD_ESP32C6_TOUCH_1_47)
   uint8_t buf[14] = {0};
   // Defensive: ensure I2C read succeeds and buffer has expected structure
   if (!i2cRead(AXS5106L_ADDR, AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
@@ -87,10 +100,6 @@ bool readTouchOnce(TouchPoint &out) {
   out.y = y;
   out.pressed = true;
   return true;
-#else
-  // existing implementations for other boards
-  return false;
-#endif
 }
 
 // Legacy compatibility
@@ -105,4 +114,3 @@ bool getTouchPoint(TouchPoint &p) {
 } // namespace io
 
 
-#endif

@@ -34,6 +34,7 @@ public:
   bool isConnected();
   void publishDiscoveryOnce();
   void publishStatesIfReady(const domain::Metrics &m);
+  void publishAlert(const char* alertType, const char* message);  // New: publish safety alerts
   void loop();
   void setDebug(bool enabled) { _debug = enabled; }
   void resetBackoff() { _backoffMs = 5000; _nextTryAtMs = 0; }

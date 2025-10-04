@@ -27,6 +27,32 @@ public:
   int getM2Speed(int def) const;
   void setM1Speed(int v);
   void setM2Speed(int v);
+  
+  // Pump flow rates (ml/min at 100% speed)
+  float getM1FlowRate(float def) const;
+  float getM2FlowRate(float def) const;
+  void setM1FlowRate(float v);
+  void setM2FlowRate(float v);
+  
+  // Pump total volumes (ml)
+  float getM1TotalVolume(float def) const;
+  float getM2TotalVolume(float def) const;
+  void setM1TotalVolume(float v);
+  void setM2TotalVolume(float v);
+  
+  // Pump daily volumes (ml)
+  float getM1DailyVolume(float def) const;
+  float getM2DailyVolume(float def) const;
+  void setM1DailyVolume(float v);
+  void setM2DailyVolume(float v);
+  
+  // Last reset date (day of year)
+  int getLastResetDay(int def) const;
+  void setLastResetDay(int v);
+
+  // Motors enabled flag
+  bool getMotorsEnabled(bool def) const;
+  void setMotorsEnabled(bool en);
 
   // Connectivity mode
   enum Mode { MODE_WIFI_MQTT = 0, MODE_ZIGBEE = 1 };
@@ -48,6 +74,42 @@ public:
   void setMqttPort(uint16_t v);
   void setMqttUser(const String &v);
   void setMqttPass(const String &v);
+
+  // Analog sensor calibration (persisted)
+  // pH: two-point calibration (volts at pH4 and pH10)
+  float getPhVAt4(float def) const;
+  float getPhVAt10(float def) const;
+  void  setPhVAt4(float v);
+  void  setPhVAt10(float v);
+  // ORP: center voltage at 0 mV and scale (mV per Volt)
+  float getOrpVAt0(float def) const;
+  float getOrpMvPerV(float def) const;
+  void  setOrpVAt0(float v);
+  void  setOrpMvPerV(float v);
+
+  // Safety limits
+  float getMaxDailyVolume(float def) const;      // ml per day per pump
+  void setMaxDailyVolume(float v);
+  float getMaxSessionVolume(float def) const;    // ml per session
+  void setMaxSessionVolume(float v);
+  int getMaxSessionDuration(int def) const;      // seconds
+  void setMaxSessionDuration(int v);
+  float getPhSanityMin(float def) const;         // sensor sanity check
+  float getPhSanityMax(float def) const;
+  void setPhSanityMin(float v);
+  void setPhSanityMax(float v);
+  int getOrpSanityMin(int def) const;            // mV
+  int getOrpSanityMax(int def) const;
+  void setOrpSanityMin(int v);
+  void setOrpSanityMax(int v);
+  int getSensorTimeout(int def) const;           // seconds
+  void setSensorTimeout(int v);
+
+  // WhatsApp notifications (CallMeBot)
+  String getWhatsAppPhone(const String &def = "") const;  // +31612345678 format
+  void setWhatsAppPhone(const String &v);
+  bool getWhatsAppEnabled(bool def = false) const;
+  void setWhatsAppEnabled(bool en);
 
 private:
   String _ns;
