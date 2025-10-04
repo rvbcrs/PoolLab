@@ -145,6 +145,7 @@ extern "C" {
 #include "boards/BoardSelect.h"
 #include "io/Buttons.h"
 #include "io/MotorController.h"
+#include <HTTPClient.h>  // For WhatsApp CallMeBot notifications
 // Icons
 extern "C" const lv_img_dsc_t water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24;
 extern "C" const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
@@ -387,6 +388,21 @@ static uint8_t  M2_SPEED_PC = 60;     // PWM duty % (ORP)
 static float M1_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 1
 static float M2_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 2
 // static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst (disabled)
+
+// Safety limits (loaded from storage, with sensible defaults)
+static float MAX_DAILY_VOLUME = 500.0f;       // ml per day per pump (prevents runaway)
+static float MAX_SESSION_VOLUME = 50.0f;      // ml per session (prevents single overdose)
+static int MAX_SESSION_DURATION = 300;        // seconds (5 minutes max continuous run)
+static float PH_SANITY_MIN = 4.0f;            // pH below this is sensor error
+static float PH_SANITY_MAX = 10.0f;           // pH above this is sensor error
+static int ORP_SANITY_MIN = -200;             // mV below this is sensor error
+static int ORP_SANITY_MAX = 1200;             // mV above this is sensor error
+static int SENSOR_TIMEOUT = 300;              // seconds without valid sensor data before stop
+
+// WhatsApp notifications (CallMeBot API)
+static const char* CALLMEBOT_API_KEY = "1378196";  // User's API key
+static String WHATSAPP_PHONE = "";             // +31... format (loaded from storage)
+static bool WHATSAPP_ENABLED = false;          // Enable/disable notifications
 
 // PWM setup (use Arduino analogWrite APIs for C6)
 static const int PWM_FREQ = 6000; // 6 kHz (smoother for TB6612)
@@ -1026,6 +1042,131 @@ static inline void drawScreen() {}
 
 // Parser moved to io/Tuya
 
+// Async WhatsApp sender task (runs in separate task to avoid LVGL stack overflow)
+static void sendWhatsAppAsync(void* param) {
+  domain::SafetyAlert alert = *((domain::SafetyAlert*)param);
+  free(param);
+  
+  const char* alertMessages[] = {
+    "No alert",
+    "pH pump (M1) daily limit exceeded",
+    "ORP pump (M2) daily limit exceeded",
+    "pH pump (M1) session volume limit exceeded",
+    "ORP pump (M2) session volume limit exceeded",
+    "pH pump (M1) session duration limit exceeded",
+    "ORP pump (M2) session duration limit exceeded",
+    "pH sensor reading below sanity limit",
+    "pH sensor reading above sanity limit",
+    "ORP sensor reading below sanity limit",
+    "ORP sensor reading above sanity limit",
+    "pH sensor timeout - no valid data",
+    "ORP sensor timeout - no valid data"
+  };
+  
+  int alertIdx = (int)alert;
+  if (alertIdx < 0 || alertIdx >= 13) {
+    vTaskDelete(NULL);
+    return;
+  }
+  
+  const char* alertMsg = alertMessages[alertIdx];
+  
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    // URL encode the message
+    String encodedMsg = "POOLLAB+ALERT:+";
+    encodedMsg += String(alertMsg).c_str();
+    encodedMsg.replace(" ", "+");
+    encodedMsg.replace(",", "%2C");
+    encodedMsg.replace("-", "%2D");
+    
+    // Build CallMeBot URL
+    String url = "https://api.callmebot.com/whatsapp.php?phone=";
+    url += WHATSAPP_PHONE;
+    url += "&text=";
+    url += encodedMsg;
+    url += "&apikey=";
+    url += CALLMEBOT_API_KEY;
+    
+    ESP_LOGI("SAFETY", "Sending WhatsApp notification to %s...", WHATSAPP_PHONE.c_str());
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    
+    if (httpCode > 0) {
+      ESP_LOGI("SAFETY", "WhatsApp API response: %d", httpCode);
+      if (httpCode == 200) {
+        String response = http.getString();
+        ESP_LOGI("SAFETY", "WhatsApp sent successfully: %s", response.c_str());
+      }
+    } else {
+      ESP_LOGE("SAFETY", "WhatsApp API failed: %s", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
+    ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  }
+  
+  vTaskDelete(NULL);  // Delete this task when done
+}
+
+// Safety alert callback: sends MQTT alerts and WhatsApp notifications
+void handleSafetyAlert(domain::SafetyAlert alert) {
+  // Map alert enum to human-readable strings
+  const char* alertNames[] = {
+    "none", "daily_limit_m1", "daily_limit_m2", 
+    "session_volume_m1", "session_volume_m2",
+    "session_duration_m1", "session_duration_m2",
+    "ph_sanity_low", "ph_sanity_high",
+    "orp_sanity_low", "orp_sanity_high",
+    "ph_sensor_timeout", "orp_sensor_timeout"
+  };
+  
+  const char* alertMessages[] = {
+    "No alert",
+    "pH pump (M1) daily limit exceeded",
+    "ORP pump (M2) daily limit exceeded",
+    "pH pump (M1) session volume limit exceeded",
+    "ORP pump (M2) session volume limit exceeded",
+    "pH pump (M1) session duration limit exceeded",
+    "ORP pump (M2) session duration limit exceeded",
+    "pH sensor reading below sanity limit",
+    "pH sensor reading above sanity limit",
+    "ORP sensor reading below sanity limit",
+    "ORP sensor reading above sanity limit",
+    "pH sensor timeout - no valid data",
+    "ORP sensor timeout - no valid data"
+  };
+  
+  int alertIdx = (int)alert;
+  if (alertIdx < 0 || alertIdx >= (int)(sizeof(alertNames)/sizeof(alertNames[0]))) return;
+  
+  const char* alertType = alertNames[alertIdx];
+  const char* alertMsg = alertMessages[alertIdx];
+  
+  ESP_LOGE("SAFETY", "🚨 ALERT TRIGGERED: %s - %s", alertType, alertMsg);
+  
+  // 1. Publish to MQTT (if connected)
+  if (mqttClient.isConnected()) {
+    mqttClient.publishAlert(alertType, alertMsg);
+    ESP_LOGI("SAFETY", "Alert published to MQTT: pool/alert/%s", alertType);
+  }
+  
+  // 2. Send WhatsApp notification via CallMeBot (async in separate task to avoid stack overflow)
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+    // Create a copy of the alert for the async task
+    domain::SafetyAlert* alertCopy = (domain::SafetyAlert*)malloc(sizeof(domain::SafetyAlert));
+    *alertCopy = alert;
+    
+    // Launch WhatsApp sender in separate task with 8KB stack (enough for SSL/TLS)
+    xTaskCreate(sendWhatsAppAsync, "whatsapp_send", 8192, alertCopy, 1, NULL);
+    ESP_LOGI("SAFETY", "WhatsApp notification task launched");
+  } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
+    ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  }
+}
+
 void setup() {
   // USB serial (do not block UI waiting for monitor)
   Serial.begin(115200);
@@ -1227,6 +1368,18 @@ void setup() {
     M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
     M1_FLOW_RATE = g_storage.getM1FlowRate(M1_FLOW_RATE);
     M2_FLOW_RATE = g_storage.getM2FlowRate(M2_FLOW_RATE);
+    // Load safety limits
+    MAX_DAILY_VOLUME = g_storage.getMaxDailyVolume(MAX_DAILY_VOLUME);
+    MAX_SESSION_VOLUME = g_storage.getMaxSessionVolume(MAX_SESSION_VOLUME);
+    MAX_SESSION_DURATION = g_storage.getMaxSessionDuration(MAX_SESSION_DURATION);
+    PH_SANITY_MIN = g_storage.getPhSanityMin(PH_SANITY_MIN);
+    PH_SANITY_MAX = g_storage.getPhSanityMax(PH_SANITY_MAX);
+    ORP_SANITY_MIN = g_storage.getOrpSanityMin(ORP_SANITY_MIN);
+    ORP_SANITY_MAX = g_storage.getOrpSanityMax(ORP_SANITY_MAX);
+    SENSOR_TIMEOUT = g_storage.getSensorTimeout(SENSOR_TIMEOUT);
+    // Load WhatsApp notification settings
+    WHATSAPP_PHONE = g_storage.getWhatsAppPhone("");
+    WHATSAPP_ENABLED = g_storage.getWhatsAppEnabled(false);
   // Force WiFi on S3 (match C6 WiFi-first behavior for UI)
   #if defined(BOARD_ESP32S3_35)
   runMode = core::Storage::MODE_WIFI_MQTT;
@@ -1337,6 +1490,53 @@ void setup() {
         M2_FLOW_RATE = rate;
         g_storage.setM2FlowRate(M2_FLOW_RATE);
       }
+    };
+    h.onClearEmergencyStop = [](){
+      ESP_LOGW("SAFETY", "User requested Emergency Stop reset via UI");
+      g_motor.clearEmergencyStop();
+      ui::setEmergencyStop(false, "");
+      ESP_LOGI("SAFETY", "Emergency Stop cleared - pumps can resume operation");
+    };
+    h.onTestSafety = [](int test_type){
+      ESP_LOGW("SAFETY", "🧪 User triggered safety test: type=%d", test_type);
+      domain::SafetyAlert alert = domain::SafetyAlert::NONE;
+      const char* alertMsg = "";
+      
+      switch(test_type) {
+        case 1: // Daily limit
+          alert = domain::SafetyAlert::DAILY_LIMIT_M1;
+          alertMsg = "Daily limit M1";
+          break;
+        case 2: // Session volume
+          alert = domain::SafetyAlert::SESSION_VOLUME_M1;
+          alertMsg = "Session volume M1";
+          break;
+        case 3: // Sensor timeout
+          alert = domain::SafetyAlert::PH_SENSOR_TIMEOUT;
+          alertMsg = "pH sensor timeout";
+          break;
+        case 4: // pH sanity
+          alert = domain::SafetyAlert::PH_SANITY_HIGH;
+          alertMsg = "pH sanity high";
+          break;
+        case 5: // ORP sanity
+          alert = domain::SafetyAlert::ORP_SANITY_LOW;
+          alertMsg = "ORP sanity low";
+          break;
+        default:
+          ESP_LOGW("SAFETY", "Unknown test type: %d", test_type);
+          return;
+      }
+      
+      // Trigger emergency stop in ControlPolicy (this calls handleSafetyAlert via callback)
+      g_motor.triggerTestAlert(alert);
+      
+      // Force UI update to show banner immediately
+      ui::setEmergencyStop(true, alertMsg);
+      
+      ESP_LOGI("SAFETY", "🧪 Test alert triggered: %s", alertMsg);
+      ESP_LOGI("SAFETY", "📱 Check MQTT topics: pool/alert/* and WhatsApp notifications");
+      ESP_LOGI("SAFETY", "⚠️ Emergency stop ACTIVE - use 'Reset' button to clear");
     };
     ui::configureHandlers(h);
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
@@ -2061,11 +2261,22 @@ void setup() {
   M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
   M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
   motorsEnabled = g_storage.getMotorsEnabled(true);
+  
+  // TEMPORARY: Force motors enabled if accidentally disabled (remove after confirming working)
+  if (!motorsEnabled) {
+    ESP_LOGW("MAIN", "⚠️ Motors were disabled! Re-enabling...");
+    motorsEnabled = true;
+    g_storage.setMotorsEnabled(true);
+  }
+  
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 pins
   if (MOTOR_ENABLE) {
     g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
+    // Register safety alert callback for MQTT + WhatsApp notifications
+    g_motor.setAlertCallback(handleSafetyAlert);
+    ESP_LOGI("SAFETY", "Alert callback registered (MQTT + WhatsApp)");
   }
 
   // Optionally send Tuya queries after boot (requires TX pin wired!)
@@ -2275,8 +2486,24 @@ void loop() {
 
   // Dummy telemetry (optional) - enabled for all paths so baseline shows values
   if (DUMMY_MODE) {
+    static uint32_t lastDummyLog = 0;
     updateDummyTelemetry();
-    if (USE_LVGL_UI) updateLvglValues();
+    
+    // Debug log every 5 seconds BEFORE UI update
+    if (millis() - lastDummyLog > 5000) {
+      lastDummyLog = millis();
+      ESP_LOGI("DUMMY", "Generating: pH=%.2f ORP=%.0fmV Temp=%.1f°C", 
+               domain::Metrics::instance().phVal, 
+               domain::Metrics::instance().orpMv,
+               domain::Metrics::instance().tempC);
+    }
+    
+    // Update LVGL values (this might hang if LVGL task is stuck!)
+    if (USE_LVGL_UI) {
+      ESP_LOGV("DUMMY", "Calling updateLvglValues...");
+      updateLvglValues();
+      ESP_LOGV("DUMMY", "updateLvglValues done");
+    }
   } else {
     // Ensure LVGL reflects real telemetry as it updates
     if (USE_LVGL_UI) updateLvglValues();
@@ -2353,8 +2580,21 @@ void loop() {
   #endif
 
   // Motor control policy (skip if forced-on test is active)
+  static uint32_t lastMotorCheckMs = 0;
+  if (millis() - lastMotorCheckMs > 5000) {
+    lastMotorCheckMs = millis();
+    ESP_LOGI("MOTOR", "Check: MOTOR_ENABLE=%d motorsEnabled=%d", MOTOR_ENABLE, motorsEnabled);
+  }
+  
   if (MOTOR_ENABLE && motorsEnabled) {
-    domain::ControlConfig cfg{PH_MIN, PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC, M1_FLOW_RATE, M2_FLOW_RATE};
+    static uint32_t lastLogMs = 0;
+    uint32_t nowMs = millis();
+    
+    domain::ControlConfig cfg{
+      PH_MIN, PH_MAX, PH_HYST, ORP_MIN, ORP_HYST, M1_SPEED_PC, M2_SPEED_PC, M1_FLOW_RATE, M2_FLOW_RATE,
+      MAX_DAILY_VOLUME, MAX_SESSION_VOLUME, MAX_SESSION_DURATION,
+      PH_SANITY_MIN, PH_SANITY_MAX, ORP_SANITY_MIN, ORP_SANITY_MAX, SENSOR_TIMEOUT
+    };
     if (!emergencyStop) {
       g_motor.tick(cfg,
                       domain::Metrics::instance().havePh,
@@ -2364,6 +2604,15 @@ void loop() {
                  (bool)(FORCE_MOTOR_A_ON && !emergencyStop));
       m1Running = g_motor.isM1Running();
       m2Running = g_motor.isM2Running();
+      
+      // Debug log every 5 seconds
+      if (nowMs - lastLogMs > 5000) {
+        lastLogMs = nowMs;
+        ESP_LOGI("MOTOR", "pH=%.2f (%.2f-%.2f) ORP=%.0f (%d-%d) M1=%d M2=%d", 
+                 domain::Metrics::instance().phVal, PH_MIN, PH_MAX,
+                 domain::Metrics::instance().orpMv, ORP_MIN, ORP_MAX,
+                 m1Running, m2Running);
+      }
     } else {
       g_motor.stopAll();
       m1Running = false; m2Running = false;
@@ -2379,6 +2628,29 @@ void loop() {
         // S3: Use module UI
         ui::setPumpStats(m1Running, m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin, 
                          m2Running, m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
+        // Update emergency stop status in UI
+        static bool lastEmergencyState = false;
+        bool currentEmergencyState = g_motor.isEmergencyStop();
+        if (currentEmergencyState != lastEmergencyState) {
+          if (currentEmergencyState) {
+            domain::SafetyAlert lastAlert = g_motor.getLastAlert();
+            const char* alertMessages[] = {
+              "", "Daily limit M1", "Daily limit M2", 
+              "Session volume M1", "Session volume M2",
+              "Session duration M1", "Session duration M2",
+              "pH sanity low", "pH sanity high",
+              "ORP sanity low", "ORP sanity high",
+              "pH sensor timeout", "ORP sensor timeout"
+            };
+            int alertIdx = (int)lastAlert;
+            const char* msg = (alertIdx >= 0 && alertIdx < 13) ? alertMessages[alertIdx] : "Unknown alert";
+            ui::setEmergencyStop(true, msg);
+            ESP_LOGW("UI", "Emergency stop banner shown: %s", msg);
+          } else {
+            ui::setEmergencyStop(false, "");
+          }
+          lastEmergencyState = currentEmergencyState;
+        }
       #else
         // C6: Legacy direct LVGL object manipulation
         if (lv_img_pump_ph && lv_img_pump_ph_shadow && lv_lbl_pump_ph_stats) {

@@ -27,6 +27,7 @@ public:
 private:
   void handleIndex();
   void handleSettings();
+  void handleSafety();  // New: safety status & WhatsApp config
   void handleApiState();
   void handleApiSave();
   void sendStyleHeader(String &html);

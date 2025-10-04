@@ -110,13 +110,26 @@ public:
          bool isM1Running() const { return _m1Running; }
          bool isM2Running() const { return _m2Running; }
          
-         domain::PumpStats getM1Stats() const { return _policy ? _policy->getM1Stats() : domain::PumpStats{}; }
-         domain::PumpStats getM2Stats() const { return _policy ? _policy->getM2Stats() : domain::PumpStats{}; }
-         void resetM1Total() { if (_policy) _policy->resetM1Total(); }
-         void resetM2Total() { if (_policy) _policy->resetM2Total(); }
-         void resetM1Daily() { if (_policy) _policy->resetM1Daily(); }
-         void resetM2Daily() { if (_policy) _policy->resetM2Daily(); }
-         void resetAllDaily() { if (_policy) _policy->resetAllDaily(); }
+  domain::PumpStats getM1Stats() const { return _policy ? _policy->getM1Stats() : domain::PumpStats{}; }
+  domain::PumpStats getM2Stats() const { return _policy ? _policy->getM2Stats() : domain::PumpStats{}; }
+  void resetM1Total() { if (_policy) _policy->resetM1Total(); }
+  void resetM2Total() { if (_policy) _policy->resetM2Total(); }
+  void resetM1Daily() { if (_policy) _policy->resetM1Daily(); }
+  void resetM2Daily() { if (_policy) _policy->resetM2Daily(); }
+  void resetAllDaily() { if (_policy) _policy->resetAllDaily(); }
+  
+  // Safety management
+  void setAlertCallback(std::function<void(domain::SafetyAlert)> callback) { 
+    if (_policy) _policy->setAlertCallback(callback); 
+  }
+  bool isEmergencyStop() const { return _policy ? _policy->isEmergencyStop() : false; }
+  void clearEmergencyStop() { if (_policy) _policy->clearEmergencyStop(); }
+  domain::SafetyAlert getLastAlert() const { 
+    return _policy ? _policy->getLastAlert() : domain::SafetyAlert::NONE; 
+  }
+  void triggerTestAlert(domain::SafetyAlert alert) { 
+    if (_policy) _policy->triggerTestAlert(alert); 
+  }
 
 private:
   MotorPins _pins{};

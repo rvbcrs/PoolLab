@@ -21,6 +21,8 @@ static lv_obj_t *lv_lbl_orp_unit = nullptr;
 static lv_obj_t *lv_lbl_temp = nullptr;
 static lv_obj_t *lv_card_temp = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
+static lv_obj_t *lv_emergency_banner = nullptr;  // Emergency stop banner
+static lv_obj_t *lv_emergency_label = nullptr;   // Alert message label
 static lv_obj_t *lv_lbl_mqtt = nullptr;
 static lv_obj_t *lv_slider_m1 = nullptr;
 static lv_obj_t *lv_slider_m2 = nullptr;
@@ -578,6 +580,12 @@ void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, 
   g_phFlow = phFlow;
   g_orpSession = orpSession;
   g_orpFlow = orpFlow;
+  
+  // Debug: log pump stats (only when active to reduce spam)
+  if (phActive || orpActive) {
+    ESP_LOGI("UI", "PumpStats: pH=%d(%.1fml@%.1fml/min) ORP=%d(%.1fml@%.1fml/min)", 
+             phActive, phSession, phFlow, orpActive, orpSession, orpFlow);
+  }
 }
 
 void setIp(const char *ipText){
@@ -776,6 +784,107 @@ void showSettings(){
   lv_obj_t *btnPhCal = lv_btn_create(rowCal); lv_obj_set_size(btnPhCal, 120, 36); { lv_obj_t *t=lv_label_create(btnPhCal); lv_label_set_text(t, "pH Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnPhCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showPhCalibration(); }, LV_EVENT_CLICKED, NULL);
   lv_obj_t *btnOrpCal = lv_btn_create(rowCal); lv_obj_set_size(btnOrpCal, 120, 36); { lv_obj_t *t=lv_label_create(btnOrpCal); lv_label_set_text(t, "ORP Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnOrpCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showOrpCalibration(); }, LV_EVENT_CLICKED, NULL);
 #endif
+
+  // Safety Test Section (for testing emergency stop triggers)
+  lv_obj_t *sepSafety = lv_obj_create(content); lv_obj_remove_style_all(sepSafety); lv_obj_set_size(sepSafety, lv_pct(100), 2);
+  lv_obj_set_style_bg_color(sepSafety, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sepSafety, LV_OPA_COVER, 0);
+  #if USE_ANALOG_SENSORS
+  lv_obj_align_to(sepSafety, rowCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+  #else
+  lv_obj_align_to(sepSafety, btnM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+  #endif
+  
+  lv_obj_t *lblSafety = lv_label_create(content); lv_label_set_text(lblSafety, "Safety System Test");
+  lv_obj_set_style_text_color(lblSafety, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  lv_obj_align_to(lblSafety, sepSafety, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  
+  // Info label
+  lv_obj_t *lblInfo = lv_label_create(content); 
+  lv_label_set_text(lblInfo, "Test emergency stop triggers:");
+  lv_obj_set_style_text_font(lblInfo, &lv_font_montserrat_12, 0);
+  lv_obj_align_to(lblInfo, lblSafety, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+  
+  // Test buttons in a grid layout
+  lv_obj_t *rowTest1 = lv_obj_create(content); lv_obj_remove_style_all(rowTest1);
+  lv_obj_set_width(rowTest1, LV_PCT(100)); lv_obj_set_height(rowTest1, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(rowTest1, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest1, 6, 0);
+  lv_obj_align_to(rowTest1, lblInfo, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+  
+  // Test button: Daily Limit
+  lv_obj_t *btnTestDaily = lv_btn_create(rowTest1); lv_obj_set_size(btnTestDaily, 95, 32);
+  lv_obj_set_style_bg_color(btnTestDaily, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_t *lblTestDaily = lv_label_create(btnTestDaily); 
+  lv_label_set_text(lblTestDaily, "Daily Lim"); 
+  lv_obj_set_style_text_font(lblTestDaily, &lv_font_montserrat_12, 0);
+  lv_obj_center(lblTestDaily);
+  if (handlers.onTestSafety) {
+    lv_obj_add_event_cb(btnTestDaily, [](lv_event_t *e){ 
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
+        handlers.onTestSafety(1); // Test daily limit
+    }, LV_EVENT_CLICKED, NULL);
+  }
+  
+  // Test button: Session Volume
+  lv_obj_t *btnTestSession = lv_btn_create(rowTest1); lv_obj_set_size(btnTestSession, 95, 32);
+  lv_obj_set_style_bg_color(btnTestSession, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_t *lblTestSession = lv_label_create(btnTestSession); 
+  lv_label_set_text(lblTestSession, "Sess Vol"); 
+  lv_obj_set_style_text_font(lblTestSession, &lv_font_montserrat_12, 0);
+  lv_obj_center(lblTestSession);
+  if (handlers.onTestSafety) {
+    lv_obj_add_event_cb(btnTestSession, [](lv_event_t *e){ 
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
+        handlers.onTestSafety(2); // Test session volume
+    }, LV_EVENT_CLICKED, NULL);
+  }
+  
+  // Test button: Sensor Timeout
+  lv_obj_t *btnTestTimeout = lv_btn_create(rowTest1); lv_obj_set_size(btnTestTimeout, 95, 32);
+  lv_obj_set_style_bg_color(btnTestTimeout, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_t *lblTestTimeout = lv_label_create(btnTestTimeout); 
+  lv_label_set_text(lblTestTimeout, "Timeout"); 
+  lv_obj_set_style_text_font(lblTestTimeout, &lv_font_montserrat_12, 0);
+  lv_obj_center(lblTestTimeout);
+  if (handlers.onTestSafety) {
+    lv_obj_add_event_cb(btnTestTimeout, [](lv_event_t *e){ 
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
+        handlers.onTestSafety(3); // Test sensor timeout
+    }, LV_EVENT_CLICKED, NULL);
+  }
+  
+  // Second row of test buttons
+  lv_obj_t *rowTest2 = lv_obj_create(content); lv_obj_remove_style_all(rowTest2);
+  lv_obj_set_width(rowTest2, LV_PCT(100)); lv_obj_set_height(rowTest2, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(rowTest2, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest2, 6, 0);
+  lv_obj_align_to(rowTest2, rowTest1, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
+  
+  // Test button: pH Sanity
+  lv_obj_t *btnTestPh = lv_btn_create(rowTest2); lv_obj_set_size(btnTestPh, 95, 32);
+  lv_obj_set_style_bg_color(btnTestPh, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_t *lblTestPh = lv_label_create(btnTestPh); 
+  lv_label_set_text(lblTestPh, "pH Sanity"); 
+  lv_obj_set_style_text_font(lblTestPh, &lv_font_montserrat_12, 0);
+  lv_obj_center(lblTestPh);
+  if (handlers.onTestSafety) {
+    lv_obj_add_event_cb(btnTestPh, [](lv_event_t *e){ 
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
+        handlers.onTestSafety(4); // Test pH sanity
+    }, LV_EVENT_CLICKED, NULL);
+  }
+  
+  // Test button: ORP Sanity
+  lv_obj_t *btnTestOrp = lv_btn_create(rowTest2); lv_obj_set_size(btnTestOrp, 95, 32);
+  lv_obj_set_style_bg_color(btnTestOrp, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_t *lblTestOrp = lv_label_create(btnTestOrp); 
+  lv_label_set_text(lblTestOrp, "ORP Sanity"); 
+  lv_obj_set_style_text_font(lblTestOrp, &lv_font_montserrat_12, 0);
+  lv_obj_center(lblTestOrp);
+  if (handlers.onTestSafety) {
+    lv_obj_add_event_cb(btnTestOrp, [](lv_event_t *e){ 
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
+        handlers.onTestSafety(5); // Test ORP sanity
+    }, LV_EVENT_CLICKED, NULL);
+  }
 
   // Footer
   lv_obj_t *footer = lv_obj_create(scr);
@@ -1123,6 +1232,65 @@ void showHoldToPair(){
   lv_obj_clear_flag(dlg, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scrollbar_mode(dlg, LV_SCROLLBAR_MODE_OFF);
 
   lv_obj_t *title = lv_label_create(dlg); lv_label_set_text(title, "Hold BOOT 3s to start Zigbee pairing"); lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+}
+
+void setEmergencyStop(bool active, const char* alertMsg) {
+  if (active) {
+    // Create or show emergency banner
+    if (!lv_emergency_banner) {
+      // Place banner on top layer so it appears on ALL screens
+      lv_obj_t *top = lv_layer_top();
+      
+      // Red banner at top of screen
+      lv_emergency_banner = lv_obj_create(top);
+      lv_obj_remove_style_all(lv_emergency_banner);
+      lv_obj_set_size(lv_emergency_banner, lv_disp_get_hor_res(NULL), 60);
+      lv_obj_align(lv_emergency_banner, LV_ALIGN_TOP_MID, 0, 0);
+      lv_obj_set_style_bg_color(lv_emergency_banner, lv_palette_main(LV_PALETTE_RED), 0);
+      lv_obj_set_style_bg_opa(lv_emergency_banner, LV_OPA_90, 0);
+      lv_obj_set_style_pad_all(lv_emergency_banner, 8, 0);
+      
+      // Alert icon + message
+      lv_obj_t *icon = lv_label_create(lv_emergency_banner);
+      lv_label_set_text(icon, LV_SYMBOL_WARNING);
+      lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
+      lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+      lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
+      
+      lv_emergency_label = lv_label_create(lv_emergency_banner);
+      lv_label_set_long_mode(lv_emergency_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+      lv_obj_set_width(lv_emergency_label, 160);
+      lv_obj_align(lv_emergency_label, LV_ALIGN_LEFT_MID, 30, 0);
+      lv_obj_set_style_text_color(lv_emergency_label, lv_color_white(), 0);
+      
+      // Reset button
+      lv_obj_t *btnReset = lv_btn_create(lv_emergency_banner);
+      lv_obj_set_size(btnReset, 70, 40);
+      lv_obj_align(btnReset, LV_ALIGN_RIGHT_MID, 0, 0);
+      lv_obj_set_style_bg_color(btnReset, lv_palette_main(LV_PALETTE_ORANGE), 0);
+      lv_obj_t *lblReset = lv_label_create(btnReset);
+      lv_label_set_text(lblReset, "Reset");
+      lv_obj_center(lblReset);
+      lv_obj_add_event_cb(btnReset, [](lv_event_t *e){
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+          if (handlers.onClearEmergencyStop) handlers.onClearEmergencyStop();
+        }
+      }, LV_EVENT_CLICKED, NULL);
+    }
+    
+    // Update message
+    if (lv_emergency_label && alertMsg) {
+      lv_label_set_text(lv_emergency_label, alertMsg);
+    }
+    
+    // Show banner
+    lv_obj_clear_flag(lv_emergency_banner, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    // Hide banner
+    if (lv_emergency_banner) {
+      lv_obj_add_flag(lv_emergency_banner, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
 }
 
 } // namespace ui

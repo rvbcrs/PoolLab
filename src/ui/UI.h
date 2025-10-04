@@ -28,6 +28,7 @@ void setSavedMqtt(const char *host, uint16_t port, const char *user, const char 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax);
 void setPumpActive(bool phActive, bool orpActive);
 void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, float orpSession, float orpFlow);
+void setEmergencyStop(bool active, const char* alertMsg);  // Show/hide emergency stop banner
 
 // New: extracted dialogs/helpers
 void showRangeEditor(bool isPh);
@@ -46,6 +47,8 @@ struct Handlers {
   void (*onPumpCalStart)(int motor_num) = nullptr;     // start pump calibration (1=M1, 2=M2)
   void (*onPumpCalStop)(int motor_num) = nullptr;      // stop pump calibration
   void (*onSaveFlowRate)(int motor_num, float rate) = nullptr; // save flow rate (ml/min)
+  void (*onClearEmergencyStop)() = nullptr;            // clear emergency stop state
+  void (*onTestSafety)(int test_type) = nullptr;       // test safety triggers (1=daily, 2=session, 3=timeout, 4=pH, 5=ORP)
 };
 
 void configureHandlers(const Handlers &h);

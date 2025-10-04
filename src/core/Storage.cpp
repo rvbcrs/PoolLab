@@ -126,6 +126,30 @@ float Storage::getOrpMvPerV(float def) const { return _prefs.getFloat("orp_mv_pe
 void  Storage::setOrpVAt0(float v) { _prefs.putFloat("orp_v_at0", v); }
 void  Storage::setOrpMvPerV(float v) { _prefs.putFloat("orp_mv_per_v", v); }
 
+// ---- Safety limits ----
+float Storage::getMaxDailyVolume(float def) const { return _prefs.getFloat("max_daily", def); }
+void Storage::setMaxDailyVolume(float v) { _prefs.putFloat("max_daily", v); }
+float Storage::getMaxSessionVolume(float def) const { return _prefs.getFloat("max_session", def); }
+void Storage::setMaxSessionVolume(float v) { _prefs.putFloat("max_session", v); }
+int Storage::getMaxSessionDuration(int def) const { return _prefs.getInt("max_dur", def); }
+void Storage::setMaxSessionDuration(int v) { _prefs.putInt("max_dur", v); }
+float Storage::getPhSanityMin(float def) const { return _prefs.getFloat("ph_sane_min", def); }
+float Storage::getPhSanityMax(float def) const { return _prefs.getFloat("ph_sane_max", def); }
+void Storage::setPhSanityMin(float v) { _prefs.putFloat("ph_sane_min", v); }
+void Storage::setPhSanityMax(float v) { _prefs.putFloat("ph_sane_max", v); }
+int Storage::getOrpSanityMin(int def) const { return _prefs.getInt("orp_sane_min", def); }
+int Storage::getOrpSanityMax(int def) const { return _prefs.getInt("orp_sane_max", def); }
+void Storage::setOrpSanityMin(int v) { _prefs.putInt("orp_sane_min", v); }
+void Storage::setOrpSanityMax(int v) { _prefs.putInt("orp_sane_max", v); }
+int Storage::getSensorTimeout(int def) const { return _prefs.getInt("sens_timeout", def); }
+void Storage::setSensorTimeout(int v) { _prefs.putInt("sens_timeout", v); }
+
+// ---- WhatsApp notifications ----
+String Storage::getWhatsAppPhone(const String &def) const { return _prefs.getString("wa_phone", def); }
+void Storage::setWhatsAppPhone(const String &v) { _prefs.putString("wa_phone", v); }
+bool Storage::getWhatsAppEnabled(bool def) const { return _prefs.getBool("wa_enabled", def); }
+void Storage::setWhatsAppEnabled(bool en) { _prefs.putBool("wa_enabled", en); }
+
 } // namespace core
 
 

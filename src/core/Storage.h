@@ -87,6 +87,30 @@ public:
   void  setOrpVAt0(float v);
   void  setOrpMvPerV(float v);
 
+  // Safety limits
+  float getMaxDailyVolume(float def) const;      // ml per day per pump
+  void setMaxDailyVolume(float v);
+  float getMaxSessionVolume(float def) const;    // ml per session
+  void setMaxSessionVolume(float v);
+  int getMaxSessionDuration(int def) const;      // seconds
+  void setMaxSessionDuration(int v);
+  float getPhSanityMin(float def) const;         // sensor sanity check
+  float getPhSanityMax(float def) const;
+  void setPhSanityMin(float v);
+  void setPhSanityMax(float v);
+  int getOrpSanityMin(int def) const;            // mV
+  int getOrpSanityMax(int def) const;
+  void setOrpSanityMin(int v);
+  void setOrpSanityMax(int v);
+  int getSensorTimeout(int def) const;           // seconds
+  void setSensorTimeout(int v);
+
+  // WhatsApp notifications (CallMeBot)
+  String getWhatsAppPhone(const String &def = "") const;  // +31612345678 format
+  void setWhatsAppPhone(const String &v);
+  bool getWhatsAppEnabled(bool def = false) const;
+  void setWhatsAppEnabled(bool en);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()
