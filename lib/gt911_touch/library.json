@@ -1,0 +1,11 @@
+{
+    "name": "GT911 Touch Driver",
+    "version": "1.0.0",
+    "description": "GT911 touch driver from lvgl_demo_v8 example",
+    "build": {
+        "srcDir": ".",
+        "flags": [
+            "-I ."
+        ]
+    }
+}

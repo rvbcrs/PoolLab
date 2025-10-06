@@ -2,7 +2,7 @@
 
 namespace core {
 
-#if !defined(BOARD_ESP32S3_35)
+#if !defined(BOARD_ESP32S3_35) && !defined(BOARD_ESP32P4_43)
 
 static i2c_master_bus_handle_t s_bus = nullptr;
 static i2c_master_bus_handle_t s_bus1 = nullptr;
@@ -45,7 +45,8 @@ i2c_master_bus_handle_t i2c_bus_init_port(int sda, int scl, i2c_port_t port){
 
 #else
 
-// S3: provide stubs that do not reference new driver symbols
+// S3 and P4: provide stubs that do not reference new driver symbols
+// (P4 manages I2C directly in main.cpp for GT911 touch)
 i2c_master_bus_handle_t i2c_bus_init(int, int){ return nullptr; }
 i2c_master_bus_handle_t i2c_bus_init_port(int, int, i2c_port_t){ return nullptr; }
 

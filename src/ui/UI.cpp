@@ -320,9 +320,15 @@ void build(bool safeBaseline){
     return card;
   };
 
-  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
   lv_obj_t *card_ph = nullptr, *card_orp = nullptr, *card_tmp = nullptr;
   lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
+
+  // ESP32-P4 is wide enough for 3-card layout even if height is smaller
+  #if defined(BOARD_ESP32P4_43)
+  bool small_layout = false;
+  #else
+  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
+  #endif
   if (small_layout) {
     // 2-tile layout for C6
     lv_coord_t cw = (inner_w - col_gap) / 2;
@@ -343,17 +349,14 @@ void build(bool safeBaseline){
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
   // Pump stats labels (above pump icon, with descriptive text)
-  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
-  // Pump icons (module UI) — placed below stats labels with more spacing from bottom
-  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
-
-  // Temp label: only in 3-card layout; in small layout we skip
-  if (!small_layout && card_tmp) {
+  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 80); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 80); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+  // Pump active icons
+  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  if (card_tmp) {
     lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
     lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
-    // Store temp card for dynamic color updates
     lv_card_temp = card_tmp;
   }
 
@@ -606,8 +609,10 @@ void setSsid(const char *ssid){
 void showSettings(){
   onSettings = true;
   lv_lbl_ph = lv_lbl_orp = lv_lbl_orp_unit = lv_lbl_temp = lv_lbl_ip = lv_lbl_ssid = nullptr;
-  lv_obj_t *scr = lv_scr_act();
-  lv_obj_clean(scr);
+  
+  // Create a new screen instead of cleaning the current one to avoid crashes with software rotation
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_scr_load(scr);
 
   const lv_coord_t scr_w = lv_disp_get_hor_res(NULL);
   const lv_coord_t scr_h = lv_disp_get_ver_res(NULL);

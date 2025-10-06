@@ -1,0 +1,11 @@
+{
+    "name": "GT911 Touch Driver",
+    "version": "1.0.0",
+    "description": "GT911 capacitive touch driver for ESP32-P4",
+    "keywords": "touch, gt911, i2c, esp32-p4",
+    "authors": {
+        "name": "Guition"
+    },
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}
