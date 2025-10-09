@@ -60,7 +60,10 @@
 #define LVGL_UNLOCK() do{}while(0)
 #endif
 #ifndef ZB_ENABLED
-#if ((defined(FORCE_ZIGBEE) && FORCE_ZIGBEE) || (defined(HAS_ZIGBEE) && HAS_ZIGBEE)) && __has_include(<Zigbee.h>)
+#if defined(BOARD_ESP32P4_43)
+// P4: No native Zigbee, uses C6 bridge
+#define ZB_ENABLED 0
+#elif ((defined(FORCE_ZIGBEE) && FORCE_ZIGBEE) || (defined(HAS_ZIGBEE) && HAS_ZIGBEE)) && __has_include(<Zigbee.h>)
 #define ZB_ENABLED 1
 #else
 #define ZB_ENABLED 0
@@ -1015,6 +1018,15 @@ extern "C" void requestModeChange(int mode){
   // mode: 1 = Zigbee, 0 = WiFi
   runMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
   g_storage.setMode(runMode);
+  
+  #if defined(BOARD_ESP32P4_43)
+  // P4: Always restart to cleanly apply mode change (C6 will switch between WiFi-SDIO and Zigbee)
+  ESP_LOGI("MAIN", "P4: Mode changed to %s, restarting...", 
+           (runMode == core::Storage::MODE_ZIGBEE) ? "Zigbee (via C6)" : "WiFi/MQTT");
+  delay(500);
+  ESP.restart();
+  #else
+  // C6/S3: Original logic
   if (runMode == core::Storage::MODE_ZIGBEE) {
     if (WiFi.isConnected()) WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
@@ -1023,7 +1035,7 @@ extern "C" void requestModeChange(int mode){
     if (!zbStarted) {
       if (zbEverJoined) zb_start_joined(); else ui::showHoldToPair();
     }
-#endif // C6 legacy GFX-only
+    #endif
   } else {
     wifiOff = false;
     WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
@@ -1034,6 +1046,7 @@ extern "C" void requestModeChange(int mode){
     if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); } }
     else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiMgr.ensureSta(); ensureMqtt(); }
   }
+  #endif
 }
 
 // ---- Dummy telemetry generator ----
@@ -1710,13 +1723,15 @@ void setup() {
     // Load WhatsApp notification settings
     WHATSAPP_PHONE = g_storage.getWhatsAppPhone("");
     WHATSAPP_ENABLED = g_storage.getWhatsAppEnabled(false);
-  // Force WiFi on S3 and P4 (match C6 WiFi-first behavior for UI)
-  #if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
+  // Load mode from storage
+  #if defined(BOARD_ESP32S3_35)
+  // S3: Force WiFi mode (no Zigbee support)
   runMode = core::Storage::MODE_WIFI_MQTT;
   #else
-    runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
+  // C6 and P4: Load mode from storage (both support mode switching)
+  runMode = g_storage.getMode(core::Storage::MODE_WIFI_MQTT);
   #endif
-    savedMode = runMode;
+  savedMode = runMode;
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
       value = constrain(value, 0, 100);
@@ -2281,43 +2296,34 @@ void setup() {
       // Title
       lv_obj_t *title_general = lv_label_create(sec_general); lv_obj_set_style_text_color(title_general, lv_color_black(), 0); lv_label_set_text(title_general, "General");
       // Row: mode
-      lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
       #if HAS_ZIGBEE
-      lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); lv_label_set_text(lblMode, "Zigbee mode"); lv_obj_set_flex_grow(lblMode, 1);
+      lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
+      lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); 
+      #if defined(BOARD_ESP32P4_43)
+      lv_label_set_text(lblMode, "Zigbee (C6)"); 
+      #else
+      lv_label_set_text(lblMode, "Zigbee mode");
+      #endif
+      lv_obj_set_flex_grow(lblMode, 1);
       lv_obj_t *swMode = lv_switch_create(row_mode); lv_obj_set_size(swMode, 50, 24); if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
       lv_obj_add_event_cb(swMode, [](lv_event_t *e){
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-        runMode = zig ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
-        g_storage.setMode(runMode);
+        int modeInt = zig ? 1 : 0;
+        requestModeChange(modeInt);  // Use centralized mode change function
+        
+        #if !defined(BOARD_ESP32P4_43)
+        // C6/S3: Additional inline logic for immediate UI updates
         if (runMode == core::Storage::MODE_ZIGBEE) {
-          // Switch radios: stop WiFi and start Zigbee immediately if already joined
-          if (WiFi.isConnected()) WiFi.disconnect(true, true);
-          WiFi.mode(WIFI_OFF);
-          wifiOff = true;
           #if ZB_ENABLED
           if (!zbStarted) {
-            if (zbEverJoined) zb_start_joined();
-            else {
-              // If never joined, prompt the user to press BOOT for commissioning
+            if (!zbEverJoined) {
               ui::showHoldToPair();
             }
           }
           #endif
         } else {
           // Switch to WiFi/MQTT immediately
-          wifiOff = false;
-          // Load latest creds from NVS
-    WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
-    WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
-          // If Zigbee stack is running, perform a quick reboot to release radio cleanly
-          #if ZB_ENABLED
-          if (zbStarted) {
-            ESP_LOGI("WiFi", "Switching from Zigbee->WiFi: scheduling reboot for clean radio handover");
-            delay(100);
-            ESP.restart();
-          }
-          #endif
           if (WIFI_SSID.length() == 0) {
             // No creds → start captive portal
             if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }
@@ -2329,12 +2335,13 @@ void setup() {
             ensureMqtt();
           }
         }
+        #endif
       }, LV_EVENT_ALL, NULL);
       #endif
       // Row: Pair button (right)
+      #if ZB_ENABLED
       lv_obj_t *row_pair = lv_obj_create(sec_general); lv_obj_remove_style_all(row_pair); lv_obj_set_width(row_pair, LV_PCT(100)); lv_obj_set_height(row_pair, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_pair, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_pair, 12, 0);
       lv_obj_t *spacer = lv_obj_create(row_pair); lv_obj_remove_style_all(spacer); lv_obj_set_width(spacer, LV_PCT(100)); lv_obj_set_height(spacer, 1); lv_obj_set_flex_grow(spacer, 1);
-      #if HAS_ZIGBEE
       lv_obj_t *btnPair = lv_btn_create(row_pair); lv_obj_set_size(btnPair, 120, 30);
       // Style + label based on bound state
       if (zbEverJoined) { lv_obj_set_style_bg_color(btnPair, lv_palette_main(LV_PALETTE_RED), 0); lv_label_set_text(lv_label_create(btnPair), "UNPAIR"); }
@@ -2646,19 +2653,27 @@ void setup() {
          #if defined(BOARD_ESP32P4_43)
          skip_wifi_init_p4:
          ;  // Empty statement to fix C++ warning
-         // Start WiFi init in separate task like the demo
-         Serial.println("P4: About to create WiFi init task");
-         Serial.flush();
-         ESP_LOGI("MAIN", "P4: Creating WiFi init task");
-         BaseType_t result = xTaskCreatePinnedToCore(p4WifiInitTask, "P4 WiFi Init", 4096, NULL, 4, NULL, 1);
-         if (result == pdPASS) {
-           Serial.println("P4: WiFi task creation SUCCESS");
+         
+         // Only start WiFi if in WiFi/MQTT mode
+         if (runMode == core::Storage::MODE_WIFI_MQTT) {
+           // Start WiFi init in separate task like the demo
+           Serial.println("P4: About to create WiFi init task");
            Serial.flush();
-           ESP_LOGI("MAIN", "P4: WiFi init task created on core 1");
+           ESP_LOGI("MAIN", "P4: Creating WiFi init task");
+           BaseType_t result = xTaskCreatePinnedToCore(p4WifiInitTask, "P4 WiFi Init", 4096, NULL, 4, NULL, 1);
+           if (result == pdPASS) {
+             Serial.println("P4: WiFi task creation SUCCESS");
+             Serial.flush();
+             ESP_LOGI("MAIN", "P4: WiFi init task created on core 1");
+           } else {
+             Serial.println("P4: WiFi task creation FAILED!");
+             Serial.flush();
+             ESP_LOGE("MAIN", "P4: Failed to create WiFi init task!");
+           }
          } else {
-           Serial.println("P4: WiFi task creation FAILED!");
+           Serial.println("P4: Zigbee mode - WiFi disabled, C6 handles Zigbee");
            Serial.flush();
-           ESP_LOGE("MAIN", "P4: Failed to create WiFi init task!");
+           ESP_LOGI("MAIN", "P4: Zigbee mode active (C6 bridge)");
          }
          #endif
          

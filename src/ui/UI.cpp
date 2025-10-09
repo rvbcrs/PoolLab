@@ -10,6 +10,13 @@
 #endif
 
 extern ::core::Storage g_storage;
+extern "C" void requestModeChange(int mode);
+
+#if HAS_ZIGBEE
+// Zigbee link icon images
+LV_IMG_DECLARE(link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+LV_IMG_DECLARE(link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+#endif
 
 namespace ui {
 
@@ -39,6 +46,7 @@ static bool g_pumpPh = false, g_pumpOrp = false;
 static float g_phSession = 0, g_phFlow = 0, g_orpSession = 0, g_orpFlow = 0;
 static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
 static lv_obj_t *lv_pump_ph_stats = nullptr, *lv_pump_orp_stats = nullptr;
+static lv_obj_t *lv_img_link = nullptr;  // Zigbee connection indicator
 // Debounce for on-screen keyboard (avoid double insert)
 static uint32_t g_kb_last_ms = 0; static int16_t g_kb_last_id = -1;
 static lv_obj_t *lv_ta_ssid = nullptr;
@@ -528,6 +536,14 @@ void updateValues(){
   static char buf_ssid[96] = "SSID: --";
   static char temp_str[80] = {0};
   
+  #if HAS_ZIGBEE
+  // Check current mode to show IP or Zigbee icon
+  ::core::Storage::Mode currentMode = ::g_storage.getMode(::core::Storage::MODE_WIFI_MQTT);
+  if (currentMode == ::core::Storage::MODE_WIFI_MQTT) {
+    // WiFi mode: show IP/SSID/MQTT, hide link icon
+    if (lv_img_link) { lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN); }
+  #endif
+  
   if (lv_lbl_ip) {
     if (WiFi.status() == WL_CONNECTED) {
       IPAddress ip = WiFi.localIP();
@@ -537,6 +553,9 @@ void updateValues(){
       strncpy(buf_ip, "IP: --", sizeof(buf_ip) - 1);
     }
     lv_label_set_text_static(lv_lbl_ip, buf_ip);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
   if (lv_lbl_mqtt) {
     String host = ::g_storage.getMqttHost("");
@@ -548,6 +567,9 @@ void updateValues(){
       strncpy(buf_mqtt, "MQTT: --", sizeof(buf_mqtt) - 1);
     }
     lv_label_set_text_static(lv_lbl_mqtt, buf_mqtt);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_mqtt, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
   if (lv_lbl_ssid) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -558,7 +580,35 @@ void updateValues(){
       strncpy(buf_ssid, "SSID: --", sizeof(buf_ssid) - 1);
     }
     lv_label_set_text_static(lv_lbl_ssid, buf_ssid);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_ssid, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
+  
+  #if HAS_ZIGBEE
+  } else {
+    // Zigbee mode: hide IP/SSID/MQTT, show link icon
+    if (lv_lbl_ip) { lv_obj_add_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_lbl_mqtt) { lv_obj_add_flag(lv_lbl_mqtt, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_lbl_ssid) { lv_obj_add_flag(lv_lbl_ssid, LV_OBJ_FLAG_HIDDEN); }
+    
+    // Show Zigbee link indicator (create if needed)
+    if (!lv_img_link) {
+      lv_obj_t *root = lv_scr_act();
+      if (root) {
+        lv_img_link = lv_img_create(root);
+        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+        lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_link, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
+        lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -10, -30);
+      }
+    }
+    if (lv_img_link) {
+      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      // TODO: Update icon based on Zigbee connection status from C6
+    }
+  }
+  #endif
 }
 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
@@ -714,21 +764,51 @@ void showSettings(){
   attach_interceptor(lv_slider_m1);
   attach_interceptor(lv_slider_m2);
 
+  // Zigbee mode toggle (for boards with HAS_ZIGBEE support)
+  #if HAS_ZIGBEE
+  lv_obj_t *lblZigbee = lv_label_create(content); 
+  #if defined(BOARD_ESP32P4_43)
+  lv_label_set_text(lblZigbee, "Zigbee (via C6)");
+  #else
+  lv_label_set_text(lblZigbee, "Zigbee Mode");
+  #endif
+  lv_obj_align(lblZigbee, LV_ALIGN_TOP_LEFT, 0, 148);
+  
+  lv_obj_t *swZigbee = lv_switch_create(content);
+  lv_obj_set_size(swZigbee, 50, 24);
+  bool currentModeIsZigbee = (g_storage.getMode(::core::Storage::MODE_WIFI_MQTT) == ::core::Storage::MODE_ZIGBEE);
+  if (currentModeIsZigbee) lv_obj_add_state(swZigbee, LV_STATE_CHECKED); 
+  else lv_obj_clear_state(swZigbee, LV_STATE_CHECKED);
+  lv_obj_align(swZigbee, LV_ALIGN_TOP_RIGHT, 0, 144);
+  lv_obj_add_event_cb(swZigbee, [](lv_event_t *e){
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    int modeInt = zig ? 1 : 0;
+    requestModeChange(modeInt);
+  }, LV_EVENT_VALUE_CHANGED, NULL);
+  #endif
+
   // Editable WiFi fields
-  lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148);
-  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172);
-  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220);
-  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244);
+  #if HAS_ZIGBEE
+  const lv_coord_t wifi_y_offset = 30;  // Extra space for Zigbee toggle
+  #else
+  const lv_coord_t wifi_y_offset = 0;
+  #endif
+  
+  lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148 + wifi_y_offset);
+  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172 + wifi_y_offset);
+  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220 + wifi_y_offset);
+  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244 + wifi_y_offset);
 
   // MQTT fields
-  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292);
-  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316);
-  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364);
-  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388);
-  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436);
-  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460);
-  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508);
-  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532);
+  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292 + wifi_y_offset);
+  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316 + wifi_y_offset);
+  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364 + wifi_y_offset);
+  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388 + wifi_y_offset);
+  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436 + wifi_y_offset);
+  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460 + wifi_y_offset);
+  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508 + wifi_y_offset);
+  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532 + wifi_y_offset);
 
   // Pump Flow Rate Calibration section
   lv_obj_t *sepPump = lv_obj_create(content); lv_obj_remove_style_all(sepPump); lv_obj_set_size(sepPump, lv_pct(100), 2);
