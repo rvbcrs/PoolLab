@@ -32,7 +32,9 @@ void WiFiManager::setupEvents(){
         snprintf(host, sizeof(host), "%s-%06llX", _clientPrefix.c_str(), (unsigned long long)(chipid & 0xFFFFFFULL));
         ArduinoOTA.setHostname(host);
         ArduinoOTA.begin();
-        ESP_LOGI("WiFi","GOT_IP=%s hostname=%s", ip.c_str(), host);
+        ESP_LOGI("WiFi","GOT_IP=%s", ip.c_str());
+        ESP_LOGI("WiFi","mDNS hostname: %s.local", host);
+        ESP_LOGI("ArduinoOTA","OTA server at: %s.local:3232", host);
         if (_onIp) _onIp(ip);
         break; }
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:

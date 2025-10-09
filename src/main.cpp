@@ -1229,23 +1229,159 @@ void handleSafetyAlert(domain::SafetyAlert alert) {
   }
 }
 
+// P4 WiFi init task
+#if defined(BOARD_ESP32P4_43)
+static void p4WifiInitTask(void *arg) {
+  Serial.println("P4: WiFi task created, waiting 3s...");
+  Serial.flush();
+  
+  // Wait for system to stabilize
+  vTaskDelay(pdMS_TO_TICKS(3000));
+  
+  Serial.println("P4: WiFi task starting now");
+  Serial.flush();
+  
+  Serial.printf("P4: wifiOff=%d runMode=%d\n", wifiOff ? 1 : 0, (int)runMode);
+  Serial.flush();
+  
+  if (!wifiOff && runMode == core::Storage::MODE_WIFI_MQTT) {
+    Serial.println("P4: Getting SSID from storage...");
+    Serial.flush();
+    
+    String ssid = g_storage.getWifiSsid("");
+    String pass = g_storage.getWifiPass("");
+    
+    Serial.printf("P4: SSID length=%d\n", ssid.length());
+    Serial.flush();
+    
+    if (ssid.length() == 0) {
+      Serial.println("P4: Starting captive portal");
+      portal.setStorage(&g_storage);
+      portal.beginAP("PoolLab-Setup");
+      if (LVGL_LOCK()) { 
+        ui::setIp(WiFi.softAPIP().toString().c_str()); 
+        LVGL_UNLOCK(); 
+      }
+    } else {
+      Serial.println("P4: WiFi STA mode starting...");
+      Serial.flush();
+      
+      // Set WiFi to station mode and disconnect (like demo)
+      WiFi.mode(WIFI_STA);
+      Serial.println("P4: WiFi mode set to STA");
+      Serial.flush();
+      
+      WiFi.disconnect();
+      Serial.println("P4: WiFi disconnected");
+      Serial.flush();
+      
+      Serial.println("P4: Setting hostname...");
+      Serial.flush();
+      
+      // Set hostname for mDNS
+      uint64_t chipid = ESP.getEfuseMac();
+      char hostname[32];
+      snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+      WiFi.setHostname(hostname);
+      Serial.printf("P4: Hostname set to: %s.local\n", hostname);
+      Serial.flush();
+      
+      delay(100);
+      
+      Serial.println("P4: Setting up WiFi event handler...");
+      Serial.flush();
+      
+      // Configure event directly
+      WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+          Serial.printf("P4: Got IP: %s\n", WiFi.localIP().toString().c_str());
+          Serial.flush();
+          
+          if (USE_LVGL_UI) { 
+            g_ui_ip_text = WiFi.localIP().toString(); 
+            g_ui_ip_dirty = true; 
+          }
+          
+          // Setup ArduinoOTA with hostname
+          uint64_t chipid = ESP.getEfuseMac();
+          char hostname[32];
+          snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+          ArduinoOTA.setHostname(hostname);
+          ArduinoOTA.begin();
+          Serial.printf("P4: OTA server at: %s.local:3232\n", hostname);
+          Serial.flush();
+        }
+      });
+      
+      Serial.printf("P4: Connecting to SSID: %s\n", ssid.c_str());
+      Serial.flush();
+      WiFi.begin(ssid.c_str(), pass.c_str());
+      Serial.println("P4: WiFi.begin() called");
+      Serial.flush();
+      
+      Serial.println("P4: Setting SSID in UI...");
+      Serial.flush();
+      
+      if (USE_LVGL_UI) {
+        if (LVGL_LOCK()) { 
+          ui::setSsid(ssid.c_str()); 
+          LVGL_UNLOCK(); 
+        }
+      }
+      
+      Serial.println("P4: Starting WebUI...");
+      Serial.flush();
+      
+      // Start WebUI
+      webui.setStorage(&g_storage);
+      webui.setMotor(&g_motor);
+      webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC, &motorsEnabled, &M1_FLOW_RATE, &M2_FLOW_RATE);
+      if (!webui.isActive()) webui.begin();
+      
+      Serial.println("P4: Ensuring MQTT...");
+      Serial.flush();
+      
+      ensureMqtt();
+      
+      Serial.println("P4: MQTT setup done");
+      Serial.flush();
+    }
+  }
+  
+  Serial.println("P4: WiFi init task complete");
+  Serial.flush();
+  
+  // Delete this task
+  vTaskDelete(NULL);
+}
+#endif
+
 void setup() {
   // USB serial (do not block UI waiting for monitor)
   Serial.begin(115200);
+  
+  #if defined(BOARD_ESP32P4_43)
+  delay(500);  // Extra delay for P4 to let ESP-HOSTED/SDIO stabilize
+  #else
   delay(200);  // Increased delay for serial stability
+  #endif
+  
   Serial.setTimeout(50);
+  
+  
   Serial.println("\n\n=== PoolLab Boot Start ===");
   Serial.flush();
   core::Log::init(true);
   ESP_LOGI("BOOT", "Boot start");
   APP_BOOT_MS = millis();
-  Serial.println("MAC and MQTT ID initialized");
-  Serial.flush();
+  
   // Build unique MQTT clientId using chip MAC
   uint64_t mac = ESP.getEfuseMac();
   snprintf(MQTT_CLIENTID_BUF, sizeof(MQTT_CLIENTID_BUF), "pool-%04X%08X",
            (unsigned)((mac >> 32) & 0xFFFF),
            (unsigned)(mac & 0xFFFFFFFF));
+  Serial.println("MAC and MQTT ID initialized");
+  Serial.flush();
   // Avoid enabling debug output to USB CDC to prevent any hidden blocking
   // Serial.setDebugOutput(true);
 
@@ -1298,14 +1434,8 @@ void setup() {
     g_boardC6.earlyInit();
     g_boardC6.initPeripherals();
   #elif defined(BOARD_ESP32P4_43)
-    Serial.println("P4: Starting earlyInit()");
-    Serial.flush();
     g_boardP4.earlyInit();
-    Serial.println("P4: Starting initPeripherals()");
-    Serial.flush();
     g_boardP4.initPeripherals();
-    Serial.println("P4: Peripherals initialized");
-    Serial.flush();
   #else
   SPI.begin();
     #endif
@@ -1337,8 +1467,6 @@ void setup() {
   // Initialize display - different paths for different boards
   #if defined(BOARD_ESP32P4_43)
     // ESP32-P4: Initialize MIPI-DSI display (ST7701) - matching lvgl_demo_v8.ino
-    Serial.println("P4: Initializing MIPI-DSI display");
-    Serial.flush();
     ESP_LOGI("MAIN", "Initializing P4 MIPI-DSI display (480x800)");
     
     // Initialize I2C master bus for touch (I2C_NUM_1)
@@ -1353,30 +1481,16 @@ void setup() {
       .trans_queue_depth = 0,
       .flags = {.enable_internal_pullup = 1},
     };
-    Serial.println("P4: Creating I2C bus...");
-    Serial.flush();
     i2c_new_master_bus(&i2c_bus_conf, &p4_i2c_handle);
-    Serial.println("P4: I2C bus created");
-    Serial.flush();
     
     // Initialize LCD and touch (exact sequence like working example)
-    Serial.println("P4: Starting LCD begin()...");
-    Serial.flush();
     p4_lcd.begin();
-    Serial.println("P4: LCD begin() done");
-    Serial.flush();
     
-    Serial.println("P4: Starting touch begin()...");
-    Serial.flush();
     p4_touch.begin();  // Will call i2c_master_get_bus_handle(1) internally
-    Serial.println("P4: Touch begin() done");
-    Serial.flush();
     
     p4_touch.set_rotation(0);  // Keep touch in portrait mode, we'll transform in callback
     p4_lcd.get_handle(&p4_lcd_panels);
     
-    Serial.println("P4: Display fully initialized");
-    Serial.flush();
     ESP_LOGI("MAIN", "P4 display initialized");
   #elif USES_ARDUINO_GFX && !defined(USE_JC3248W535)
     // ESP32-C6: Initialize Arduino_GFX SPI display
@@ -1415,33 +1529,19 @@ void setup() {
   // io::touchBegin(); // MOVED to after LVGL init
 
   if (USE_LVGL_UI) {
-    Serial.println("P4: Starting LVGL UI init");
-    Serial.flush();
     // Initialize LVGL display
     lv_disp_t *disp = nullptr;
     
     #if defined(BOARD_ESP32P4_43)
     // ESP32-P4: Initialize LVGL with MIPI-DSI display in LANDSCAPE
-    Serial.println("P4: Calling lv_init()");
-    Serial.flush();
     lv_init();
-    Serial.println("P4: lv_init() done");
-    Serial.flush();
     // Use hardware resolution with software rotation
-    Serial.println("P4: Allocating LVGL buffers");
-    Serial.flush();
     size_t buffer_size = sizeof(lv_color_t) * LCD_V_RES * 100;  // 800 * 100 lines
     p4_buf = (lv_color_t *)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
     p4_buf1 = (lv_color_t *)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
     assert(p4_buf && p4_buf1 && "Failed to allocate LVGL buffers");
-    Serial.println("P4: Buffers allocated");
-    Serial.flush();
     
-    Serial.println("P4: Init draw buffer");
-    Serial.flush();
     lv_disp_draw_buf_init(&p4_draw_buf, p4_buf, p4_buf1, LCD_V_RES * 100);
-    Serial.println("P4: Draw buffer initialized");
-    Serial.flush();
     
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
@@ -1458,15 +1558,9 @@ void setup() {
       const int offsety2 = area->y2;
       p4_lcd.lcd_draw_bitmap(offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, &color_p->full);
     };
-    Serial.println("P4: Registering display driver");
-    Serial.flush();
     disp = lv_disp_drv_register(&disp_drv);
-    Serial.println("P4: Display driver registered");
-    Serial.flush();
     
     // Register DPI panel callback
-    Serial.println("P4: Registering DPI callbacks");
-    Serial.flush();
     esp_lcd_dpi_panel_event_callbacks_t cbs = {0};
     cbs.on_color_trans_done = [](esp_lcd_panel_handle_t panel_io, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx) -> bool {
       lv_disp_drv_t *drv = (lv_disp_drv_t *)user_ctx;
@@ -1474,12 +1568,8 @@ void setup() {
       return false;
     };
     esp_lcd_dpi_panel_register_event_callbacks(p4_lcd_panels.panel, &cbs, &disp_drv);
-    Serial.println("P4: DPI callbacks registered");
-    Serial.flush();
     
     // Register touch input for portrait mode with debouncing
-    Serial.println("P4: Registering touch input");
-    Serial.flush();
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
@@ -1524,7 +1614,6 @@ void setup() {
           data->point.y = touchY;
           
           if (!was_pressed) {
-            Serial.printf("Touch: x=%d, y=%d\n", touchX, touchY);
             last_press_time = now;
             stable_x = touchX;
             stable_y = touchY;
@@ -1537,15 +1626,9 @@ void setup() {
         }
       }
     };
-    Serial.println("P4: Registering input device driver");
-    Serial.flush();
     lv_indev_drv_register(&indev_drv);
-    Serial.println("P4: Input device registered");
-    Serial.flush();
     
     ESP_LOGI("MAIN", "P4 LVGL initialized (%dx%d)", LCD_H_RES, LCD_V_RES);
-    Serial.println("P4: LVGL fully initialized");
-    Serial.flush();
     #elif !defined(USE_JC3248W535)
     // C6/S3: Initialize LVGL via Arduino_GFX bridge
     displayBridge = new core::DisplayBridge(gfx);
@@ -1560,22 +1643,12 @@ void setup() {
     #if defined(BOARD_ESP32S3_35)
     LVGL_LOCK();
     #endif
-    Serial.println("P4: Before ui::init");
-    Serial.flush();
     ESP_LOGI("UI", "Before ui::init; res=%dx%d", (int)lv_disp_get_hor_res(NULL), (int)lv_disp_get_ver_res(NULL));
     ui::init(disp);
-    Serial.println("P4: After ui::init");
-    Serial.flush();
     ESP_LOGI("UI", "After ui::init");
     // Ensure we remove the temporary banner and any prior objects before building UI
-    Serial.println("P4: Cleaning screen");
-    Serial.flush();
     lv_obj_clean(lv_scr_act());
-    Serial.println("P4: Screen cleaned");
-    Serial.flush();
     // Apply a dark theme so text contrasts on black backgrounds (do this under lock)
-    Serial.println("P4: Applying theme");
-    Serial.flush();
     {
       lv_theme_t *th = lv_theme_default_init(
         disp,
@@ -1586,8 +1659,6 @@ void setup() {
       );
       lv_disp_set_theme(disp, th);
     }
-    Serial.println("P4: Theme applied");
-    Serial.flush();
     // Build a safe baseline only for S3 JC path; C6 will build full tile UI below
     #if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
     ui::build(false);
@@ -1618,11 +1689,7 @@ void setup() {
     }
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
-    Serial.println("P4: Starting storage init");
-    Serial.flush();
     g_storage.begin(false);
-    Serial.println("P4: Storage initialized");
-    Serial.flush();
     PH_MIN = g_storage.getPhMin(PH_MIN);
     PH_MAX = g_storage.getPhMax(PH_MAX);
     ORP_MIN = g_storage.getOrpMin(ORP_MIN);
@@ -1650,8 +1717,6 @@ void setup() {
     runMode = g_storage.getMode(core::Storage::MODE_ZIGBEE);
   #endif
     savedMode = runMode;
-    Serial.println("P4: Config loaded, setting up handlers");
-    Serial.flush();
     // Connect UI slider handlers to storage-backed speeds
     ui::Handlers h; h.onSpeedChange = [](int idx, int value){
       value = constrain(value, 0, 100);
@@ -1803,17 +1868,9 @@ void setup() {
       ESP_LOGI("SAFETY", "📱 Check MQTT topics: pool/alert/* and WhatsApp notifications");
       ESP_LOGI("SAFETY", "⚠️ Emergency stop ACTIVE - use 'Reset' button to clear");
     };
-    Serial.println("P4: Configuring UI handlers");
-    Serial.flush();
     ui::configureHandlers(h);
-    Serial.println("P4: Handlers configured");
-    Serial.flush();
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
-    Serial.println("P4: Thresholds set");
-    Serial.flush();
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
-    Serial.println("P4: Initial speeds set");
-    Serial.flush();
 
     // Theme already set earlier under lock for S3; C6 keeps default path
 
@@ -1956,8 +2013,6 @@ void setup() {
     }
     #endif
 
-    Serial.println("P4: Building LVGL UI");
-    Serial.flush();
     // Build LVGL UI
     auto build_lvgl_ui = [=](){
       lv_obj_t *scr = lv_scr_act();
@@ -2375,53 +2430,33 @@ void setup() {
     #else
       #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
         // Build full PoolLab UI (now with debounced touch for P4 landscape)
-        Serial.println("P4: Calling ui::build(false)");
-        Serial.flush();
         ui::build(false);
-        Serial.println("P4: ui::build() completed");
-        Serial.flush();
         ui::updateValues();
-        Serial.println("P4: ui::updateValues() completed");
-        Serial.flush();
         // Force LVGL to render the first frame immediately
         lv_timer_handler();
         delay(50);
         lv_timer_handler();
-        Serial.println("P4: First LVGL frame rendered");
-        Serial.flush();
       #endif
     #endif
-    Serial.println("P4: UI fully built");
-    Serial.flush();
     ESP_LOGI("UI", "After layout timer");
     #if defined(BOARD_ESP32S3_35)
     LVGL_UNLOCK();
     #endif
   }
-  Serial.println("P4: LVGL UI setup complete, starting peripherals init");
-  Serial.flush();
 
   // Begin touch AFTER LVGL init (never on S3 JC path; BSP handles it; P4 inits touch earlier)
   #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)) && !defined(BOARD_ESP32P4_43)
   touchDriver.begin();
   #endif
-  Serial.println("P4: Touch driver ready");
-  Serial.flush();
   // If touch is noisy at boot it can stall UI. Add a short debounce warmup.
   delay(50);
 
   // Init buttons (BOOT) with pull-up and debounce state
   // Initialize debounced buttons helper
-  Serial.println("P4: Initializing buttons");
-  Serial.flush();
   g_buttons.begin(io::ButtonPins{ BTN_PIN1, BTN_PIN2 });
-  Serial.println("P4: Buttons initialized");
-  Serial.flush();
 
   // Init Zigbee client only on platforms that support it and when enabled
   #if ZB_ENABLED && !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-  Serial.println("P4: Initializing Zigbee");
-  Serial.flush();
   io::ZigbeeConfig zcfg{};
   zigbee.begin(zcfg);
   zbPrefs.begin(ZB_PREF_NS, true);
@@ -2500,39 +2535,36 @@ void setup() {
   }
 
   // Respect saved mode; do not force Zigbee on C6
+  
+  // TB6612 motor init - MUST be before any goto for P4!
+  if (MOTOR_ENABLE) {
+    g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
+    // Register safety alert callback for MQTT + WhatsApp notifications
+    g_motor.setAlertCallback(handleSafetyAlert);
+    ESP_LOGI("SAFETY", "Alert callback registered (MQTT + WhatsApp)");
+  }
 
   #if !defined(BOARD_ESP32P4_43)
   Serial.println("Starting WiFi/MQTT init");
   Serial.flush();
-  #endif
-  
-  // P4+C6: Defer WiFi init to loop() to avoid blocking LVGL rendering with SDIO errors
-  #if defined(BOARD_ESP32P4_43)
-  Serial.println("P4: Deferring WiFi init to loop() (avoiding SDIO blocking in setup)");
+  #else
+  Serial.println("WiFi/MQTT init deferred (P4+C6 SDIO)");
   Serial.flush();
-  static bool p4_wifi_init_done = false;
-  #define P4_WIFI_DEFERRED
   goto skip_wifi_init_p4;
   #endif
   
   // WiFi + MQTT
   // Start or stop WiFi based on saved mode at boot (respect prior forced-off, e.g. commissioning)
   if (!wifiOff) {
-    Serial.println("P4: WiFi not disabled, checking mode");
-    Serial.flush();
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
       // Load persisted WiFi creds first so we can decide between STA vs captive portal
       WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
       WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
       if (WIFI_SSID.length() == 0) {
-        Serial.println("P4: No WiFi SSID, starting captive portal");
-        Serial.flush();
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
         portal.setStorage(&g_storage);
         portal.beginAP("PoolLab-Setup");
-        Serial.println("P4: Captive portal started");
-        Serial.flush();
         delay(1000);  // Give captive portal time to fully initialize
         if (USE_LVGL_UI) {
           #if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
@@ -2541,8 +2573,6 @@ void setup() {
           ui::setIp(WiFi.softAPIP().toString().c_str());
           #endif
         }
-        Serial.println("P4: Setup() completing...");
-        Serial.flush();
       } else {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: WiFi STA starting");
@@ -2557,7 +2587,7 @@ void setup() {
             ui::setSsid(ssid.c_str());
             #endif
           }
-          // Ensure WebUI started on both boards identiek
+          // Ensure WebUI started on both boards
           webui.setStorage(&g_storage);
           webui.setMotor(&g_motor);
           webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC, &motorsEnabled, &M1_FLOW_RATE, &M2_FLOW_RATE);
@@ -2595,14 +2625,8 @@ void setup() {
   
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
-  // TB6612 pins
-  if (MOTOR_ENABLE) {
-    g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
-    // Register safety alert callback for MQTT + WhatsApp notifications
-    g_motor.setAlertCallback(handleSafetyAlert);
-    ESP_LOGI("SAFETY", "Alert callback registered (MQTT + WhatsApp)");
-  }
-
+  // TB6612 motor init already done above (before P4 goto)
+  
   // Optionally send Tuya queries after boot (requires TX pin wired!)
   #if !USE_ANALOG_SENSORS
   if (SEND_ON_BOOT) {
@@ -2619,107 +2643,30 @@ void setup() {
   }
   #endif
 
-  // P4: Jump label for deferred WiFi init
-  #if defined(BOARD_ESP32P4_43)
-  skip_wifi_init_p4:
-  Serial.println("P4: Setup() complete, WiFi will init in loop()");
-  Serial.flush();
-  #endif
-}
+         #if defined(BOARD_ESP32P4_43)
+         skip_wifi_init_p4:
+         ;  // Empty statement to fix C++ warning
+         // Start WiFi init in separate task like the demo
+         Serial.println("P4: About to create WiFi init task");
+         Serial.flush();
+         ESP_LOGI("MAIN", "P4: Creating WiFi init task");
+         BaseType_t result = xTaskCreatePinnedToCore(p4WifiInitTask, "P4 WiFi Init", 4096, NULL, 4, NULL, 1);
+         if (result == pdPASS) {
+           Serial.println("P4: WiFi task creation SUCCESS");
+           Serial.flush();
+           ESP_LOGI("MAIN", "P4: WiFi init task created on core 1");
+         } else {
+           Serial.println("P4: WiFi task creation FAILED!");
+           Serial.flush();
+           ESP_LOGE("MAIN", "P4: Failed to create WiFi init task!");
+         }
+         #endif
+         
+         ESP_LOGI("BOOT", "Setup complete");
+         Serial.println("Setup done");
+      }
 
 void loop() {
-  // P4: Deferred WiFi init (do once after a few LVGL frames have rendered)
-  #if defined(BOARD_ESP32P4_43)
-  static bool p4_wifi_init_done = false;
-  static uint32_t p4_wifi_init_time = 0;
-  if (!p4_wifi_init_done) {
-    if (p4_wifi_init_time == 0) {
-      p4_wifi_init_time = millis();
-      Serial.println("P4: Starting deferred WiFi init countdown (1s)");
-    } else if (millis() - p4_wifi_init_time > 1000) {
-      Serial.println("P4: Starting deferred WiFi init NOW");
-      Serial.flush();
-      
-      // P4+C6: Initialize WiFi ONCE, matching Wifi_scan.ino approach
-      // CRITICAL: Do NOT switch modes after init - ESP-HOSTED driver cannot reconfigure
-      Serial.println("P4: Initializing WiFi (one-time, no mode switching)");
-      
-      if (!wifiOff && runMode == core::Storage::MODE_WIFI_MQTT) {
-        String ssid = g_storage.getWifiSsid("");
-        if (ssid.length() == 0) {
-          Serial.println("P4: No WiFi SSID, starting captive portal in AP mode");
-          // Start in AP mode only (no STA)
-          WiFi.mode(WIFI_AP);
-          delay(100);
-          portal.setStorage(&g_storage);
-          portal.beginAP("PoolLab-Setup");
-          if (LVGL_LOCK()) { 
-            ui::setIp(WiFi.softAPIP().toString().c_str()); 
-            LVGL_UNLOCK(); 
-          }
-          Serial.println("P4: Captive portal started in loop()");
-        } else {
-          Serial.printf("P4: Found WiFi SSID: %s, starting in STA mode only\n", ssid.c_str());
-          // Start in STA mode only (matching Wifi_scan.ino)
-          WiFi.mode(WIFI_STA);
-          WiFi.disconnect();
-          delay(100);
-          
-          // Now connect (direct WiFi.begin() to avoid mode switching)
-          String pass = g_storage.getWifiPass("");
-          WiFi.setHostname("poollab");
-          WiFi.begin(ssid.c_str(), pass.c_str());
-          
-          // Set up WiFi event handler for ArduinoOTA, IP callback, WebUI, and MQTT
-          WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
-            if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-              String ip = WiFi.localIP().toString();
-              ArduinoOTA.setHostname("poollab");
-              ArduinoOTA.begin();
-              Serial.printf("P4: GOT_IP=%s, OTA started\n", ip.c_str());
-              if (USE_LVGL_UI) { 
-                g_ui_ip_text = ip; 
-                g_ui_ip_dirty = true; 
-              }
-              
-              // Start WebUI (matching setup() code)
-              webui.setStorage(&g_storage);
-              webui.setMotor(&g_motor);
-              webui.setRefs(&PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &M1_SPEED_PC, &M2_SPEED_PC, &motorsEnabled, &M1_FLOW_RATE, &M2_FLOW_RATE);
-              if (!webui.isActive()) {
-                webui.begin();
-                Serial.println("P4: WebUI started");
-              }
-              
-              // Initialize MQTT if configured (matching setup() code)
-              // Load MQTT credentials from storage first
-              MQTT_HOST = g_storage.getMqttHost(MQTT_HOST);
-              MQTT_PORT = g_storage.getMqttPort(MQTT_PORT);
-              MQTT_USER = g_storage.getMqttUser(MQTT_USER);
-              MQTT_PASS = g_storage.getMqttPass(MQTT_PASS);
-              
-              if (MQTT_HOST.length() > 0) {
-                mqttClient.begin(MQTT_HOST.c_str(), MQTT_PORT, MQTT_USER.c_str(), MQTT_PASS.c_str(), MQTT_CLIENTID);
-                Serial.printf("P4: MQTT initialized (host=%s, user=%s)\n", MQTT_HOST.c_str(), MQTT_USER.c_str());
-              }
-            }
-          });
-          
-          if (LVGL_LOCK()) { 
-            ui::setSsid(ssid.c_str()); 
-            LVGL_UNLOCK(); 
-          }
-          Serial.println("P4: WiFi.begin() called, waiting for connection...");
-        }
-      }
-      
-      p4_wifi_init_done = true;
-      Serial.println("P4: Deferred WiFi init complete");
-      Serial.flush();
-    }
-  }
-  #endif
-  
   if (USE_LVGL_UI) {
     #if !defined(BOARD_ESP32S3_35)
     lv_timer_handler();
@@ -2976,20 +2923,8 @@ void loop() {
 
   // WiFi/MQTT service loop
   static uint32_t lastConnectAttempt = 0;
-  static uint32_t lastWifiStatusLog = 0;
   uint32_t now = millis();
   
-  // P4: Debug WiFi status every 5 seconds
-  #if defined(BOARD_ESP32P4_43)
-  if (now - lastWifiStatusLog > 5000) {
-    lastWifiStatusLog = now;
-    wl_status_t status = WiFi.status();
-    Serial.printf("P4: WiFi status=%d (0=IDLE, 1=NO_SSID, 3=CONNECTED, 4=CONNECT_FAILED, 6=DISCONNECTED)\n", status);
-    if (status == WL_CONNECTED) {
-      Serial.printf("P4: WiFi CONNECTED! IP=%s\n", WiFi.localIP().toString().c_str());
-    }
-  }
-  #endif
   
   if (!wifiOff) {
     if (runMode == core::Storage::MODE_WIFI_MQTT) {
@@ -3017,12 +2952,6 @@ void loop() {
   #endif
 
   // Motor control policy (skip if forced-on test is active)
-  static uint32_t lastMotorCheckMs = 0;
-  if (millis() - lastMotorCheckMs > 5000) {
-    lastMotorCheckMs = millis();
-    ESP_LOGI("MOTOR", "Check: MOTOR_ENABLE=%d motorsEnabled=%d", MOTOR_ENABLE, motorsEnabled);
-  }
-  
   if (MOTOR_ENABLE && motorsEnabled) {
     static uint32_t lastLogMs = 0;
     uint32_t nowMs = millis();
@@ -3088,6 +3017,10 @@ void loop() {
           }
           lastEmergencyState = currentEmergencyState;
         }
+      #elif defined(BOARD_ESP32P4_43)
+        // P4: Use module UI like S3
+        ui::setPumpStats(m1Running, m1Stats.sessionVolumeMl, m1Stats.currentFlowMlMin, 
+                         m2Running, m2Stats.sessionVolumeMl, m2Stats.currentFlowMlMin);
       #else
         // C6: Legacy direct LVGL object manipulation
         if (lv_img_pump_ph && lv_img_pump_ph_shadow && lv_lbl_pump_ph_stats) {
