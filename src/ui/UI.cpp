@@ -10,6 +10,13 @@
 #endif
 
 extern ::core::Storage g_storage;
+extern "C" void requestModeChange(int mode);
+
+#if HAS_ZIGBEE
+// Zigbee link icon images
+LV_IMG_DECLARE(link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+LV_IMG_DECLARE(link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+#endif
 
 namespace ui {
 
@@ -39,6 +46,7 @@ static bool g_pumpPh = false, g_pumpOrp = false;
 static float g_phSession = 0, g_phFlow = 0, g_orpSession = 0, g_orpFlow = 0;
 static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
 static lv_obj_t *lv_pump_ph_stats = nullptr, *lv_pump_orp_stats = nullptr;
+static lv_obj_t *lv_img_link = nullptr;  // Zigbee connection indicator
 // Debounce for on-screen keyboard (avoid double insert)
 static uint32_t g_kb_last_ms = 0; static int16_t g_kb_last_id = -1;
 static lv_obj_t *lv_ta_ssid = nullptr;
@@ -320,9 +328,15 @@ void build(bool safeBaseline){
     return card;
   };
 
-  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
   lv_obj_t *card_ph = nullptr, *card_orp = nullptr, *card_tmp = nullptr;
   lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
+
+  // ESP32-P4 is wide enough for 3-card layout even if height is smaller
+  #if defined(BOARD_ESP32P4_43)
+  bool small_layout = false;
+  #else
+  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
+  #endif
   if (small_layout) {
     // 2-tile layout for C6
     lv_coord_t cw = (inner_w - col_gap) / 2;
@@ -343,17 +357,14 @@ void build(bool safeBaseline){
   lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
   lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
   // Pump stats labels (above pump icon, with descriptive text)
-  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 125); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
-  // Pump icons (module UI) — placed below stats labels with more spacing from bottom
-  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 0, 155); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
-
-  // Temp label: only in 3-card layout; in small layout we skip
-  if (!small_layout && card_tmp) {
+  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+  // Pump active icons
+  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  if (card_tmp) {
     lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
     lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
-    // Store temp card for dynamic color updates
     lv_card_temp = card_tmp;
   }
 
@@ -490,7 +501,7 @@ void updateValues(){
   
   if (lv_pump_ph && lv_pump_orp && lv_pump_ph_stats && lv_pump_orp_stats) {
     // Check if pH pump state or stats changed
-    snprintf(ph_buf, sizeof(ph_buf), "%.0fml\n@%.0fml/min", g_phSession, g_phFlow);
+    snprintf(ph_buf, sizeof(ph_buf), "%.0fml @ %.0fml/min", g_phSession, g_phFlow);
     if (g_pumpPh != last_pump_ph || strcmp(ph_buf, last_ph_text) != 0) {
       last_pump_ph = g_pumpPh;
       strncpy(last_ph_text, ph_buf, sizeof(last_ph_text) - 1);
@@ -504,7 +515,7 @@ void updateValues(){
       }
     }
     // Check if ORP pump state or stats changed
-    snprintf(orp_buf, sizeof(orp_buf), "%.0fml\n@%.0fml/min", g_orpSession, g_orpFlow);
+    snprintf(orp_buf, sizeof(orp_buf), "%.0fml @ %.0fml/min", g_orpSession, g_orpFlow);
     if (g_pumpOrp != last_pump_orp || strcmp(orp_buf, last_orp_text) != 0) {
       last_pump_orp = g_pumpOrp;
       strncpy(last_orp_text, orp_buf, sizeof(last_orp_text) - 1);
@@ -525,6 +536,14 @@ void updateValues(){
   static char buf_ssid[96] = "SSID: --";
   static char temp_str[80] = {0};
   
+  #if HAS_ZIGBEE
+  // Check current mode to show IP or Zigbee icon
+  ::core::Storage::Mode currentMode = ::g_storage.getMode(::core::Storage::MODE_WIFI_MQTT);
+  if (currentMode == ::core::Storage::MODE_WIFI_MQTT) {
+    // WiFi mode: show IP/SSID/MQTT, hide link icon
+    if (lv_img_link) { lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN); }
+  #endif
+  
   if (lv_lbl_ip) {
     if (WiFi.status() == WL_CONNECTED) {
       IPAddress ip = WiFi.localIP();
@@ -534,6 +553,9 @@ void updateValues(){
       strncpy(buf_ip, "IP: --", sizeof(buf_ip) - 1);
     }
     lv_label_set_text_static(lv_lbl_ip, buf_ip);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
   if (lv_lbl_mqtt) {
     String host = ::g_storage.getMqttHost("");
@@ -545,6 +567,9 @@ void updateValues(){
       strncpy(buf_mqtt, "MQTT: --", sizeof(buf_mqtt) - 1);
     }
     lv_label_set_text_static(lv_lbl_mqtt, buf_mqtt);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_mqtt, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
   if (lv_lbl_ssid) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -555,7 +580,35 @@ void updateValues(){
       strncpy(buf_ssid, "SSID: --", sizeof(buf_ssid) - 1);
     }
     lv_label_set_text_static(lv_lbl_ssid, buf_ssid);
+    #if HAS_ZIGBEE
+    lv_obj_clear_flag(lv_lbl_ssid, LV_OBJ_FLAG_HIDDEN);
+    #endif
   }
+  
+  #if HAS_ZIGBEE
+  } else {
+    // Zigbee mode: hide IP/SSID/MQTT, show link icon
+    if (lv_lbl_ip) { lv_obj_add_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_lbl_mqtt) { lv_obj_add_flag(lv_lbl_mqtt, LV_OBJ_FLAG_HIDDEN); }
+    if (lv_lbl_ssid) { lv_obj_add_flag(lv_lbl_ssid, LV_OBJ_FLAG_HIDDEN); }
+    
+    // Show Zigbee link indicator (create if needed)
+    if (!lv_img_link) {
+      lv_obj_t *root = lv_scr_act();
+      if (root) {
+        lv_img_link = lv_img_create(root);
+        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+        lv_obj_set_style_img_recolor_opa(lv_img_link, LV_OPA_COVER, 0);
+        lv_obj_set_style_img_recolor(lv_img_link, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
+        lv_obj_align(lv_img_link, LV_ALIGN_BOTTOM_RIGHT, -10, -30);
+      }
+    }
+    if (lv_img_link) {
+      lv_obj_clear_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN);
+      // TODO: Update icon based on Zigbee connection status from C6
+    }
+  }
+  #endif
 }
 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
@@ -572,6 +625,14 @@ void setPumpActive(bool phActive, bool orpActive){
 void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, float orpSession, float orpFlow){
   if (onSettings) return;
   
+  // Check if values actually changed to reduce logging spam
+  static bool last_phActive = false, last_orpActive = false;
+  static float last_phSession = 0, last_phFlow = 0, last_orpSession = 0, last_orpFlow = 0;
+  
+  bool changed = (phActive != last_phActive || orpActive != last_orpActive ||
+                  fabs(phSession - last_phSession) > 0.1f || fabs(phFlow - last_phFlow) > 0.1f ||
+                  fabs(orpSession - last_orpSession) > 0.1f || fabs(orpFlow - last_orpFlow) > 0.1f);
+  
   // Just store values - they'll be applied by updateValues() which runs in LVGL thread
   // This is MUCH safer than async calls which can cause memory corruption
   g_pumpPh = phActive;
@@ -581,11 +642,19 @@ void setPumpStats(bool phActive, float phSession, float phFlow, bool orpActive, 
   g_orpSession = orpSession;
   g_orpFlow = orpFlow;
   
-  // Debug: log pump stats (only when active to reduce spam)
-  if (phActive || orpActive) {
+  // Debug: log pump stats only when values actually change
+  if (changed && (phActive || orpActive)) {
     ESP_LOGI("UI", "PumpStats: pH=%d(%.1fml@%.1fml/min) ORP=%d(%.1fml@%.1fml/min)", 
              phActive, phSession, phFlow, orpActive, orpSession, orpFlow);
   }
+  
+  // Update last values
+  last_phActive = phActive;
+  last_orpActive = orpActive;
+  last_phSession = phSession;
+  last_phFlow = phFlow;
+  last_orpSession = orpSession;
+  last_orpFlow = orpFlow;
 }
 
 void setIp(const char *ipText){
@@ -606,8 +675,10 @@ void setSsid(const char *ssid){
 void showSettings(){
   onSettings = true;
   lv_lbl_ph = lv_lbl_orp = lv_lbl_orp_unit = lv_lbl_temp = lv_lbl_ip = lv_lbl_ssid = nullptr;
-  lv_obj_t *scr = lv_scr_act();
-  lv_obj_clean(scr);
+  
+  // Create a new screen instead of cleaning the current one to avoid crashes with software rotation
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_scr_load(scr);
 
   const lv_coord_t scr_w = lv_disp_get_hor_res(NULL);
   const lv_coord_t scr_h = lv_disp_get_ver_res(NULL);
@@ -693,21 +764,51 @@ void showSettings(){
   attach_interceptor(lv_slider_m1);
   attach_interceptor(lv_slider_m2);
 
+  // Zigbee mode toggle (for boards with HAS_ZIGBEE support)
+  #if HAS_ZIGBEE
+  lv_obj_t *lblZigbee = lv_label_create(content); 
+  #if defined(BOARD_ESP32P4_43)
+  lv_label_set_text(lblZigbee, "Zigbee (via C6)");
+  #else
+  lv_label_set_text(lblZigbee, "Zigbee Mode");
+  #endif
+  lv_obj_align(lblZigbee, LV_ALIGN_TOP_LEFT, 0, 148);
+  
+  lv_obj_t *swZigbee = lv_switch_create(content);
+  lv_obj_set_size(swZigbee, 50, 24);
+  bool currentModeIsZigbee = (g_storage.getMode(::core::Storage::MODE_WIFI_MQTT) == ::core::Storage::MODE_ZIGBEE);
+  if (currentModeIsZigbee) lv_obj_add_state(swZigbee, LV_STATE_CHECKED); 
+  else lv_obj_clear_state(swZigbee, LV_STATE_CHECKED);
+  lv_obj_align(swZigbee, LV_ALIGN_TOP_RIGHT, 0, 144);
+  lv_obj_add_event_cb(swZigbee, [](lv_event_t *e){
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    int modeInt = zig ? 1 : 0;
+    requestModeChange(modeInt);
+  }, LV_EVENT_VALUE_CHANGED, NULL);
+  #endif
+
   // Editable WiFi fields
-  lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148);
-  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172);
-  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220);
-  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244);
+  #if HAS_ZIGBEE
+  const lv_coord_t wifi_y_offset = 30;  // Extra space for Zigbee toggle
+  #else
+  const lv_coord_t wifi_y_offset = 0;
+  #endif
+  
+  lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148 + wifi_y_offset);
+  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172 + wifi_y_offset);
+  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220 + wifi_y_offset);
+  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244 + wifi_y_offset);
 
   // MQTT fields
-  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292);
-  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316);
-  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364);
-  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388);
-  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436);
-  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460);
-  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508);
-  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532);
+  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292 + wifi_y_offset);
+  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316 + wifi_y_offset);
+  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364 + wifi_y_offset);
+  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388 + wifi_y_offset);
+  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436 + wifi_y_offset);
+  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460 + wifi_y_offset);
+  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508 + wifi_y_offset);
+  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532 + wifi_y_offset);
 
   // Pump Flow Rate Calibration section
   lv_obj_t *sepPump = lv_obj_create(content); lv_obj_remove_style_all(sepPump); lv_obj_set_size(sepPump, lv_pct(100), 2);

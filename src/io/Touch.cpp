@@ -1,6 +1,6 @@
 #include "Touch.h"
 #include <Arduino.h>
-#if !defined(BOARD_ESP32S3_35)
+#if !defined(BOARD_ESP32S3_35) && !defined(BOARD_ESP32P4_43)
 #include <driver/i2c_master.h>
 #include "core/I2CBus.h"
 #endif
@@ -23,7 +23,7 @@ static void* s_i2c_bus = nullptr;   // i2c_master_bus_handle_t (non-S3)
 static void* s_i2c_dev = nullptr;   // i2c_master_dev_handle_t (non-S3)
 
 bool i2cWrite8(uint8_t addr, uint8_t reg, const uint8_t* data, uint32_t len){
-#if defined(BOARD_ESP32S3_35)
+#if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
   (void)addr; (void)reg; (void)data; (void)len; return false;
 #else
   if (s_i2c_dev == nullptr) return false;
@@ -39,7 +39,7 @@ bool i2cWrite8(uint8_t addr, uint8_t reg, const uint8_t* data, uint32_t len){
 }
 
 bool i2cRead(uint8_t addr, uint8_t reg, uint8_t* buf, uint32_t len){
-#if defined(BOARD_ESP32S3_35)
+#if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
   (void)addr; (void)reg; (void)buf; (void)len; return false;
 #else
   (void)addr; // device address fixed in handle
@@ -50,8 +50,8 @@ bool i2cRead(uint8_t addr, uint8_t reg, uint8_t* buf, uint32_t len){
 
 void touchBegin(){
   // Initialize ESP-IDF I2C master bus and device
-#if defined(BOARD_ESP32S3_35)
-  // S3: no Touch I2C to avoid mixing drivers; rely on BSP or disabled touch
+#if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
+  // S3/P4: no Touch I2C here (P4 uses GT911 initialized in main.cpp)
   (void)TOUCH_SDA; (void)TOUCH_SCL;
 #else
   s_i2c_bus = core::i2c_bus_init(TOUCH_SDA, TOUCH_SCL);

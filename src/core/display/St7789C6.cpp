@@ -1,4 +1,5 @@
 #if !defined(USE_JC3248W535)
+#if !defined(BOARD_ESP32P4_43)
 #include "St7789C6.h"
 
 namespace core {
@@ -107,5 +108,5 @@ void St7789C6::begin(){
 
 } // namespace core
 
-#endif
-
+#endif // !defined(BOARD_ESP32P4_43)
+#endif // !defined(USE_JC3248W535)

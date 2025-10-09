@@ -1,4 +1,4 @@
-#if !defined(USE_JC3248W535)
+#if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
 #include "DisplayBridge.h"
 
 namespace core {

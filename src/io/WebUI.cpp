@@ -78,8 +78,16 @@ void WebUI::handleSettings(){
   // Network mode (only if Zigbee compiled in)
 #if HAS_ZIGBEE
   html += F("<h4 style='margin-top:20px;color:#4caf50'>📡 Network Mode</h4>");
-  core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_ZIGBEE) : core::Storage::MODE_ZIGBEE;
-  html += F("<label>Mode</label><div class='row'><select name='mode'><option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option><option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option></select></div>");
+  core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_WIFI_MQTT) : core::Storage::MODE_WIFI_MQTT;
+  html += F("<label>Mode</label><div class='row'><select name='mode'>");
+  html += F("<option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option>");
+  html += F("<option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); 
+  #if defined(BOARD_ESP32P4_43)
+  html += F(">Zigbee (via C6)</option>");
+  #else
+  html += F(">Zigbee</option>");
+  #endif
+  html += F("</select></div>");
 #endif
   
   // pH Section
