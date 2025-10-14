@@ -18,6 +18,10 @@ LV_IMG_DECLARE(link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
 LV_IMG_DECLARE(link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
 #endif
 
+// Custom fonts for larger screens
+LV_FONT_DECLARE(lv_font_source_code_pro_36);
+LV_FONT_DECLARE(lv_font_source_code_pro_36_bold);
+
 namespace ui {
 
 static lv_obj_t *lv_tile_main = nullptr;
@@ -26,6 +30,7 @@ static lv_obj_t *lv_lbl_ph = nullptr;
 static lv_obj_t *lv_lbl_orp = nullptr;
 static lv_obj_t *lv_lbl_orp_unit = nullptr;
 static lv_obj_t *lv_lbl_temp = nullptr;
+static lv_obj_t *lv_lbl_temp_unit = nullptr;
 static lv_obj_t *lv_card_temp = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
 static lv_obj_t *lv_emergency_banner = nullptr;  // Emergency stop banner
@@ -238,9 +243,13 @@ void build(bool safeBaseline){
 
     // Temperature label under pH
     lv_lbl_temp = lv_label_create(scr);
-    lv_label_set_text(lv_lbl_temp, "--.- C");
+    lv_label_set_text(lv_lbl_temp, "--.-");
     lv_obj_align(lv_lbl_temp, LV_ALIGN_LEFT_MID, 10, 24);
     lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0);
+    lv_lbl_temp_unit = lv_label_create(scr);
+    lv_label_set_text(lv_lbl_temp_unit, " °C");
+    lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
+    lv_obj_set_style_text_color(lv_lbl_temp_unit, lv_color_white(), 0);
 
     // IP bottom-right
     lv_lbl_ip = lv_label_create(scr);
@@ -324,7 +333,11 @@ void build(bool safeBaseline){
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_shadow_width(card, 10, 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
+    #if defined(BOARD_ESP32P4_43)
+    lv_obj_set_size(card, cw, 220);  // Even taller for P4 with larger fonts and pump icons
+    #else
     lv_obj_set_size(card, cw, 195);  // Increased from 160 to 195 for pump stats and spacing
+    #endif
     return card;
   };
 
@@ -350,29 +363,58 @@ void build(bool safeBaseline){
     card_tmp = make_card(row, lv_palette_darken(LV_PALETTE_AMBER, 4), cw);
   }
 
-  // Icons + labels
+  // Use larger fonts for sensor values on P4 (48px for maximum readability)
+  #if defined(BOARD_ESP32P4_43)
+  const lv_font_t *value_font = &lv_font_montserrat_48;
+  const lv_font_t *stats_font = &lv_font_montserrat_14;
+  #else
+  const lv_font_t *value_font = &lv_font_montserrat_28;
+  const lv_font_t *stats_font = &lv_font_montserrat_12;
+  #endif
+  
+  // Icons + labels - adjust positions for P4 with larger fonts
+  #if defined(BOARD_ESP32P4_43)
+  const int value_y = 35;      // Higher up for 48px font
+  const int sub_lbl_y = 100;   // Lower for Target/Min/Max
+  const int sub_vals_y = 118;  // Lower for values
+  const int pump_stats_y = 140; // Lower for pump stats
+  const int unit_spacing = 6;   // Much closer spacing between value and unit for P4 (was 12)
+  #else
+  const int value_y = 44;
+  const int sub_lbl_y = 78;
+  const int sub_vals_y = 96;
+  const int pump_stats_y = 120;
+  const int unit_spacing = 6;
+  #endif
+  
   lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
-  lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, 44);
+  lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, value_font, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, value_y);
   lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
-  lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, 44);
-  lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+  lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, value_font, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, value_y);
+  lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, unit_spacing, 0);
   // Pump stats labels (above pump icon, with descriptive text)
-  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, 120); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
-  // Pump active icons
-  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, 0); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, stats_font, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, stats_font, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
+  // Pump active icons - position higher for P4 (away from text)
+  #if defined(BOARD_ESP32P4_43)
+  const int pump_icon_y = -10;  // Slightly higher for P4 to avoid text overlap (was -25)
+  #else
+  const int pump_icon_y = 0;    // Normal position for S3
+  #endif
+  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
   if (card_tmp) {
     lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
-    lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.- C"); lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_28, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, 44);
+    lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.-"); lv_obj_set_style_text_font(lv_lbl_temp, value_font, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, value_y);
+    lv_lbl_temp_unit = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp_unit, " °C"); lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, unit_spacing, 0);
     lv_card_temp = card_tmp;
   }
 
   // Subtext: two-line layout (label, then values)
-  lv_obj_t *ph_sub_lbl = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub_lbl, "Target"); lv_obj_align(ph_sub_lbl, LV_ALIGN_TOP_LEFT, 0, 78);
-  lv_obj_t *ph_sub_vals = lv_label_create(card_ph); lv_obj_set_style_text_color(ph_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(ph_sub_vals, "6.80 - 7.60"); lv_obj_align(ph_sub_vals, LV_ALIGN_TOP_LEFT, 0, 96);
-  lv_obj_t *or_sub_lbl = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(or_sub_lbl, "Min/Max"); lv_obj_align(or_sub_lbl, LV_ALIGN_TOP_LEFT, 0, 78);
-  lv_obj_t *or_sub_vals = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(or_sub_vals, "250 / 850"); lv_obj_align(or_sub_vals, LV_ALIGN_TOP_LEFT, 0, 96);
+  lv_obj_t *ph_sub_lbl = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub_lbl, "Target"); lv_obj_align(ph_sub_lbl, LV_ALIGN_TOP_LEFT, 0, sub_lbl_y);
+  lv_obj_t *ph_sub_vals = lv_label_create(card_ph); lv_obj_set_style_text_color(ph_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(ph_sub_vals, "6.80 - 7.60"); lv_obj_align(ph_sub_vals, LV_ALIGN_TOP_LEFT, 0, sub_vals_y);
+  lv_obj_t *or_sub_lbl = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(or_sub_lbl, "Min/Max"); lv_obj_align(or_sub_lbl, LV_ALIGN_TOP_LEFT, 0, sub_lbl_y);
+  lv_obj_t *or_sub_vals = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(or_sub_vals, "250 / 850"); lv_obj_align(or_sub_vals, LV_ALIGN_TOP_LEFT, 0, sub_vals_y);
 
   // Click handlers to open range editor modals
   lv_obj_add_flag(card_ph, LV_OBJ_FLAG_CLICKABLE);
@@ -398,14 +440,21 @@ void build(bool safeBaseline){
     lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24);
   }
 
+  // Info labels at bottom-left - slightly larger font for P4 but not too big
+  #if defined(BOARD_ESP32P4_43)
+  const lv_font_t *info_font = &lv_font_montserrat_14;
+  #else
+  const lv_font_t *info_font = &lv_font_montserrat_14;
+  #endif
+  
   // IP label (content width), placed near bottom-left above the speed dial with more spacing from cards
-  lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
+  lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, info_font, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24); lv_label_set_text(lv_lbl_ip, "IP: --");
 
   // MQTT host label onder IP
   lv_lbl_mqtt = lv_label_create(root);
   lv_obj_set_style_text_color(lv_lbl_mqtt, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_text_font(lv_lbl_mqtt, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(lv_lbl_mqtt, info_font, 0);
   lv_label_set_long_mode(lv_lbl_mqtt, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(lv_lbl_mqtt, LV_SIZE_CONTENT);
   lv_obj_set_style_text_align(lv_lbl_mqtt, LV_TEXT_ALIGN_LEFT, 0);
@@ -415,7 +464,7 @@ void build(bool safeBaseline){
   // SSID label above IP (stacked), left aligned with proper spacing
   lv_lbl_ssid = lv_label_create(root);
   lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_text_font(lv_lbl_ssid, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(lv_lbl_ssid, info_font, 0);
   lv_label_set_long_mode(lv_lbl_ssid, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(lv_lbl_ssid, LV_SIZE_CONTENT);
   lv_obj_set_style_text_align(lv_lbl_ssid, LV_TEXT_ALIGN_LEFT, 0);
@@ -461,7 +510,15 @@ void updateValues(){
     if (M.haveOrp) {
       snprintf(buf_orp, sizeof(buf_orp), "%d", (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f)));
       lv_label_set_text_static(lv_lbl_orp, buf_orp);
-      if (lv_lbl_orp_unit) lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
+      // Dynamically reposition mV unit based on value width
+      if (lv_lbl_orp_unit) {
+        lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
+        #if defined(BOARD_ESP32P4_43)
+        lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for P4 (was 12)
+        #else
+        lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for S3
+        #endif
+      }
       // Colorize by thresholds
       int v = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
       lv_color_t c = lv_color_white();
@@ -474,14 +531,22 @@ void updateValues(){
       lv_label_set_text_static(lv_lbl_orp, buf_orp);
     }
   }
-  // Temp with 1 decimal and unit - thread-safe with static buffer
-  static char buf_temp[20] = "--.- C";
+  // Temp with 1 decimal (unit in separate label) - thread-safe with static buffer
+  static char buf_temp[20] = "--.-";
   if (lv_lbl_temp) {
     if (M.haveTemp) {
       int t10 = (int)((M.tempC * 10.0f) + (M.tempC >= 0 ? 0.5f : -0.5f));
       int t_i = t10 / 10; int t_f = abs(t10 % 10);
-      snprintf(buf_temp, sizeof(buf_temp), "%d.%d C", t_i, t_f);
+      snprintf(buf_temp, sizeof(buf_temp), "%d.%d", t_i, t_f);
       lv_label_set_text_static(lv_lbl_temp, buf_temp);
+      // Dynamically reposition °C unit based on value width
+      if (lv_lbl_temp_unit) {
+        #if defined(BOARD_ESP32P4_43)
+        lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for P4 (was 12)
+        #else
+        lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for S3
+        #endif
+      }
       if (lv_card_temp) {
         // Color thresholds: <15C blue, 15..25C amber, >25C red
         lv_color_t c = lv_palette_darken(LV_PALETTE_AMBER, 4);
@@ -490,7 +555,7 @@ void updateValues(){
         lv_obj_set_style_bg_color(lv_card_temp, c, 0);
       }
     } else {
-      strncpy(buf_temp, "--.- C", sizeof(buf_temp) - 1);
+      strncpy(buf_temp, "--.-", sizeof(buf_temp) - 1);
       lv_label_set_text_static(lv_lbl_temp, buf_temp);
     }
   }
@@ -530,8 +595,8 @@ void updateValues(){
     }
   }
   
-  // Refresh IP/SSID on each tick - thread-safe with static buffers
-  static char buf_ip[64] = "IP: --";
+  // Refresh IP/SSID/hostname on each tick - thread-safe with static buffers
+  static char buf_ip[128] = "IP: --";
   static char buf_mqtt[96] = "MQTT: --";
   static char buf_ssid[96] = "SSID: --";
   static char temp_str[80] = {0};
@@ -547,8 +612,16 @@ void updateValues(){
   if (lv_lbl_ip) {
     if (WiFi.status() == WL_CONNECTED) {
       IPAddress ip = WiFi.localIP();
-      snprintf(temp_str, sizeof(temp_str), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-      snprintf(buf_ip, sizeof(buf_ip), "IP: %s", temp_str);
+      // Get hostname
+      uint64_t chipid = ESP.getEfuseMac();
+      char hostname[32];
+      snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+      // Format: IP + hostname on same line or separate based on screen size
+      #if defined(BOARD_ESP32P4_43)
+      snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d (%s.local)", ip[0], ip[1], ip[2], ip[3], hostname);
+      #else
+      snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+      #endif
     } else {
       strncpy(buf_ip, "IP: --", sizeof(buf_ip) - 1);
     }

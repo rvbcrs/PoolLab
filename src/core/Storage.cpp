@@ -88,32 +88,16 @@ uint16_t Storage::getMqttPort(uint16_t def) const { return _prefs.getUShort("mqt
 String Storage::getMqttUser(const String &def) const { return _prefs.getString("mqtt_user", def); }
 String Storage::getMqttPass(const String &def) const { return _prefs.getString("mqtt_pass", def); }
 void Storage::setMqttHost(const String &host) {
-  if (_prefs.putString("mqtt_host", host) > 0) {
-    ESP_LOGI("Storage", "Wrote MQTT Host successfully");
-  } else {
-    ESP_LOGE("Storage", "Failed to write MQTT Host");
-  }
+  _prefs.putString("mqtt_host", host);
 }
 void Storage::setMqttPort(uint16_t port) {
-  if (_prefs.putUShort("mqtt_port", port) > 0) {
-    ESP_LOGI("Storage", "Wrote MQTT Port successfully");
-  } else {
-    ESP_LOGE("Storage", "Failed to write MQTT Port");
-  }
+  _prefs.putUShort("mqtt_port", port);
 }
 void Storage::setMqttUser(const String &user) {
-  if (_prefs.putString("mqtt_user", user) > 0) {
-    ESP_LOGI("Storage", "Wrote MQTT User successfully");
-  } else {
-    ESP_LOGE("Storage", "Failed to write MQTT User");
-  }
+  _prefs.putString("mqtt_user", user);
 }
 void Storage::setMqttPass(const String &pass) {
-  if (_prefs.putString("mqtt_pass", pass) > 0) {
-    ESP_LOGI("Storage", "Wrote MQTT Password successfully");
-  } else {
-    ESP_LOGE("Storage", "Failed to write MQTT Password");
-  }
+  _prefs.putString("mqtt_pass", pass);
 }
 
 // ---- Analog sensor calibration ----

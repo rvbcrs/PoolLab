@@ -1,6 +1,8 @@
 #include "WebUI.h"
 #include "MotorController.h"
 #include <WiFi.h>
+#include <SPIFFS.h>
+#include <FS.h>
 
 namespace io {
 
@@ -9,6 +11,7 @@ extern "C" void requestMqttReload();
 
 void WebUI::begin(){
   if (_active) return;
+  if (_storage) { _storage->begin(false); }
   _http.on("/", [this](){ handleIndex(); });
   _http.on("/settings", [this](){ handleSettings(); });
   _http.on("/safety", [this](){ handleSafety(); });
@@ -150,6 +153,7 @@ static float parseFloatOr(const String &s, float def){ char *end; float v = strt
 static int parseIntOr(const String &s, int def){ char *end; long v = strtol(s.c_str(), &end, 10); return (end==s.c_str()) ? def : (int)v; }
 
 void WebUI::handleApiSave(){
+  if (_storage) { _storage->begin(false); }
   if (_http.hasArg("ph_max") && _phMax && _storage) {
     *_phMax = parseFloatOr(_http.arg("ph_max"), *_phMax); _storage->setPhMax(*_phMax);
   }
@@ -190,14 +194,20 @@ void WebUI::handleApiSave(){
   #endif
   // MQTT settings save
   if (_storage) {
-    if (_http.hasArg("mqtt_host")) _storage->setMqttHost(_http.arg("mqtt_host"));
-    if (_http.hasArg("mqtt_port")) {
-      String p = _http.arg("mqtt_port"); p.trim();
-      uint16_t prt = p.length() ? (uint16_t)parseIntOr(p, 1883) : 0;
-      _storage->setMqttPort(prt);
-    }
-    if (_http.hasArg("mqtt_user")) _storage->setMqttUser(_http.arg("mqtt_user"));
-    if (_http.hasArg("mqtt_pass")) _storage->setMqttPass(_http.arg("mqtt_pass"));
+    String argHost = _http.arg("mqtt_host");
+    String argPort = _http.arg("mqtt_port");
+    String argUser = _http.arg("mqtt_user");
+    String argPass = _http.arg("mqtt_pass");
+
+    _storage->setMqttHost(argHost);
+    
+    argPort.trim();
+    uint16_t port = argPort.length() ? (uint16_t)parseIntOr(argPort, 1883) : 1883;
+    _storage->setMqttPort(port);
+    
+    _storage->setMqttUser(argUser);
+    _storage->setMqttPass(argPass);
+    
     requestMqttReload();
   }
   // WhatsApp notification settings
@@ -341,7 +351,6 @@ void WebUI::handleSafety(){
   sendFooter(html);
   _http.send(200, "text/html; charset=UTF-8", html);
 }
-
 } // namespace io
 
 

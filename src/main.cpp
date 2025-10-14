@@ -33,6 +33,8 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <esp_log.h>
+#include <SPIFFS.h>
+#include <FS.h>
 #include "domain/DummySensor.h"
 #include "domain/Telemetry.h"
 #if !defined(USE_JC3248W535)
@@ -1016,14 +1018,23 @@ static void publishDiscoveryOnce() { mqttClient.publishDiscoveryOnce(); }
 static void publishStatesIfReady() { mqttClient.publishStatesIfReady(domain::Metrics::instance()); }
 extern "C" void requestModeChange(int mode){
   // mode: 1 = Zigbee, 0 = WiFi
-  runMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+  core::Storage::Mode newMode = (mode==1) ? core::Storage::MODE_ZIGBEE : core::Storage::MODE_WIFI_MQTT;
+  
+  // Only restart if mode actually changed
+  if (newMode == runMode) {
+    ESP_LOGI("MAIN", "Mode unchanged (%s), no restart needed", 
+             (runMode == core::Storage::MODE_ZIGBEE) ? "Zigbee" : "WiFi/MQTT");
+    return;
+  }
+  
+  runMode = newMode;
   g_storage.setMode(runMode);
   
   #if defined(BOARD_ESP32P4_43)
   // P4: Always restart to cleanly apply mode change (C6 will switch between WiFi-SDIO and Zigbee)
   ESP_LOGI("MAIN", "P4: Mode changed to %s, restarting...", 
            (runMode == core::Storage::MODE_ZIGBEE) ? "Zigbee (via C6)" : "WiFi/MQTT");
-  delay(500);
+  delay(500); // Give C6 time to process command
   ESP.restart();
   #else
   // C6/S3: Original logic
@@ -1229,6 +1240,9 @@ void handleSafetyAlert(domain::SafetyAlert alert) {
   }
   
   // 2. Send WhatsApp notification via CallMeBot (async in separate task to avoid stack overflow)
+  ESP_LOGI("SAFETY", "WhatsApp check: enabled=%d phone_len=%d wifi=%d", 
+           WHATSAPP_ENABLED, WHATSAPP_PHONE.length(), WiFi.status() == WL_CONNECTED);
+  
   if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
     // Create a copy of the alert for the async task
     domain::SafetyAlert* alertCopy = (domain::SafetyAlert*)malloc(sizeof(domain::SafetyAlert));
@@ -1239,6 +1253,10 @@ void handleSafetyAlert(domain::SafetyAlert alert) {
     ESP_LOGI("SAFETY", "WhatsApp notification task launched");
   } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
     ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  } else if (!WHATSAPP_ENABLED) {
+    ESP_LOGI("SAFETY", "WhatsApp notifications disabled");
+  } else if (WiFi.status() != WL_CONNECTED) {
+    ESP_LOGW("SAFETY", "WhatsApp notification skipped - WiFi not connected");
   }
 }
 
@@ -2656,7 +2674,7 @@ void setup() {
          
          // Only start WiFi if in WiFi/MQTT mode
          if (runMode == core::Storage::MODE_WIFI_MQTT) {
-           // Start WiFi init in separate task like the demo
+          // Start WiFi init in separate task like the demo
            Serial.println("P4: About to create WiFi init task");
            Serial.flush();
            ESP_LOGI("MAIN", "P4: Creating WiFi init task");
