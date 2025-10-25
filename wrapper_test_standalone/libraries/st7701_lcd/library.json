@@ -1,0 +1,25 @@
+{
+    "name": "ST7701 LCD Driver",
+    "version": "1.1.0",
+    "description": "ST7701 MIPI-DSI LCD driver for ESP32-P4",
+    "keywords": [
+        "display",
+        "lcd",
+        "st7701",
+        "mipi-dsi",
+        "esp32-p4"
+    ],
+    "frameworks": [
+        "arduino",
+        "espidf"
+    ],
+    "platforms": [
+        "espressif32"
+    ],
+    "build": {
+        "srcDir": ".",
+        "flags": [
+            "-I ."
+        ]
+    }
+}

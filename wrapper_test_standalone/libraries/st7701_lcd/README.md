@@ -168,9 +168,3 @@ See the `examples/simple` folder for a complete working example.
 This library is part of the PoolLab project.
 
 
-
-
-
-
-
-

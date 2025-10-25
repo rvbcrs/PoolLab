@@ -1,0 +1,44 @@
+{
+    "name": "ESP32P4 Display",
+    "version": "1.0.0",
+    "description": "Simple wrapper for ESP32-P4 MIPI-DSI display (ST7701 + GT911) with LVGL support",
+    "keywords": [
+        "esp32",
+        "esp32-p4",
+        "display",
+        "touch",
+        "lvgl",
+        "st7701",
+        "gt911",
+        "mipi-dsi"
+    ],
+    "authors": [
+        {
+            "name": "PoolLab Team"
+        }
+    ],
+    "frameworks": [
+        "arduino",
+        "espidf"
+    ],
+    "platforms": [
+        "espressif32"
+    ],
+    "dependencies": {
+        "lvgl": "^8.4.0"
+    },
+    "build": {
+        "srcDir": "."
+    },
+    "examples": [
+        {
+            "name": "Simple",
+            "base": "examples/simple",
+            "files": [
+                "main.cpp"
+            ]
+        }
+    ],
+    "homepage": "https://github.com/your-username/ESP32P4_Display",
+    "documentation": "https://github.com/your-username/ESP32P4_Display/blob/main/README.md"
+}
