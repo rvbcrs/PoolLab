@@ -1,11 +1,13 @@
 #pragma once
 
 #include <Arduino.h>
-#if __has_include(<Zigbee.h>)
-#include <Zigbee.h>
-#define HAVE_ARDUINO_ZIGBEE 1
+#if defined(HAS_ZIGBEE) && (HAS_ZIGBEE == 0)
+  #define HAVE_ARDUINO_ZIGBEE 0
+#elif __has_include(<Zigbee.h>)
+  #include <Zigbee.h>
+  #define HAVE_ARDUINO_ZIGBEE 1
 #else
-#define HAVE_ARDUINO_ZIGBEE 0
+  #define HAVE_ARDUINO_ZIGBEE 0
 #endif
 // Prefer Arduino Zigbee if present; avoid hard dependency on ESP-IDF Zigbee.
 // Only enable IDF Zigbee if explicitly requested via ENABLE_IDF_ZIGBEE.
