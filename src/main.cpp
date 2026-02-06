@@ -1434,6 +1434,16 @@ void setup() {
     ESP_LOGI("MAIN", "Proceeding to full UI build");
   #endif
 
+  // S3: Initialize Tuya UART explicitly (as initPeripherals is skipped)
+  #if defined(BOARD_ESP32S3_35)
+    TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
+    ESP_LOGI("MAIN", "Tuya UART initialized (S3) on RX=%d", RX_A_PIN);
+    // If Channel B is used/wired
+    #if defined(USE_CHANNEL_B) && USE_CHANNEL_B
+    TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
+    #endif
+  #endif
+
   // Create a pinned UI task on core 1 for LVGL processing (S3 only, but NOT when using JC BSP which provides its own LVGL task)
   #if defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
   static TaskHandle_t uiTaskHandle = NULL;
@@ -2839,7 +2849,7 @@ void loop() {
   #if !USE_ANALOG_SENSORS
   {
     int processed = 0;
-    #if !defined(USE_JC3248W535)
+    #if !defined(USE_JC3248W535) || defined(BOARD_ESP32S3_35)
     while (TUYA_A.available()) {
       uint8_t b = TUYA_A.read();
       rxA_count++;
@@ -2863,7 +2873,7 @@ void loop() {
     #endif
   }
   #endif
-  #if !defined(USE_JC3248W535)
+  #if !defined(USE_JC3248W535) || defined(BOARD_ESP32S3_35)
   #if !USE_ANALOG_SENSORS
   if (USE_CHANNEL_B && !USE_LVGL_UI) {
     while (TUYA_B.available()) {
