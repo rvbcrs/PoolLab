@@ -480,23 +480,52 @@ with BuildPart() as lid:
         # Original was: Box(..., align=(..., MIN)). Yes, 0 to +thick.
         # Wait, Line 458: Box(..., align=...MIN).
         # My extrude default is centered? No, extrude is from sketch plane.
-        # Sketch is at (0,0,0). Extrude amount=lid_thickness. Result Z: 0 to thickness.
-        # Correct.
+        # Screen Cutout (Rectangle with Inverted Fillets for Screws)
+    # Bezel: 94.5 x 62.
+    # PCB/Body: ~82 x 57.
+    # Mounting Holes: 84mm x 52mm apart.
+    # Original Cutout: 82.4 x 57.6.
+    # User Request: "Scheelt rondom 1mm of 2mm" -> Needs to be larger to fit screen body between posts.
+    # Holes MUST stay at 84x52.
+    # New Cutout: +2mm (1mm all around).
+    screen_cutout_w = 84.4 
+    screen_cutout_h = 59.6
     
-    # Cut Through Hole for Rear Body
-    # User: Cutout 82.4 x 57.6mm. Holes at 84x52 (mount_dx=42, mount_dy=26).
-    # DEBUG: Trying without screen_offset_y to see if alignment improves
-    cutout_width = 82.4
-    cutout_height = 57.6
+    # Inverted Fillet Radius
+    # Holes are at X=42. Cutout Edge at X=42.2.
+    # Hole is INSIDE the cutout rectangle.
+    # We need "Ears" to protrude back into the cutout to hold the screws.
+    # Inverted Fillet with R=5 (Diameter 10).
+    # Center of Fillet Arc will be at Corner + (-5, -5).
+    # Corner of Rect is at (42.2, 29.8).
+    # This might not align perfectly with hole at (42, 26).
+    # BETTER STRATEGY: 
+    # Define Cutout as Rectangle MINUS Circles at corners?
+    # No, "Inverted Fillet" logic in build123d is `fillet(vertices)`? 
+    # Wait, `fillet` makes convex corners (removes material).
+    # If I want CONCAVE corners (adding material), I should use `chamfer`? No.
+    # The previous code likely used a custom "make rectangle, then subtract circles" logic?
+    # Let's check the code below.
     
+    # Actually, simpler:
+    # 1. Create Main Rect (84.4 x 59.6).
+    # 2. Create 4 Circles at Mounting Holes (Radius = R_ear).
+    # 3. Cutout = Rect MINUS Circles. (This leaves "Ears" in the Lid).
+    
+    mount_dx = 84 # Fixed per user
+    mount_dy = 52 # Fixed per user
+
     with Locations((0, 0, 0)):  # No Y offset - test centering
          with BuildSketch():
-             # Rectangle centered
-             Rectangle(cutout_width, cutout_height, align=(Align.CENTER, Align.CENTER))
+             # 1. Create Main Rect (84.4 x 59.6).
+             screen_cutout_rect = Rectangle(screen_cutout_w, screen_cutout_h, align=(Align.CENTER, Align.CENTER))
              
-             # Circles at hole positions
-             with Locations([(mount_dx, mount_dy), (mount_dx, -mount_dy), 
-                           (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]):
+             # 2. Subtract Ears Circles at Mounting Holes
+             # We want the Lid to HAVE material at (42, 26).
+             # So the CUTOUT must NOT exist at (42, 26).
+             # So we Subtract Circles from the Cutout Rectangle.
+             with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2),
+                           (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
                  Circle(radius=5, mode=Mode.SUBTRACT)
                  
          extrude(amount=lid_thickness, mode=Mode.SUBTRACT)
@@ -504,7 +533,7 @@ with BuildPart() as lid:
     # Mounting Holes (For screws from Inside-Up)
     # DEBUG: No screen_offset_y - testing alignment
     with Locations((0, 0, 0)):
-        with Locations([(mount_dx, mount_dy), (mount_dx, -mount_dy), (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]):
+        with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2), (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
              Cylinder(radius=3.2/2, height=lid_thickness, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
     # Lid Corner Screw Holes (M3 Countersunk)
@@ -769,6 +798,8 @@ screen_rear_export = Part(rear_fresh.part.moved(screen_loc))
 screen_rear_export.label = "Screen Rear"
 screen_rear_export.color = Color(0.2, 0.2, 0.2) # Dark Gray
 
+screen_rear_export.color = Color(0.2, 0.2, 0.2) # Dark Gray
+
 # LCD
 # Re-create fresh
 with BuildPart() as lcd_fresh:
@@ -778,6 +809,21 @@ with BuildPart() as lcd_fresh:
 screen_lcd_export = Part(lcd_fresh.part.moved(screen_loc))
 screen_lcd_export.label = "Screen LCD"
 screen_lcd_export.color = Color(0, 0, 0) # Black
+
+# Text "PoolLab" (On Lid Surface)
+# Position: Centered X, Below Screen Cutout.
+# Cutout Bottom Y is roughly -28.8 (Height 57.6 centered).
+# Place text at Y = -35 to be safely on the Green Lid.
+# Z = lid_top_z (Top surface of lid).
+with BuildPart() as text_fresh:
+    with Locations((0, -35, lid_top_z)):
+        with BuildSketch():
+            Text("PoolLab", font_size=5, font_style=FontStyle.BOLD)
+        extrude(amount=0.1)
+
+screen_text_export = Part(text_fresh.part)
+screen_text_export.label = "Lid Text"
+screen_text_export.color = Color(0.5, 0.5, 0.5) # Gray Text
 
 # Inserts
 if screen_def.inserts:
@@ -818,7 +864,7 @@ gx12_export.label = "GX12"
 gx12_export.color = Color("Silver")
 
 assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, 
-                            screen_bezel_export, screen_rear_export, screen_lcd_export, screen_inserts_export, 
+                            screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
                             tb6612_export, gx12_export])
 assembly.label = "PoolLab_Assembly"
 export_step(assembly, "designs/full_assembly.step")
@@ -827,11 +873,11 @@ print("Full assembly exported: designs/full_assembly.step")
 # All Objects - Names and alphas for visualization
 # Note: Using GHOSTS for imported parts (to keep native colors) and EXPORTS for generated parts (to show assigned colors)
 show(case_export, lid_export, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, 
-     screen_bezel_export, screen_rear_export, screen_lcd_export, screen_inserts_export, 
+     screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
      tb6612_ghost, gx12_ghost,
      names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", 
-            "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Inserts", 
+            "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts", 
             "TB6612", "GX12"],
      alphas=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
-             1.0, 1.0, 1.0, 1.0, 
+             1.0, 1.0, 1.0, 1.0, 1.0, 
              1.0, 1.0])
