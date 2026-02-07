@@ -744,11 +744,7 @@ with BuildPart() as result_case:
 
 start_case_fuse = result_case.part
 
-# Export STLs and STEPs
-export_stl(start_case_fuse, "designs/case.stl")
-export_stl(lid.part, "designs/lid.stl")
-export_step(start_case_fuse, "designs/case.step")
-export_step(lid.part, "designs/lid.step")
+# Export lines moved to end of script to capture all modifications (like Text)
 
 print("Design generated: designs/case.stl, designs/lid.stl, designs/case.step, designs/lid.step")
 
@@ -811,19 +807,61 @@ screen_lcd_export.label = "Screen LCD"
 screen_lcd_export.color = Color(0, 0, 0) # Black
 
 # Text "PoolLab" (On Lid Surface)
-# Position: Centered X, Below Screen Cutout.
-# Cutout Bottom Y is roughly -28.8 (Height 57.6 centered).
-# Place text at Y = -35 to be safely on the Green Lid.
-# Z = lid_top_z (Top surface of lid).
-with BuildPart() as text_fresh:
-    with Locations((0, -35, lid_top_z)):
-        with BuildSketch():
-            Text("PoolLab", font_size=5, font_style=FontStyle.BOLD)
-        extrude(amount=0.1)
+# Save Clean Lid for dimension verification (User Request)
+lid_no_text = lid_export
 
-screen_text_export = Part(text_fresh.part)
-screen_text_export.label = "Lid Text"
-screen_text_export.color = Color(0.5, 0.5, 0.5) # Gray Text
+try:
+    # 1. Font Selection: System Font "Arial Black"
+    t_sketch = Text("PoolLab", font_size=25, font="Arial Black")
+    
+    # 2. Thicken (Extra Bold)
+    t_thick = offset(t_sketch, amount=0.2)
+    
+    # 3. Extrude
+    # User Request: "minimaal een paar layers dik" (at least a few layers thick)
+    # 0.6mm (3 layers) might be thin. Let's go to 1.0mm (5 layers) for full opacity.
+    t_part = extrude(t_thick, amount=1.0) # 1.0mm thickness
+    
+    # 4. Position FLUSH with Lid Surface (Inlay)
+    # Z = lid_top_z - 1.0 (Top face is at lid_top_z)
+    text_flush_loc = Location((0, -50, lid_top_z - 1.0))
+    text_geom = t_part.moved(text_flush_loc)
+    
+    screen_text_export = Part(text_geom)
+    screen_text_export.label = "Lid Text"
+    screen_text_export.color = Color(0.8, 0.8, 0.8) # Gray (Case Color)
+    
+    # 5. SUBTRACT from Lid to create Inlay capability
+    # This allows multi-color printing face-down
+    print("DEBUG: Subtracting Text from Lid for Flush Inlay...")
+    # lid_export has the original lid. We subtract the text geom.
+    # Error Fix: lid_export is already a Part object, it has no .part attribute.
+    # text_geom is also a Part object.
+    # Direct subtraction works in build123d.
+    lid_cut = lid_export - text_geom
+    lid_export = Part(lid_cut) # Create fresh Part from result? 
+    # Actually result of (-) is a Part.
+    # So lid_export = lid_cut is enough?
+    # But let's wrap in Part() to be safe or just assign.
+    # lid_cut is a Part.
+    lid_export = lid_cut
+    lid_export.label = "Lid"
+    lid_export.color = Color(0, 1, 0) # Maintain Key Green
+    
+    # Update main assembly to use new lid_export if it was already added?
+    # assembly = Compound(...) is defined later at 836?
+    # Line 836 (in original file, inferred) defines assembly.
+    # We are at line 813. assembly is defined AFTER this block?
+    # Checking file viewing... Yes, assembly is at 842.
+    # So updating lid_export here works perfectly.
+    
+except Exception as e:
+    print(f"Warning: Text Generation Failed: {e}")
+    screen_text_export = Part(Cylinder(radius=0.1, height=0.1)) # Empty placeholder
+    
+except Exception as e:
+    print(f"Warning: Text Generation Failed: {e}")
+    screen_text_export = Part(Cylinder(radius=0.1, height=0.1)) # Empty placeholder
 
 # Inserts
 if screen_def.inserts:
@@ -862,6 +900,29 @@ tb6612_export.color = Color("Blue") # PCB Color
 gx12_export = Part(gx12_ghost)
 gx12_export.label = "GX12"
 gx12_export.color = Color("Silver")
+
+# === Final Exports ===
+print("Exporting STLs and STEPs...")
+
+# 1. Main Case
+# 1. Main Case
+# case_export is a Part object (build123d.topology.Part) which is valid for export.
+export_stl(case_export, "designs/case.stl")
+export_step(case_export, "designs/case.step")
+
+# 2. Lid (With Flush Text Cuts)
+export_stl(lid_export, "designs/lid.stl")
+export_step(lid_export, "designs/lid.step")
+
+# 2b. Lid (Clean / No Text) - For Verification
+export_stl(lid_no_text, "designs/lid_no_text.stl")
+export_step(lid_no_text, "designs/lid_no_text.step")
+    
+# 3. Lid Text (The Flush Insert)
+export_stl(screen_text_export, "designs/lid_text.stl")
+export_step(screen_text_export, "designs/lid_text.step")
+
+print("Exports Complete: designs/case.stl, designs/lid.stl, designs/lid_text.stl")
 
 assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, 
                             screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
