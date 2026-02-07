@@ -296,23 +296,47 @@ with BuildPart() as screen_def:
         with BuildSketch():
             rect = Rectangle(screen_front_w, screen_front_h, align=(Align.CENTER, Align.CENTER))
             fillet(rect.vertices(), radius=screen_corner_radius)
-        extrude(amount=screen_front_t) # EXTRUDE UP
+        # Extrude logic: Create solid, set color, then add
+        bezel = extrude(amount=screen_front_t, mode=Mode.PRIVATE)
+        bezel.color = Color(0.2, 0.2, 0.2) # Dark Gray Bezel
+        add(bezel)
+        screen_def.bezel = bezel # Expose for export
         
     # Rear Body ("Bottom") - Falls IN (Z=0 to -8)
     with Locations((0,0, 0)):
         with BuildSketch():
             Rectangle(screen_back_w, screen_back_h, align=(Align.CENTER, Align.CENTER))
-        extrude(amount=-screen_back_t) # EXTRUDE DOWN
+        rear = extrude(amount=-screen_back_t, mode=Mode.PRIVATE)
+        rear.color = Color(0.2, 0.2, 0.2) # Match Bezel Color
+        add(rear)
+        screen_def.rear = rear # Expose for export
         
     # Active Area (Visual on Top Face)
     with Locations((0,0, screen_front_t)):
-         Box(73.4, 49, 0.1, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.ADD)
+         # 'Box' adds implicitly. Since we can't use 'color' in Box() in this version?,
+         # let's use the explicit object creation pattern too.
+         lcd = Box(73.4, 49, 0.1, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.PRIVATE)
+         lcd.color = Color(0, 0, 0) # Black
+         add(lcd)
+         screen_def.lcd = lcd # Expose for export
     
     # Mounting Inserts (In the Rim, accessible from Back/Bottom)
     # Visual cylinders at Z=0 extending UP into the Rim
+    # Use explicit loop to collect all solids for export
+    inserts_solids = []
     with Locations((0,0, 0)):
-        with Locations([(mount_dx, mount_dy), (mount_dx, -mount_dy), (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]):
-             Cylinder(radius=3/2, height=4, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.ADD)
+        for loc in [(mount_dx, mount_dy), (mount_dx, -mount_dy), (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]:
+             with Locations(loc):
+                 inserts_solids.append(Cylinder(radius=3/2, height=3.5, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.PRIVATE))
+    
+    # Combine inserts into one Part for export
+    if inserts_solids:
+        inserts_compound = Compound(children=inserts_solids)
+        inserts_compound.color = Color("Silver")
+        add(inserts_compound)
+        screen_def.inserts = inserts_compound
+    else:
+        screen_def.inserts = None # Safety
 
 # === 5. Placements & Layout ===
 
@@ -323,7 +347,7 @@ usb_loc = Location((length/2 - 8, 0, 0)) * Rotation(0, -90, 0) * Rotation(180, 0
 
 # GX12: "Next to" USB.
 # User feedback: "Niet dwars". Needs rotation around insertion axis.
-gx12_loc_y = -25 # Negative Y = Left relative to X+ viewer (if Right was +22)
+gx12_loc_y = 29 # Shifted further right per user request
 # Rotation trace:
 # Rotation(0, -90, 0) -> Points connection axis OUT of X+.
 # Adding Rotation(90, 0, 0) -> Rotates 90 deg around X axis (Roll).
@@ -717,9 +741,53 @@ lid_export.label = "Lid"
 lid_export.color = Color(0.0, 1.0, 0.0) # Neon Green
 
 # For ghosts, assign representative colors
-screen_export = Part(screen_ghost)
-screen_export.label = "Screen"
-screen_export.color = Color("Black")
+# Screen Export: Exploded for Colors
+# screen_export = Part(screen_ghost)
+# screen_export.label = "Screen"
+# screen_export.color = Color("Black") # Removed to allow multi-color screen (Bezel/LCD)
+
+# Bezel
+# RE-CREATE Geometry Fresh to ensure color works (Abandoning screen_def.bezel)
+with BuildPart() as bezel_fresh:
+    with BuildSketch():
+        rect = Rectangle(screen_front_w, screen_front_h, align=(Align.CENTER, Align.CENTER))
+        fillet(rect.vertices(), radius=screen_corner_radius)
+    extrude(amount=screen_front_t)
+    
+screen_bezel_export = Part(bezel_fresh.part.moved(screen_loc))
+screen_bezel_export.label = "Screen Bezel"
+screen_bezel_export.color = Color(0.2, 0.2, 0.2) # Dark Gray
+
+# Rear Body
+# Re-create fresh
+with BuildPart() as rear_fresh:
+    with BuildSketch():
+        Rectangle(screen_back_w, screen_back_h, align=(Align.CENTER, Align.CENTER))
+    extrude(amount=-screen_back_t)
+
+screen_rear_export = Part(rear_fresh.part.moved(screen_loc))
+screen_rear_export.label = "Screen Rear"
+screen_rear_export.color = Color(0.2, 0.2, 0.2) # Dark Gray
+
+# LCD
+# Re-create fresh
+with BuildPart() as lcd_fresh:
+    with Locations((0,0, screen_front_t)):
+         Box(73.4, 49, 0.1, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+screen_lcd_export = Part(lcd_fresh.part.moved(screen_loc))
+screen_lcd_export.label = "Screen LCD"
+screen_lcd_export.color = Color(0, 0, 0) # Black
+
+# Inserts
+if screen_def.inserts:
+    # Inserts is already a Compound
+    screen_inserts_export = Part(screen_def.inserts.moved(screen_loc))
+    screen_inserts_export.label = "Screen Inserts"
+    screen_inserts_export.color = Color(0.75, 0.75, 0.75) # Silver
+else:
+    # Fallback if inserts failed
+    screen_inserts_export = Part()
 
 ctp09_export = Part(ctp09_ghost)
 ctp09_export.label = "CTP09"
@@ -749,13 +817,21 @@ gx12_export = Part(gx12_ghost)
 gx12_export.label = "GX12"
 gx12_export.color = Color("Silver")
 
-assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, screen_export, tb6612_export, gx12_export])
+assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, 
+                            screen_bezel_export, screen_rear_export, screen_lcd_export, screen_inserts_export, 
+                            tb6612_export, gx12_export])
 assembly.label = "PoolLab_Assembly"
 export_step(assembly, "designs/full_assembly.step")
 print("Full assembly exported: designs/full_assembly.step")
 
 # All Objects - Names and alphas for visualization
-# Note: OCP CAD Viewer may render dark/black STEP surfaces as yellow (viewer limitation)
-show(start_case_fuse, lid_part, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, screen_ghost, tb6612_ghost, gx12_ghost,
-     names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", "Screen", "TB6612", "GX12"],
-     alphas=[1.0, 1.0, 0.3, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+# Note: Using GHOSTS for imported parts (to keep native colors) and EXPORTS for generated parts (to show assigned colors)
+show(case_export, lid_export, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, 
+     screen_bezel_export, screen_rear_export, screen_lcd_export, screen_inserts_export, 
+     tb6612_ghost, gx12_ghost,
+     names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", 
+            "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Inserts", 
+            "TB6612", "GX12"],
+     alphas=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+             1.0, 1.0, 1.0, 1.0, 
+             1.0, 1.0])
