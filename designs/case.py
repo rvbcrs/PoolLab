@@ -526,7 +526,10 @@ with BuildPart() as lid:
              # So we Subtract Circles from the Cutout Rectangle.
              with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2),
                            (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
-                 Circle(radius=5, mode=Mode.SUBTRACT)
+                # User Request: "veiliger is nog iets meer eraf" (safer to remove more).
+                # Reduced from 5 -> 4 -> 3mm.
+                # Hole is R=1.6mm. Wall thickness = 3 - 1.6 = 1.4mm (Sufficient).
+                Circle(radius=3, mode=Mode.SUBTRACT)
                  
          extrude(amount=lid_thickness, mode=Mode.SUBTRACT)
          
