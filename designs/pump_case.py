@@ -39,7 +39,7 @@ pump_oriented = pump_rot.moved(pump_loc)
 
 # Measure oriented
 bbox_or = pump_oriented.bounding_box()
-# print(f"Oriented Z Range: {bbox_or.min.Z:.1f} to {bbox_or.max.Z:.1f}")
+print(f"Oriented Z Range: {bbox_or.min.Z:.1f} to {bbox_or.max.Z:.1f}")
 # Top should be Approx +(Total-12.5). Bottom should be -12.5.
 
 # === 2. Auto-Detect Mounting Holes & Alignment ===
@@ -60,7 +60,7 @@ def extract_holes_from_part(part, min_r=1.5, max_r=2.5):
 # Mounting holes on G528 are likely ~3.5-4mm dia (R=1.75-2.0). 
 # Let's scan for them.
 mounting_holes = extract_holes_from_part(pump_oriented, min_r=1.5, max_r=2.5)
-# print(f"Detected {len(mounting_holes)} mounting holes: {mounting_holes}")
+print(f"Detected {len(mounting_holes)} mounting holes: {mounting_holes}")
 
 # We expect 2 holes.
 # Finding the Z-level of these holes helps us align the "Flange".
@@ -69,7 +69,7 @@ if len(mounting_holes) >= 2:
     # Align their Z to Z=0 (Top of Lid).
     # Current Z of holes:
     hole_z = mounting_holes[0].Z
-    # print(f"Current Hole Z: {hole_z}")
+    print(f"Current Hole Z: {hole_z}")
     
     # Validation: user said "Black rim flush with lid". 
     # Usually holes are IN the rim. So Rim Z == Hole Z.
@@ -80,11 +80,11 @@ if len(mounting_holes) >= 2:
     
     # Update holes to new positions
     mounting_holes = [h + Vector(0,0,z_correction) for h in mounting_holes]
-    # print(f"Corrected Hole Z: {mounting_holes[0].Z}")
+    print(f"Corrected Hole Z: {mounting_holes[0].Z}")
 
 # Recalculate BBox after alignment
 bbox_or = pump_oriented.bounding_box()
-# print(f"Aligned Z Range: {bbox_or.min.Z:.1f} to {bbox_or.max.Z:.1f}")
+print(f"Aligned Z Range: {bbox_or.min.Z:.1f} to {bbox_or.max.Z:.1f}")
 
 # === 3. Dimensions based on Aligned Pump ===
 pump_count = 2
@@ -96,7 +96,7 @@ spacing = 20 # Spacing between pump centers (X)
 if mounting_holes:
     hx = [h.X for h in mounting_holes]
     mount_dist = max(hx) - min(hx)
-    # print(f"Mounting Distance: {mount_dist:.1f}mm")
+    print(f"Mounting Distance: {mount_dist:.1f}mm")
 
 # Case Dimensions
 wall_thick = 2.5
@@ -143,27 +143,48 @@ with BuildPart() as lid:
     
     # Motor Hole: Large hole in center of mounting pattern.
     # Center is avg of mounting holes?
-    if len(mounting_holes) == 2:
-        center_x = (mounting_holes[0].X + mounting_holes[1].X)/2
-        center_y = (mounting_holes[0].Y + mounting_holes[1].Y)/2
+    # Motor Hole: Large hole in center of mounting pattern.
+    # Center is avg of mounting holes?
+    # Filter for Mounting Pair (approx 48.5mm spacing)
+    valid_pair = None
+    if len(mounting_holes) >= 2:
+        # Search for a pair with dist ~ 48.5 +/- 1.0
+        found = False
+        from itertools import combinations
+        for h1, h2 in combinations(mounting_holes, 2):
+            dist_h = (h1 - h2).length
+            if 48.0 <= dist_h <= 49.0:
+                valid_pair = (h1, h2)
+                found = True
+                print(f"Found Matching Mounting Pair! Dist={dist_h:.2f}mm")
+                break
+        
+        if not found:
+             print("Warning: Could not find hole pair with ~48.5mm spacing. Using First 2.")
+             valid_pair = (mounting_holes[0], mounting_holes[1])
+
+    if valid_pair:
+        print("Generating Lid Cutouts for Motor and Screws...")
+        h1, h2 = valid_pair
+        
+        center_x = (h1.X + h2.X)/2
+        center_y = (h1.Y + h2.Y)/2
         center = Vector(center_x, center_y, 0)
         
         # Determine locations for Pump 1 and Pump 2
-        # P1 at -dist/2, P2 at +dist/2 relative to Case Center
-        # The detected holes are relative to the SINGLE PUMP at Origin.
-        
         for loc in [Location((-dist/2, 0, 0)), Location((dist/2, 0, 0))]:
             with Locations(loc):
-                 # Screw Holes
-                 for h in mounting_holes:
-                     with Locations((h.X, h.Y, 0)):
-                         Cylinder(radius=2, height=lid_thick*2, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+                 # Screw Holes (Exactly 2)
+                 with Locations([(h1.X, h1.Y), (h2.X, h2.Y)]):
+                      Cylinder(radius=2, height=lid_thick*2, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
                  
                  # Motor Hole (Center)
                  # Sits between holes.
                  # Diameter ~ 33mm (Motor is 32mm).
+                 # User requested "margin" (paar mm groter).
+                 # Let's align to 35mm (1.5mm gap all around).
                  with Locations((center.X, center.Y, 0)):
-                     Cylinder(radius=33/2, height=lid_thick*2, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+                     Cylinder(radius=35/2, height=lid_thick*2, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
 
 # Case Bucket
 with BuildPart() as bucket:
