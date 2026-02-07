@@ -186,6 +186,24 @@ with BuildPart() as lid:
                  with Locations((center.X, center.Y, 0)):
                      Cylinder(radius=35/2, height=lid_thick*2, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
 
+    # Lid Corner Screw Holes (M3 Countersunk)
+    # Define locations
+    pst_r = 3.5
+    pst_dx = case_len/2 - wall_thick - pst_r
+    pst_dy = case_wid/2 - wall_thick - pst_r
+    
+    corner_locs = [(pst_dx, pst_dy), (pst_dx, -pst_dy), (-pst_dx, pst_dy), (-pst_dx, -pst_dy)]
+
+    # Lid Holes
+    with Locations(corner_locs):
+         # M3 Clearance (3.2mm)
+         Cylinder(radius=1.6, height=lid_thick, align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
+         # Countersink (Top Surface Z=0)
+         # Cone: bottom_radius=1.6 (Hole), top_radius=3 (Head). Height=1.6.
+         # Align MAX on Z means TOP of cone is at Z=0.
+         with Locations((0,0,0)): 
+             Cone(bottom_radius=1.6, top_radius=3.2, height=1.8, align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
+
 # Case Bucket
 with BuildPart() as bucket:
     # Outer Shell with Fillets
@@ -203,13 +221,17 @@ with BuildPart() as bucket:
         fillet(vertices(), radius=5-wall_thick)
     extrude(amount=bucket_depth, mode=Mode.SUBTRACT) # Cut all way up
     
-    # Screw posts...
-    with Locations([(case_len/2 - 4, case_wid/2 - 4, -lid_thick - 5),
-                   (-case_len/2 + 4, case_wid/2 - 4, -lid_thick - 5),
-                   (case_len/2 - 4, -case_wid/2 + 4, -lid_thick - 5),
-                   (-case_len/2 + 4, -case_wid/2 + 4, -lid_thick - 5)]):
-         Cylinder(radius=3, height=10, align=(Align.CENTER, Align.CENTER, Align.CENTER))
-         Cylinder(radius=1.5, height=12, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+    # Screw Posts (Corners) - Matching Lid Holes
+    # Top of post needs to be at -lid_thick (flush with lid bottom).
+    # Post height? Say 10mm down from top.
+    post_top_z = -lid_thick
+    post_h = 10
+    
+    with Locations(corner_locs):
+         with Locations((0, 0, post_top_z - post_h)):
+             Cylinder(radius=pst_r, height=post_h, align=(Align.CENTER, Align.CENTER, Align.MIN))
+             # Screw Hole (M3 Tap: ~2.5mm or insert hole ~4mm). Let's do 2.8mm for direct screw.
+             Cylinder(radius=1.4, height=post_h+1, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
     # Keyholes on BOTTOM FLOOR (XY Plane at Z = -lid_thick - bucket_depth)
     # Unit mounts flat. Y+ is Top (against wall).
@@ -254,13 +276,7 @@ with BuildPart() as bucket:
              fillet(vertices(), radius=5)
     extrude(amount=-wall_thick*2, mode=Mode.SUBTRACT)
          
-    # Screw posts...
-    with Locations([(case_len/2 - 4, case_wid/2 - 4, -lid_thick - 5),
-                   (-case_len/2 + 4, case_wid/2 - 4, -lid_thick - 5),
-                   (case_len/2 - 4, -case_wid/2 + 4, -lid_thick - 5),
-                   (-case_len/2 + 4, -case_wid/2 + 4, -lid_thick - 5)]):
-         Cylinder(radius=3, height=10, align=(Align.CENTER, Align.CENTER, Align.CENTER))
-         Cylinder(radius=1.5, height=12, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+    # (Duplicate screw posts removed)
 
 # Ghosts
 # GX12 Connector
@@ -291,6 +307,6 @@ export_step(lid.part, "designs/pump_case_lid.step")
 print("Pump Case Design generated: designs/pump_case_bucket.stl, designs/pump_case_lid.stl, designs/pump_case_bucket.step, designs/pump_case_lid.step")
 
 # Show
-set_port(3940)
+#set_port(3940)
 show(bucket.part, lid.part, p1_ghost, p2_ghost, gx12_ghost, alphas=[0.8, 1.0, 0.5, 0.5, 0.8])
 

@@ -100,24 +100,13 @@ lm2596_hole_pts = find_hole_locations(imported_lm2596, min_r=1.4, max_r=1.6)
 # Filter to 2 diagonal corners (Top-Left, Bottom-Right)
 lm2596_hole_pts = filter_corner_holes(lm2596_hole_pts, count=2) 
 
-# === 1. Define USB Socket Part ===
-usb_flange_d = 27
-usb_flange_t = 3
-usb_thread_d = 22
-usb_thread_l = 17.4
-usb_back_d = 17.5 
-usb_back_l = 12.1
-
-with BuildPart() as usb_socket_def:
-    # Flange (Outside)
-    with Locations((0, 0, -usb_flange_t)):
-        Cylinder(radius=usb_flange_d/2, height=usb_flange_t, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    # Threaded body (Inside)
-    with Locations((0, 0, 0)):
-        Cylinder(radius=usb_thread_d/2, height=usb_thread_l, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    # Back body (Inside)
-    with Locations((0, 0, usb_thread_l)):
-        Cylinder(radius=usb_back_d/2, height=usb_back_l, align=(Align.CENTER, Align.CENTER, Align.MIN))
+# === 1. Define USB Socket Part (from STEP file) ===
+imported_usb = import_step("designs/USB-C.stp")
+usb_bbox = imported_usb.bounding_box()
+# Center the USB socket
+usb_centered = imported_usb.moved(Location((-usb_bbox.center().X, -usb_bbox.center().Y, -usb_bbox.center().Z)))
+# Cutout diameter for USB (threaded part)
+usb_thread_d = 22 # Keep for cutout dimensions
 
 
 # Re-define constants used for placement
@@ -145,44 +134,38 @@ print(f"LM2596 Width (Y): {lm_width_y}")
 # User request: Width of LM + Length of Sensor + 1cm margin
 margin = 10
 width = pcb_l + lm_width_y + margin + (wall_thickness * 2) 
-# Let's add a bit more to be safe, say 15mm margin internal
-internal_y_space = pcb_l + lm_width_y + 15
+# Let's add a bit more to be safe, say 20mm margin internal (User request: wider for LM2596)
+internal_y_space = pcb_l + lm_width_y + 20
 width = internal_y_space + (wall_thickness * 2) 
 
-length = 130 # Keep X fixed for now
+length = 140 # Increased to 140 per user request (was 130)
 height = 35  
 
 print(f"Calculated Case Width (Y): {width}")
 
-with BuildPart() as ph_sensor_def:
-    # Add imported part
-    part_rotated = imported_sensor.moved(Rotation(90, 0, 0))
-    bbox = part_rotated.bounding_box()
-    
-    # Align
-    target_min_x = -pcb_l / 2
-    target_center_y = 0
-    target_min_z = 0 
-    
-    shift_x = target_min_x - bbox.min.X
-    shift_y = target_center_y - bbox.center().Y
-    shift_z = target_min_z - bbox.min.Z
-    
-    align_loc = Location((shift_x, shift_y, shift_z))
-    
-    offset_x = -6 
-    offset_y = 2 
-    offset_z = 0 
-    manual_offset = Location((offset_x, offset_y, offset_z)) 
-    
-    add(part_rotated.moved(align_loc * manual_offset))
+# === PH Sensor: Direct STEP move (preserve colors) ===
+# Rotate and center like TB6612
+ph_sensor_rotated = imported_sensor.moved(Rotation(90, 0, 0))
+ph_bbox = ph_sensor_rotated.bounding_box()
 
-with BuildPart() as lm2596_def:
-    # Center XY, Min Z at 0
-    bbox_lm = lm_rotated_geom.bounding_box()
-    # Center it
-    align_loc_lm = Location((-bbox_lm.center().X, -bbox_lm.center().Y, -bbox_lm.min.Z))
-    add(lm_rotated_geom.moved(align_loc_lm))
+# Align: MinX at -pcb_l/2, Center Y, MinZ at 0
+target_min_x = -pcb_l / 2
+shift_x = target_min_x - ph_bbox.min.X
+shift_y = -ph_bbox.center().Y
+shift_z = -ph_bbox.min.Z
+
+# Manual offset (from original code)
+offset_x = -6 
+offset_y = 2 
+offset_z = 0 
+
+ph_sensor_centered = ph_sensor_rotated.moved(Location((shift_x + offset_x, shift_y + offset_y, shift_z + offset_z)))
+
+# === LM2596: Direct STEP move (preserve colors) ===
+lm_rotated = imported_lm2596.moved(Rotation(-90, 0, 0))
+lm_bbox = lm_rotated.bounding_box()
+# Center XY, MinZ at 0
+lm2596_centered = lm_rotated.moved(Location((-lm_bbox.center().X, -lm_bbox.center().Y, -lm_bbox.min.Z)))
 
 # === 3b. Define TB6612 Part & Mount ===
 imported_tb6612 = import_step("designs/TB6612.step")
@@ -284,11 +267,10 @@ screen_corner_radius = 4
 
 # Mounting holes
 # Assumption: Screws come from INSIDE case (Lid Bottom) -> UP into the Rim.
-# Located in the Rim area (between 84.5x52 and 94.5x62).
-# Let's center them in the 5mm rim space.
-# 5mm rim. Center is 2.5mm from edge of Rear Body.
-mount_dx = (screen_back_w / 2) + 2.5 
-mount_dy = (screen_back_h / 2) + 2.5
+# Located in the Rim area.
+# User constraints: Hole Spacing 84mm x 52mm (Centered).
+mount_dx = 84 / 2 # 42
+mount_dy = 52 / 2 # 26
 
 # === 4. Define 3.5" Screen Part ===
 # Logic: Screen Rim sits ON TOP of Lid.
@@ -296,14 +278,17 @@ mount_dy = (screen_back_h / 2) + 2.5
 screen_front_w = 94.5
 screen_front_h = 62
 screen_front_t = 4 # Bezel thickness
-screen_back_w = 84.5 
-screen_back_h = 52
+screen_back_w = 82.2 # User spec: Ronding naar 82.2
+screen_back_h = 57.8 # User spec: Ronding naar 57.8
 screen_back_t = 8  # Rear housing thickness
 screen_corner_radius = 4
 
-# Mounting holes
-mount_dx = (screen_back_w / 2) + 2.5 
-mount_dy = (screen_back_h / 2) + 2.5
+# Mounting holes (Centered on PCB)
+# Spacing: 84mm (X), 52mm (Y)
+# dx = 84/2 = 42
+# dy = 52/2 = 26
+mount_dx = 42 
+mount_dy = 26
 
 with BuildPart() as screen_def:
     # Front Plate (Bezel/Glass) - Sits ON TOP (Z=0 to +4)
@@ -332,7 +317,9 @@ with BuildPart() as screen_def:
 # === 5. Placements & Layout ===
 
 # USB: Right Side (X+ Face).
-usb_loc = Location((length/2, 0, 0)) * Rotation(0, -90, 0) 
+# User request: Flush mount. 
+# Original: length/2. previous -3. User says "nog 5mm", so -8 total.
+usb_loc = Location((length/2 - 8, 0, 0)) * Rotation(0, -90, 0) * Rotation(180, 0, 0) * Rotation(0, 0, 90)
 
 # GX12: "Next to" USB.
 # User feedback: "Niet dwars". Needs rotation around insertion axis.
@@ -371,9 +358,10 @@ sensor_rot = Rotation(0, 0, -90)
 sensor1_loc = Location((sensor1_x, sensor_y, sensor_z)) * sensor_rot
 sensor2_loc = Location((sensor2_x, sensor_y, sensor_z)) * sensor_rot
 
-# LM2596: Behind Sensors (Right side)
-# User request: "Back to old place" (Center X=0)
-lm2596_loc_x = 0
+# LM2596: Behind Sensors
+# User request: "Opschuiven naar andere wand" to avoid USB collision.
+# USB is at X+ (Right). So move LM to X- (Left).
+lm2596_loc_x = -15 # Shifted left by 15mm
 lm2596_loc_y = (sensor_y + pcb_l/2) + 5 + lm_width_y/2
 lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + standoff_h)) 
 
@@ -401,10 +389,10 @@ ctp09_loc = Location((left_module_x, ctp09_loc_y, -height/2 + wall_thickness))
 # Screen Z=0 (Rim Bottom) aligns with Lid Top Surface.
 # User requested shift UP (Y+) by 5mm.
 screen_offset_y = 5
-# Lid is placed at height/2. Thickness is 4. Top is height/2 + 4.
-lid_thickness = 4
+# Lid is placed at height/2. Thickness is 2.5 (Refined). Top is height/2 + 2.5.
+lid_thickness = 2.5
 lid_top_z = height/2 + lid_thickness
-screen_loc = Location((0, screen_offset_y, lid_top_z))
+screen_loc = Location((0, 0, lid_top_z))  # Y=0 to match lid cutout and holes
 
 # === 6. Create Case with Cutouts ===
 # === 6. Create Case with Cutouts ===
@@ -471,14 +459,27 @@ with BuildPart() as lid:
         # Sketch is at (0,0,0). Extrude amount=lid_thickness. Result Z: 0 to thickness.
         # Correct.
     
-    # Cut Through Hole for Rear Body (84.5x52)
-    # Apply Screen Offset Y
-    with Locations((0, screen_offset_y, 0)):
-         Box(screen_back_w + 0.5, screen_back_h + 0.5, lid_thickness, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+    # Cut Through Hole for Rear Body
+    # User: Cutout 82.4 x 57.6mm. Holes at 84x52 (mount_dx=42, mount_dy=26).
+    # DEBUG: Trying without screen_offset_y to see if alignment improves
+    cutout_width = 82.4
+    cutout_height = 57.6
+    
+    with Locations((0, 0, 0)):  # No Y offset - test centering
+         with BuildSketch():
+             # Rectangle centered
+             Rectangle(cutout_width, cutout_height, align=(Align.CENTER, Align.CENTER))
+             
+             # Circles at hole positions
+             with Locations([(mount_dx, mount_dy), (mount_dx, -mount_dy), 
+                           (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]):
+                 Circle(radius=5, mode=Mode.SUBTRACT)
+                 
+         extrude(amount=lid_thickness, mode=Mode.SUBTRACT)
          
     # Mounting Holes (For screws from Inside-Up)
-    # Apply Screen Offset Y
-    with Locations((0, screen_offset_y, 0)):
+    # DEBUG: No screen_offset_y - testing alignment
+    with Locations((0, 0, 0)):
         with Locations([(mount_dx, mount_dy), (mount_dx, -mount_dy), (-mount_dx, mount_dy), (-mount_dx, -mount_dy)]):
              Cylinder(radius=3.2/2, height=lid_thickness, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
@@ -527,11 +528,11 @@ with BuildPart() as lm_mount:
              Cylinder(radius=1.2, height=2, align=(Align.CENTER, Align.CENTER, Align.MIN))
 
 # === 8. Ghosts & Show ===
-usb_ghost = usb_socket_def.part.moved(usb_loc)
-sensor1_ghost = ph_sensor_def.part.moved(sensor1_loc)
-sensor2_ghost = ph_sensor_def.part.moved(sensor2_loc)
-lm2596_ghost = lm2596_def.part.moved(lm2596_loc)
-screen_ghost = screen_def.part.moved(screen_loc)
+usb_ghost = usb_centered.moved(usb_loc)
+sensor1_ghost = ph_sensor_centered.moved(sensor1_loc)
+sensor2_ghost = ph_sensor_centered.moved(sensor2_loc)
+lm2596_ghost = lm2596_centered.moved(lm2596_loc)
+screen_ghost = screen_def.part.moved(screen_loc) # Screen is built from primitives, no STEP colors
 lid_part = lid.part.moved(Location((0,0, height/2))) # Lid Base at top of case
 
 # TB6612 Ghost & Mount
@@ -698,7 +699,63 @@ export_step(lid.part, "designs/lid.step")
 
 print("Design generated: designs/case.stl, designs/lid.stl, designs/case.step, designs/lid.step")
 
-show(start_case_fuse, lid_part, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, screen_ghost, tb6612_ghost, ctp09_ghost, gx12_ghost,
-     names=["Case", "Lid", "USB", "Sensor1", "Sensor2", "LM2596", "Screen", "TB6612", "CTP09", "GX12"], 
-     colors=[None, None, (0.2,0.2,0.2), (0,0.8,0), (0,0.8,0), (0,0,0.8), (0.1, 0.1, 0.1), (0.8, 0, 0), (0, 0.8, 0.8), (0.6, 0.6, 0.6)], 
-     alphas=[1.0, 0.8, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3])
+# Export full assembly STEP for Fusion color verification
+# Assign labels and colors for export
+# Wrap in Part() to ensure exporter handles them correctly (avoid Unknown Compound type warning)
+# Note: start_case_fuse and lid_part are likely already Parts, but wrapping doesn't hurt or we can check via type
+# For imported STEPs (Compound), we MUST wrap in Part given the exporter logic
+
+# Assign labels and colors for export
+# Note: Manually coloring imported parts because internal STEP colors are lost in re-export
+
+case_export = start_case_fuse if isinstance(start_case_fuse, Part) else Part(start_case_fuse)
+case_export.label = "Case"
+case_export.color = Color(0.2, 0.2, 0.2) # Dark Grey
+
+lid_export = lid_part if isinstance(lid_part, Part) else Part(lid_part)
+lid_export.label = "Lid" 
+lid_export.color = Color(0.0, 1.0, 0.0) # Neon Green
+
+# For ghosts, assign representative colors
+screen_export = Part(screen_ghost)
+screen_export.label = "Screen"
+screen_export.color = Color("Black")
+
+ctp09_export = Part(ctp09_ghost)
+ctp09_export.label = "CTP09"
+ctp09_export.color = Color("Red") # PCB Color
+
+usb_export = Part(usb_ghost)
+usb_export.label = "USB"
+usb_export.color = Color("Silver")
+
+sensor1_export = Part(sensor1_ghost)
+sensor1_export.label = "Sensor1"
+sensor1_export.color = Color("Green") # PCB Color
+
+sensor2_export = Part(sensor2_ghost)
+sensor2_export.label = "Sensor2"
+sensor2_export.color = Color("Green") # PCB Color
+
+lm2596_export = Part(lm2596_ghost)
+lm2596_export.label = "LM2596"
+lm2596_export.color = Color("Blue") # PCB Color
+
+tb6612_export = Part(tb6612_ghost)
+tb6612_export.label = "TB6612"
+tb6612_export.color = Color("Blue") # PCB Color
+
+gx12_export = Part(gx12_ghost)
+gx12_export.label = "GX12"
+gx12_export.color = Color("Silver")
+
+assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, screen_export, tb6612_export, gx12_export])
+assembly.label = "PoolLab_Assembly"
+export_step(assembly, "designs/full_assembly.step")
+print("Full assembly exported: designs/full_assembly.step")
+
+# All Objects - Names and alphas for visualization
+# Note: OCP CAD Viewer may render dark/black STEP surfaces as yellow (viewer limitation)
+show(start_case_fuse, lid_part, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, screen_ghost, tb6612_ghost, gx12_ghost,
+     names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", "Screen", "TB6612", "GX12"],
+     alphas=[1.0, 1.0, 0.3, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
