@@ -403,12 +403,14 @@ lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + 
 left_module_x = -20
 
 # TB6612 (Front-Left)
-tb6612_loc_y = sensor_y - 16 # ~ -49 - 16 = -65
-tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness)) 
+# User: Move closer to CTP09, mounts may touch. CTP09 stays at Y=-32.
+# Moving from -58 to -50.
+tb6612_loc_y = -50
+tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness)) * Rotation(0, 0, 90) 
 
 # PD Trigger (Rear-Left)
-# User: "Too close to TB6612". Increased gap by moving TB6612 South.
-ctp09_loc_y = -40 
+# Moving North to Y=-32 to maintain gap with TB6612.
+ctp09_loc_y = -32 
 ctp09_loc = Location((left_module_x, ctp09_loc_y, -height/2 + wall_thickness)) 
 
 # Screen: On top of the Lid
@@ -985,7 +987,7 @@ lm2596_export.color = Color("Blue") # PCB Color
 
 tb6612_export = Part(tb6612_ghost)
 tb6612_export.label = "TB6612"
-tb6612_export.color = Color("Blue") # PCB Color
+# Original STEP colors preserved (user request)
 
 gx12_export = Part(gx12_ghost)
 gx12_export.label = "GX12"
@@ -1023,16 +1025,13 @@ export_step(assembly, "designs/full_assembly_v7.step")
 print("Full assembly exported: designs/full_assembly_v7.step")
 
 # All Objects - Names and alphas for visualization
-# Note: Using GHOSTS for imported parts (to keep native colors) and EXPORTS for generated parts (to show assigned colors)
+# Using GHOSTS for imported parts (to keep native STEP colors)
 show(case_export, lid_export, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, 
      screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
      tb6612_ghost, gx12_ghost,
      names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", 
             "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts", 
             "TB6612", "GX12"],
-     colors=[Color("Gray"), Color("Gray"), Color("Red"), Color("Silver"), Color("Green"), Color("Green"), Color("Blue"),
-             Color(0.2,0.2,0.2), Color(0.2,0.2,0.2), Color("Black"), Color("White"), Color("Silver"),
-             Color("Blue"), Color("Silver")],
      alphas=[0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
 
 # DEBUG EXPORT CTP09
