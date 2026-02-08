@@ -117,7 +117,7 @@ bnc_d = 12
 bnc_stickout = 15
 
 # Calibration Constants
-bnc_center_z = 14   
+bnc_center_z = 9   # Modified to 9mm (15mm Top - 6mm Radius)
 standoff_h = 6      # For M3x8 screws (8mm - 1.6mm PCB = ~6mm)
 
 
@@ -157,7 +157,7 @@ shift_z = -ph_bbox.min.Z
 # Manual offset (from original code)
 offset_x = -6 
 offset_y = 2 
-offset_z = 0 
+offset_z = -3 # Fix "Floating": Compensate for pins (~3mm) below PCB so PCB rests on standoff 
 
 ph_sensor_centered = ph_sensor_rotated.moved(Location((shift_x + offset_x, shift_y + offset_y, shift_z + offset_z)))
 
@@ -236,6 +236,16 @@ with BuildPart() as ctp09_mount:
     # Seat Cut
     with Locations((0,0, standoff_z)):
         Box(ctp_w, ctp_l, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+        
+    # USB-C Clearance Cut for Plug (Left Side / -X)
+    # User feedback: "Cutout disappeared". Restoring it.
+    # Plug width ~9mm. Depth ~10mm.
+    # Left Pillars are at X = -ctp_w/2 = -11.5. (Actually dx = 11.5)
+    # Cutout location: X = -11.5.
+    with Locations((-ctp_w/2, 0, standoff_z)):
+        # Cut a box to clear the pillars.
+        # Height: pillar_h (full height).
+        Box(10, 9, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")
@@ -347,33 +357,28 @@ usb_loc = Location((length/2 - 8, 0, 0)) * Rotation(0, -90, 0) * Rotation(180, 0
 
 # GX12: "Next to" USB.
 # User feedback: "Niet dwars". Needs rotation around insertion axis.
-gx12_loc_y = 29 # Shifted further right per user request
-# Rotation trace:
-# Rotation(0, -90, 0) -> Points connection axis OUT of X+.
-# Adding Rotation(90, 0, 0) -> Rotates 90 deg around X axis (Roll).
-gx12_pos = Location((length/2, gx12_loc_y, 0))
-gx12_loc = gx12_pos * Rotation(0, -90, 0) * Rotation(90, 0, 0) # For Ghost (Visual)
+# GX12: Move to FRONT WALL (-Y), LEFT SIDE (X < 0)
+# User: "Linkerzijwand" (Left of BNCs), "Space from TB6612".
+# BNCs are at Front. TB6612 at X=-10.
+# GX12 at X=-45 (1cm to the right of -55).
+# Y aligned with Wall (-width/2). 
+gx12_loc_y = -width/2 + wall_thickness # On the wall
+gx12_loc_x = -45
+gx12_pos = Location((gx12_loc_x, gx12_loc_y, 0))
 
-# For Cutout, we want the Cylinder aligned with the Hole Axis (X-axis).
-# The standard "Cylinder" is Z-aligned. We need to rotate it -90 around Y to point X.
-# We DO NOT want the extra "Roll" rotation (90 around X) because that doesn't change a Cylinder's shape 
-# ... UNLESS it was applied to the axis, but here simple is better.
-gx12_cutout_loc = gx12_pos * Rotation(0, -90, 0) # Points Z -> X. No Roll.
+# Rotation: 
+# Part (GX12 STP): User said "Achterstevoren" with (0,0,180).
+# This means (0,0,180) pointed it WRONG.
+# So we try (0,0,0).
+gx12_loc = gx12_pos * Rotation(0, 0, 0) # Visual (Flip 180)
+# Cutout (Cylinder): Default Z. Becomes -Y with Rotation(90, 0, 0).
+gx12_cutout_loc = gx12_pos * Rotation(90, 0, 0) 
 
-# Layout Strategy:
-# Right Side (X > 0): Sensors + LM2596
-# Left Side (X < 0): TB6612 + CTP09
-
-# Sensors: Shifted Right (less aggressive)
-# Previous: 15, 50. Too far.
-# LM2596: Back to 0.
-# Let's shift sensors enough to clear left side for TB6612.
-# If TB6612 is at -40.
-# Sensor 1 at +5? Sensor 2 at +40?
-sensor_x_shift = 20 # Shift center of pair by 20mm right
+# === Sensors ===
+sensor_x_shift = 30 
 sensor_space = 35 
-sensor1_x = sensor_x_shift - sensor_space/2 # 20 - 17.5 = 2.5
-sensor2_x = sensor_x_shift + sensor_space/2 # 20 + 17.5 = 37.5
+sensor1_x = sensor_x_shift - sensor_space/2
+sensor2_x = sensor_x_shift + sensor_space/2
 
 sensor_y = (-width/2 + wall_thickness + 2) + pcb_l/2
 sensor_z = -height/2 + wall_thickness + standoff_h 
@@ -382,31 +387,28 @@ sensor_rot = Rotation(0, 0, -90)
 sensor1_loc = Location((sensor1_x, sensor_y, sensor_z)) * sensor_rot
 sensor2_loc = Location((sensor2_x, sensor_y, sensor_z)) * sensor_rot
 
-# LM2596: Behind Sensors
-# User request: "Opschuiven naar andere wand" to avoid USB collision.
-# USB is at X+ (Right). So move LM to X- (Left).
-lm2596_loc_x = -15 # Shifted left by 15mm
+# === LM2596 ===
+# Shift with sensors to keep right side organized.
+# Was -15. Move to +5?
+lm2596_loc_x = 5 # Shifted right significantly
 lm2596_loc_y = (sensor_y + pcb_l/2) + 5 + lm_width_y/2
-lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + standoff_h)) 
+lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + standoff_h))
 
-# Left Side Modules
-# User Request: "Dichter naar voorwant" (Closer to Front/ -Y)
-# User Request: "Dichter naar sensor bordjes" (Closer to Center/ +X)
-
-# Sensors are at X ~ +2.5 to +37.
-# Previous Left X: -40. Let's move to -25.
-left_module_x = -25 
+# === Left Side Modules (TB6612 & CTP09) ===
+# Move to -20 (Right Shift) based on feedback "Further towards sensors".
+# Y-gap needed: Separate them (Tight).
+# LM2596 ends at Y=-29.
+# CTP09 at Y=-40. (Center). Max Y = -34.25. Gap to LM = 5mm. Safe.
+# TB6612 at Y=-65. (Center). Max Y = -54. Gap to CTP = 14mm. Safe.
+left_module_x = -20
 
 # TB6612 (Front-Left)
-# Sensor Front Alignment: sensor_y = (-width/2 + ...) + 42/2.
-# TB6612 is smaller (~22mm). We can move it closer to wall (-Y).
-# Let's shift it -8mm from sensor_y line.
-tb6612_loc_y = sensor_y - 8
+tb6612_loc_y = sensor_y - 16 # ~ -49 - 16 = -65
 tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness)) 
 
-# PD Trigger (Rear-Left, behind TB6612)
-# Gap of 5mm
-ctp09_loc_y = tb6612_loc_y + tb_l/2 + 5 + ctp_l/2
+# PD Trigger (Rear-Left)
+# User: "Too close to TB6612". Increased gap by moving TB6612 South.
+ctp09_loc_y = -40 
 ctp09_loc = Location((left_module_x, ctp09_loc_y, -height/2 + wall_thickness)) 
 
 # Screen: On top of the Lid
@@ -468,6 +470,11 @@ with BuildPart() as case:
     cutter_local_loc = Location((pcb_l/2, 0, bnc_center_z)) * Rotation(0, 90, 0)
     with Locations([sensor1_loc * cutter_local_loc, sensor2_loc * cutter_local_loc]):
         Cylinder(radius=bnc_d/2 + 0.5, height=30, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+
+    # CTP09 USB-C Cutout (Left Wall) - REMOVED per user request
+    # User: "er moet dus geen cutout in de wand"
+    pass
+
 
 # === 7. Create Lid ===
 with BuildPart() as lid:
@@ -672,8 +679,13 @@ tb6612_ghost = tb6612_centered.moved(tb6612_loc * Location((0,0, standoff_lift))
 ts6612_mount_part = tb6612_mount.part.moved(tb6612_loc)
 
 # CTP09 Ghost & Mount
+# CTP09 Ghost & Mount
 ctp09_ghost = ctp09_centered.moved(ctp09_loc * Location((0,0, standoff_lift))) 
 ctp09_mount_part = ctp09_mount.part.moved(ctp09_loc)
+
+print(f"DEBUG: CTP09 Loc: {ctp09_loc}")
+print(f"DEBUG: CTP09 Ghost Volume: {ctp09_ghost.volume}")
+print(f"DEBUG: CTP09 Mount Volume: {ctp09_mount_part.volume}")
 
 # GX12 Ghost
 gx12_ghost = gx12_def.moved(gx12_loc)
@@ -1002,12 +1014,13 @@ export_step(screen_text_export, "designs/lid_text.step")
 
 print("Exports Complete: designs/case.stl, designs/lid.stl, designs/lid_text.stl")
 
+
 assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, 
                             screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
                             tb6612_export, gx12_export])
-assembly.label = "PoolLab_Assembly"
-export_step(assembly, "designs/full_assembly.step")
-print("Full assembly exported: designs/full_assembly.step")
+assembly.label = "PoolLab_Assembly_V7"
+export_step(assembly, "designs/full_assembly_v7.step")
+print("Full assembly exported: designs/full_assembly_v7.step")
 
 # All Objects - Names and alphas for visualization
 # Note: Using GHOSTS for imported parts (to keep native colors) and EXPORTS for generated parts (to show assigned colors)
@@ -1017,6 +1030,13 @@ show(case_export, lid_export, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_gho
      names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", 
             "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts", 
             "TB6612", "GX12"],
-     alphas=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
-             1.0, 1.0, 1.0, 1.0, 1.0, 
-             1.0, 1.0])
+     colors=[Color("Gray"), Color("Gray"), Color("Red"), Color("Silver"), Color("Green"), Color("Green"), Color("Blue"),
+             Color(0.2,0.2,0.2), Color(0.2,0.2,0.2), Color("Black"), Color("White"), Color("Silver"),
+             Color("Blue"), Color("Silver")],
+     alphas=[0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+
+# DEBUG EXPORT CTP09
+ctp_debug_assembly = Compound(children=[ctp09_ghost, ctp09_mount_part])
+ctp_debug_assembly.label = "CTP09_Debug"
+export_step(ctp_debug_assembly, "designs/ctp09_debug.step")
+print("Debug export: designs/ctp09_debug.step")
