@@ -512,35 +512,110 @@ with BuildPart() as lid:
     # 2. Create 4 Circles at Mounting Holes (Radius = R_ear).
     # 3. Cutout = Rect MINUS Circles. (This leaves "Ears" in the Lid).
     
-    mount_dx = 84 # Fixed per user
-    mount_dy = 52 # Fixed per user
+    mount_dx = 84
+    mount_dy = 52
+    
+    # User Request: Flush Bezel was 94.5, but verifying confirmed 83.4 for body.
+    # The large cutout block here was causing the "94.4" print result.
+    # We REMOVED the duplicate cutout operation here.
+    # The correct cutout is performed at the end of the script (line 618+).
 
-    with Locations((0, 0, 0)):  # No Y offset - test centering
-         with BuildSketch():
-             # 1. Create Main Rect (84.4 x 59.6).
-             screen_cutout_rect = Rectangle(screen_cutout_w, screen_cutout_h, align=(Align.CENTER, Align.CENTER))
-             
-             # 2. Subtract Ears Circles at Mounting Holes
-             # We want the Lid to HAVE material at (42, 26).
-             # So the CUTOUT must NOT exist at (42, 26).
-             # So we Subtract Circles from the Cutout Rectangle.
-             with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2),
-                           (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
-                # User Request: "veiliger is nog iets meer eraf" (safer to remove more).
-                # Reduced from 5 -> 4 -> 3mm.
-                # Hole is R=1.6mm. Wall thickness = 3 - 1.6 = 1.4mm (Sufficient).
-                Circle(radius=3, mode=Mode.SUBTRACT)
+    # === Recessed Mounting Brackets ===
+    # These hang BELOW the lid to hold the screen.
+    recess_depth = 5 
+    bracket_thickness = 3
+    # Z-level relative to Lid Base (0 to lid_thickness).
+    # Lid Base is at 0 in this Local Part context?
+    # No, this context builds `lid`. Z=0 is bottom of lid?
+    # Extrude defaulted to Z=0 up?
+    # Usually `lid` is built flat on XY then moved.
+    # If `extrude(lid_thickness)`, Z ranges 0 to 2.5.
+    # We want Top of Bracket at Z = 2.5 (Top) - 5 = -2.5.
+    # So Bracket is from -5.5 to -2.5.
+    
+    bracket_z_top = lid_thickness - recess_depth # 2.5 - 5 = -2.5
+    
+    with BuildPart() as brackets:
+        with Locations((0,0, bracket_z_top)):
+            with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2),
+                          (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
+                 # Mounting Tab Cylinder
+                 Cylinder(radius=5, height=bracket_thickness, align=(Align.CENTER, Align.CENTER, Align.MAX))
+                 # Align MAX means Top of cylinder is at bracket_z_top. Correct.
                  
-         extrude(amount=lid_thickness, mode=Mode.SUBTRACT)
-         
-    # Mounting Holes (For screws from Inside-Up)
-    # DEBUG: No screen_offset_y - testing alignment
-    with Locations((0, 0, 0)):
-        with Locations([(mount_dx/2, mount_dy/2), (mount_dx/2, -mount_dy/2), (-mount_dx/2, mount_dy/2), (-mount_dx/2, -mount_dy/2)]):
-             Cylinder(radius=3.2/2, height=lid_thickness, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+                 # Hole for Screw
+                 Cylinder(radius=1.8, height=bracket_thickness, align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
 
-    # Lid Corner Screw Holes (M3 Countersunk)
-    # Match post_dx/dy from Case
+    mount_dx = 84
+    mount_dy = 52 # 26*2
+    
+    # User Request: Cutout fit for Body (~82.4 x 57.6).
+    # BUT: Mounting holes are at 84mm spacing (outside the 82.4mm body).
+    # To access screws, cutout must be wider than 84mm. 
+    # Bezel covers up to 94.5mm.
+    # We widen cutout to 88.0mm to expose holes (2mm clearance per side).
+    flush_cutout_w = 88.0 
+    flush_cutout_h = 57.6 + 1.0 # 58.6
+    
+    # NOTE: Cutout is done AFTER brackets so it cuts through pillar too
+
+    # === Simple Mounting Brackets with Wall Connection ===
+    # 4 circles at mount positions, connected to wall via small arm
+    # - Circle Diameter: 4mm (R=2)
+    # - Top at: 5mm below outer surface (Z = -2.5)
+    # - Height: 3mm
+    bracket_h = 3
+    bracket_radius = 2.0  # Diameter 4mm
+    bracket_z_top = lid_thickness - 5  # 5mm below outer surface = -2.5
+    
+    # Mount positions (mx, my) and corresponding cutout corners (cx, cy)
+    mount_data = [
+        (mount_dx/2, mount_dy/2, flush_cutout_w/2, flush_cutout_h/2),       # Top-right
+        (mount_dx/2, -mount_dy/2, flush_cutout_w/2, -flush_cutout_h/2),     # Bottom-right
+        (-mount_dx/2, mount_dy/2, -flush_cutout_w/2, flush_cutout_h/2),     # Top-left
+        (-mount_dx/2, -mount_dy/2, -flush_cutout_w/2, -flush_cutout_h/2)    # Bottom-left
+    ]
+    
+    for mx, my, cx, cy in mount_data:
+        with BuildPart(mode=Mode.ADD):
+            # Anchor position: 8mm outside the cutout edge (VERY deep in wall)
+            # Offset = radius + margin
+            # R=4 pillar, offset 8mm = 4mm clearance from cutout edge
+            # This ensures NO part of the pillar is visible in the cutout
+            anchor_r = 4.0  # Large R=4 pillar
+            anchor_offset = 8.0  # 8mm from cutout edge
+            
+            ax = cx + (anchor_offset if cx > 0 else -anchor_offset)
+            ay = cy + (anchor_offset if cy > 0 else -anchor_offset)
+            
+            # 1. VERTICAL PILLAR: From lid (Z=0) down to bracket top (Z=-2.5)
+            with BuildSketch(Plane.XY.offset(0)):
+                with Locations((ax, ay)):
+                    Circle(anchor_r)
+            extrude(amount=bracket_z_top)  # Extrude down to -2.5
+            
+            # 2. BRACKET: Tapered arm - ear (R=2) to anchor (R=4)
+            with BuildSketch(Plane.XY.offset(bracket_z_top)):
+                with Locations((mx, my)):
+                    Circle(bracket_radius)  # Ear R=2 (4mm diameter)
+                with Locations((ax, ay)):
+                    Circle(anchor_r)  # Anchor R=4 (8mm diameter)
+                make_hull()
+            extrude(amount=-bracket_h)  # Extrude down 3mm
+            
+            # Screw hole through the mounting circle
+            with Locations((mx, my, bracket_z_top)):
+                Cylinder(radius=1.3, height=bracket_h + 1, 
+                        align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
+
+    # === CUTOUT (Final Depth) ===
+    # Cut through Lid (2.5mm) AND Pillar space (2.5mm)
+    # Stops exactly at bracket top (Z=-2.5), leaving ears intact
+    cutout_depth = 5.0 
+    with BuildSketch(Plane.XY.offset(lid_thickness)):
+        Rectangle(flush_cutout_w, flush_cutout_h, align=(Align.CENTER, Align.CENTER))
+    extrude(amount=-cutout_depth, mode=Mode.SUBTRACT)
+    # Lid Corner Screw Holes (M3 Countersunk) (Rest of file...)
     post_r = 3.5
     post_dx = length/2 - wall_thickness - post_r
     post_dy = width/2 - wall_thickness - post_r
