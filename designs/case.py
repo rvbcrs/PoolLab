@@ -403,9 +403,9 @@ lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + 
 left_module_x = -20
 
 # TB6612 (Front-Left)
-# User: Move closer to CTP09, mounts may touch. CTP09 stays at Y=-32.
-# Moving from -58 to -50.
-tb6612_loc_y = -50
+# User: Increase gap to CTP09, mounts were overlapping.
+# Moving from -50 to -55 (toward front wall).
+tb6612_loc_y = -55
 tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness)) * Rotation(0, 0, 90) 
 
 # PD Trigger (Rear-Left)
@@ -562,8 +562,8 @@ with BuildPart() as lid:
     # BUT: Mounting holes are at 84mm spacing (outside the 82.4mm body).
     # To access screws, cutout must be wider than 84mm. 
     # Bezel covers up to 94.5mm.
-    # We widen cutout to 88.0mm to expose holes (2mm clearance per side).
-    flush_cutout_w = 88.0 
+    # User feedback: LCD doesn't fit. Widening to 91mm.
+    flush_cutout_w = 91.0 
     flush_cutout_h = 57.6 + 1.0 # 58.6
     
     # NOTE: Cutout is done AFTER brackets so it cuts through pillar too
@@ -587,34 +587,35 @@ with BuildPart() as lid:
     
     for mx, my, cx, cy in mount_data:
         with BuildPart(mode=Mode.ADD):
-            # Anchor position: 8mm outside the cutout edge (VERY deep in wall)
-            # Offset = radius + margin
-            # R=4 pillar, offset 8mm = 4mm clearance from cutout edge
-            # This ensures NO part of the pillar is visible in the cutout
-            anchor_r = 4.0  # Large R=4 pillar
+            # Anchor position: 8mm outside the cutout edge
+            anchor_r = 3.0  # User: smaller screw circles (R=3 -> 6mm diameter)
             anchor_offset = 8.0  # 8mm from cutout edge
             
             ax = cx + (anchor_offset if cx > 0 else -anchor_offset)
             ay = cy + (anchor_offset if cy > 0 else -anchor_offset)
             
-            # 1. VERTICAL PILLAR: From lid (Z=0) down to bracket top (Z=-2.5)
-            with BuildSketch(Plane.XY.offset(0)):
-                with Locations((ax, ay)):
-                    Circle(anchor_r)
-            extrude(amount=bracket_z_top)  # Extrude down to -2.5
+            # NEW DESIGN: Extrude the FULL ARM SHAPE from lid (Z=0) down to arm bottom
+            # This ensures the entire arm is solidly attached to the lid, not just a thin pillar.
+            # User feedback: old design broke during support removal.
             
-            # 2. BRACKET: Tapered arm - ear (R=2) to anchor (R=4)
-            with BuildSketch(Plane.XY.offset(bracket_z_top)):
+            # Total extrusion: from Z=0 down to bracket bottom
+            # bracket_z_top = -2.5 (5mm below lid top, but lid is 2.5mm thick, so 2.5mm below lid bottom)
+            # bracket_h = 3mm (arm thickness)
+            # Total depth from Z=0: |bracket_z_top| + bracket_h = 2.5 + 3 = 5.5mm
+            full_arm_depth = abs(bracket_z_top) + bracket_h
+            
+            # Create the full arm shape (hull from ear to anchor)
+            with BuildSketch(Plane.XY.offset(0)):
                 with Locations((mx, my)):
                     Circle(bracket_radius)  # Ear R=2 (4mm diameter)
                 with Locations((ax, ay)):
-                    Circle(anchor_r)  # Anchor R=4 (8mm diameter)
+                    Circle(anchor_r)  # Anchor R=3 (6mm diameter)
                 make_hull()
-            extrude(amount=-bracket_h)  # Extrude down 3mm
+            extrude(amount=-full_arm_depth)  # Extrude entire arm from lid bottom
             
             # Screw hole through the mounting circle
-            with Locations((mx, my, bracket_z_top)):
-                Cylinder(radius=1.3, height=bracket_h + 1, 
+            with Locations((mx, my, 0)):
+                Cylinder(radius=1.3, height=full_arm_depth + 1, 
                         align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
 
     # === CUTOUT (Final Depth) ===
