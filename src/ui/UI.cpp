@@ -5,6 +5,7 @@
 #include <math.h>
 #include "domain/Metrics.h"
 #include "core/Storage.h"
+#include "io/PowerManager.h"
 #if USE_ANALOG_SENSORS
 #include "io/AnalogPhOrpSensor.h"
 #endif
@@ -52,6 +53,7 @@ static float g_phSession = 0, g_phFlow = 0, g_orpSession = 0, g_orpFlow = 0;
 static lv_obj_t *lv_pump_ph = nullptr, *lv_pump_orp = nullptr;
 static lv_obj_t *lv_pump_ph_stats = nullptr, *lv_pump_orp_stats = nullptr;
 static lv_obj_t *lv_img_link = nullptr;  // Zigbee connection indicator
+static lv_obj_t *lv_lbl_battery = nullptr; // Battery level indicator
 // Debounce for on-screen keyboard (avoid double insert)
 static uint32_t g_kb_last_ms = 0; static int16_t g_kb_last_id = -1;
 static lv_obj_t *lv_ta_ssid = nullptr;
@@ -461,6 +463,14 @@ void build(bool safeBaseline){
   lv_obj_align_to(lv_lbl_mqtt, lv_lbl_ip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
   lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
 
+  // Battery indicator - same row as MQTT, right side
+  lv_lbl_battery = lv_label_create(root);
+  lv_obj_set_style_text_color(lv_lbl_battery, lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
+  lv_obj_set_style_text_font(lv_lbl_battery, &lv_font_montserrat_14, 0);
+  lv_label_set_text(lv_lbl_battery, LV_SYMBOL_BATTERY_3 " --%");
+  // Align to right side of screen, same Y as MQTT label
+  lv_obj_align(lv_lbl_battery, LV_ALIGN_BOTTOM_RIGHT, -80, -2);
+
   // SSID label above IP (stacked), left aligned with proper spacing
   lv_lbl_ssid = lv_label_create(root);
   lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
@@ -599,6 +609,7 @@ void updateValues(){
   static char buf_ip[128] = "IP: --";
   static char buf_mqtt[96] = "MQTT: --";
   static char buf_ssid[96] = "SSID: --";
+  static char buf_bat[32] = {0};
   static char temp_str[80] = {0};
   
   #if HAS_ZIGBEE
@@ -656,6 +667,32 @@ void updateValues(){
     #if HAS_ZIGBEE
     lv_obj_clear_flag(lv_lbl_ssid, LV_OBJ_FLAG_HIDDEN);
     #endif
+  }
+
+  // Update battery (always)
+  if (lv_lbl_battery && Power.isConnected()) {
+      int level = Power.getBatteryLevel();
+      bool charging = Power.isCharging();
+      const char* battSym = LV_SYMBOL_BATTERY_FULL;
+      
+      // Select battery icon based on level
+      if (level >= 90) battSym = LV_SYMBOL_BATTERY_FULL;
+      else if (level >= 70) battSym = LV_SYMBOL_BATTERY_3;
+      else if (level >= 50) battSym = LV_SYMBOL_BATTERY_2;
+      else if (level >= 30) battSym = LV_SYMBOL_BATTERY_1;
+      else battSym = LV_SYMBOL_BATTERY_EMPTY;
+      
+      if (charging) {
+           // Show lightning bolt + battery icon + percentage when charging
+           snprintf(buf_bat, sizeof(buf_bat), LV_SYMBOL_CHARGE " %s %d%%", battSym, level);
+      } else {
+           // Show battery icon + percentage when on battery
+           snprintf(buf_bat, sizeof(buf_bat), "%s %d%%", battSym, level);
+      }
+      lv_label_set_text_static(lv_lbl_battery, buf_bat);
+      lv_obj_clear_flag(lv_lbl_battery, LV_OBJ_FLAG_HIDDEN);
+  } else if (lv_lbl_battery) {
+      lv_obj_add_flag(lv_lbl_battery, LV_OBJ_FLAG_HIDDEN);
   }
   
   #if HAS_ZIGBEE

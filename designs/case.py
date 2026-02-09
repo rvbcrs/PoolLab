@@ -574,7 +574,7 @@ with BuildPart() as lid:
     # - Top at: 5mm below outer surface (Z = -2.5)
     # - Height: 3mm
     bracket_h = 3
-    bracket_radius = 2.0  # Diameter 4mm
+    bracket_radius = 1.75  # User: slightly smaller islands for screen fit (diameter 3.5mm)
     bracket_z_top = lid_thickness - 5  # 5mm below outer surface = -2.5
     
     # Mount positions (mx, my) and corresponding cutout corners (cx, cy)

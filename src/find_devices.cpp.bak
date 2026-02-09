@@ -1,0 +1,92 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+// Identify potential pins for the button
+// On ESP32-S3 boards, typically GPIO0 (Boot), GPIO9 (Boot on C3/S3?), or others.
+// We will scan ALL valid digital pins.
+
+// Potential I2C pins for IP5306
+#define SDA_PIN 18  // Common S3 default
+#define SCL_PIN 19  // Common S3 default
+// Alternative I2C pins if needed (e.g. 8/9, 6/7)
+// We will try standard pins first.
+
+void scanI2C() {
+  Serial.println("Scanning I2C...");
+  byte error, address;
+  int nDevices = 0;
+  for(address = 1; address < 127; address++ ) {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address<16) Serial.print("0");
+      Serial.print(address,HEX);
+      if (address == 0x75) Serial.print(" (Likely IP5306)");
+      if (address == 0x48) Serial.print(" (Likely ADS1115)");
+      if (address == 0x14 || address == 0x5D || address == 0x38) Serial.print(" (Likely Touch)");
+      Serial.println("  !");
+      nDevices++;
+    }
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found\n");
+  else
+    Serial.println("done\n");
+}
+
+// Struct to track prior state of digital pins
+struct PinState {
+  int pin;
+  int lastState;
+};
+
+// Valid GPIOs on ESP32-S3 (excluding flash/psram pins usually 26-32/33-37 depending on pkg)
+// Safe to scan: 0-21, 38-48 (depending on pkg)
+const int testPins[] = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+  38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48
+};
+const int NUM_TEST_PINS = sizeof(testPins) / sizeof(testPins[0]);
+int lastStates[NUM_TEST_PINS];
+
+void setup() {
+  Serial.begin(115200);
+  while(!Serial) delay(10);
+  Serial.println("\n--- Button & I2C Scanner ---");
+  Serial.println("Instructions:");
+  Serial.println("1. Press and release the momentary button.");
+  Serial.println("2. Watch Serial Monitor for pin state changes.");
+  Serial.println("3. Check for I2C devices (IP5306 is 0x75).");
+
+  // Init I2C
+  Wire.begin(SDA_PIN, SCL_PIN);
+  scanI2C();
+
+  // Init Pins
+  for (int i=0; i<NUM_TEST_PINS; i++) {
+    int pin = testPins[i];
+    // Skip UART pins if used (43/44 usually USB CDC, 0/1 UART0)
+    // Actually we can read input on TX/RX too safely usually.
+    pinMode(pin, INPUT_PULLUP);
+    lastStates[i] = digitalRead(pin);
+  }
+}
+
+void loop() {
+  for (int i=0; i<NUM_TEST_PINS; i++) {
+    int pin = testPins[i];
+    int state = digitalRead(pin);
+    if (state != lastStates[i]) {
+      Serial.printf("GPIO %d changed state: %s\n", pin, state == LOW ? "LOW (Pressed?)" : "HIGH (Released?)");
+      lastStates[i] = state;
+      delay(50); // Debounce check
+    }
+  }
+  
+  if (millis() % 5000 == 0) {
+    // Re-scan I2C every 5s incase power triggered
+    // scanI2C(); 
+  }
+  delay(10);
+}

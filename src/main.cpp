@@ -137,6 +137,7 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/AdsPhOrpSensor.h"
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
+#include "io/PowerManager.h"
 #include "ui/UI.h"
 // Provide C-linkage declarations for image assets used by UI when included here
 extern "C" {
@@ -300,6 +301,7 @@ static lv_obj_t *lv_img_pump_orp_shadow = nullptr;
 static lv_obj_t *lv_lbl_pump_ph_stats = nullptr;   // Session volume + flow rate label
 static lv_obj_t *lv_lbl_pump_orp_stats = nullptr;
 static lv_obj_t *lv_lbl_ip = nullptr;
+static lv_obj_t *lv_lbl_batt = nullptr;  // Battery level label
 static lv_obj_t *lv_img_link = nullptr;
 static lv_obj_t *lv_link_wrap = nullptr;
 static lv_obj_t *lv_lbl_link_dbg = nullptr;
@@ -371,10 +373,11 @@ static const bool FORCE_MOTOR_A_ON = false;
 // Choose pins that are free; these are not used by LCD/UART.
 #if defined(BOARD_ESP32S3_35)
 // S3 3.5" mapping (header IO5/6/7/9/14/15/16/46): avoid IO46 (input-only)
+// NOTE: GPIO 5 is used by battery ADC! Use GPIO 17 (P4 header) for M1_PWM instead.
 static const int TB_STBY = 14;
 static const int M1_IN1  = 15;
 static const int M1_IN2  = 16;
-static const int M1_PWM  = 5;   // LEDC PWM
+static const int M1_PWM  = 17;  // LEDC PWM (was 5, now 17 to avoid battery ADC conflict)
 static const int M2_IN1  = 6;
 static const int M2_IN2  = 7;
 static const int M2_PWM  = 9;   // LEDC PWM
@@ -1418,6 +1421,9 @@ void setup() {
 
   #if defined(USE_JC3248W535)
   ESP_LOGI("MAIN", "Starting display init (JC3248W535)");
+  
+
+
   // Ensure Arduino Wire (driver_ng) is not used on S3; no Wire calls on JC path
   
     (void)jc3248w535_begin_simple(90, &jc_handles);
@@ -1432,6 +1438,16 @@ void setup() {
     }
     g_minimal_ui_active = true;
     ESP_LOGI("MAIN", "Proceeding to full UI build");
+
+    // Initialize Power Manager (IP5306) - try standard I2C first
+    // Note: Do not overlap with Touch pins (7,8) if BSP uses them via IDF driver
+    // We use I2C1 (Legacy) internally in PowerManager to avoid conflict with BSP on I2C0.
+    Power.begin(18, 19); 
+    
+    if (!Power.isConnected()) {
+        Serial.println("PowerManager: IP5306 not found on 18,19.");
+    }
+
   #endif
 
   // S3: Initialize Tuya UART explicitly (as initPeripherals is skipped)
@@ -1510,6 +1526,8 @@ void setup() {
     // ESP32-P4: Initialize MIPI-DSI display (ST7701) - matching lvgl_demo_v8.ino
     ESP_LOGI("MAIN", "Initializing P4 MIPI-DSI display (480x800)");
     
+    // Initialize IO
+    // Initialize IO
     // Initialize I2C master bus for touch (I2C_NUM_1)
     // IMPORTANT: Use global handle so GT911 driver can retrieve it later!
     i2c_master_bus_config_t i2c_bus_conf = {
@@ -2229,6 +2247,7 @@ void setup() {
 
       // Footer IP at bottom-right
       lv_lbl_ip = lv_label_create(lv_tile_main); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_darken(LV_PALETTE_GREY, 4), 0); lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_14, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP); lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_RIGHT, -14, -1); lv_label_set_text(lv_lbl_ip, "IP: --");
+      // Note: Battery label is now handled by UI module (lv_lbl_battery in UI.cpp)
 
       // Bottom-left temperature label
       lv_lbl_temp = lv_label_create(lv_tile_main);
@@ -3028,6 +3047,10 @@ void loop() {
     }
     if (USE_LVGL_UI) {
       updateLvglValues();
+      #if defined(USE_JC3248W535)
+      Power.update();
+      // Note: Battery UI is now handled by UI module (ui::refreshNetworkStatus calls Power.getBatteryLevel())
+      #endif
       // Get pump stats for tile display
       domain::PumpStats m1Stats = g_motor.getM1Stats();
       domain::PumpStats m2Stats = g_motor.getM2Stats();
