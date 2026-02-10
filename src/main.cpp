@@ -468,7 +468,7 @@ static io::MqttClient mqttClient;
 static io::WiFiManager wifiMgr;
 static io::ZigbeeClient zigbee;
 static io::CaptivePortal portal;
-static io::WebUI webui;
+io::WebUI webui;
 static core::Storage::Mode runMode = core::Storage::MODE_WIFI_MQTT;
 static core::Storage::Mode savedMode = core::Storage::MODE_WIFI_MQTT;
 static bool modeForced = false;

@@ -1,5 +1,8 @@
 #include "PowerManager.h"
 #include "I2CScanner.h"
+#include "WebUI.h"
+
+extern io::WebUI webui;
 
 #define IP5306_ADDR 0x75
 #define REG_READ0 0x70
@@ -123,6 +126,9 @@ float PowerManager::readBatteryVoltage() {
     // V_out = V_in * 100 / (33 + 100) = V_in * 0.7518
     // V_in = V_out * 1.33
     
+    // Calibrated based on user feedback (raw ~2890 at full charge -> 4.2V)
+    // Means V_in = V_out * 1.80
+    
     // Average 10 samples for stability
     long sum = 0;
     for (int i = 0; i < 10; i++) {
@@ -131,13 +137,20 @@ float PowerManager::readBatteryVoltage() {
     }
     int raw = sum / 10;
     
-    return (raw / 4095.0f) * 3.3f * 1.33f;
+    // Debug raw value to check calibration
+    float v = (raw / 4095.0f) * 3.3f * 1.80f;
+    String msg = "ADC raw: " + String(raw) + " -> Volts: " + String(v, 2);
+    Serial.println(msg);
+    webui.log(msg);
+    
+    return v;
 }
 
 int PowerManager::voltageToPercent(float volts) {
-    // LiPo voltage range: 3.0V (empty) to 4.2V (full)
-    if (volts >= 4.20) return 100;
-    if (volts <= 3.00) return 0;
-    return (int)((volts - 3.00) / (4.20 - 3.00) * 100.0);
+    // LiPo voltage range under small load: 3.2V (empty) to 4.1V (full)
+    // 4.2V is charging max, 4.1V is realistic full rest.
+    if (volts >= 4.10) return 100;
+    if (volts <= 3.20) return 0;
+    return (int)((volts - 3.20) / (4.10 - 3.20) * 100.0);
 }
 

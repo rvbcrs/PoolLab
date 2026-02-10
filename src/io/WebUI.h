@@ -23,11 +23,13 @@ public:
   void stop();
   bool isActive() const { return _active; }
   void broadcastMetrics();
+  void log(const String &msg);
 
 private:
   void handleIndex();
   void handleSettings();
   void handleSafety();  // New: safety status & WhatsApp config
+  void handleConsole(); // New: web console
   void handleApiState();
   void handleApiSave();
   void sendStyleHeader(String &html);

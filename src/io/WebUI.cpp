@@ -15,6 +15,7 @@ void WebUI::begin(){
   _http.on("/", [this](){ handleIndex(); });
   _http.on("/settings", [this](){ handleSettings(); });
   _http.on("/safety", [this](){ handleSafety(); });
+  _http.on("/console", [this](){ handleConsole(); }); // Console endpoint
   _http.on("/api/state", [this](){ handleApiState(); });
   _http.on("/api/save", HTTP_POST, [this](){ handleApiSave(); });
   _http.on("/api/test_alert", [this](){ 
@@ -60,7 +61,8 @@ void WebUI::handleIndex(){
   html += F("<div class='pump-stats'><div class='stat-row'><div class='stat-label'>pH Pump:</div><div class='stat-val' id='ph_stats'>--</div></div>");
   html += F("<div class='stat-row'><div class='stat-label'>ORP Pump:</div><div class='stat-val' id='orp_stats'>--</div></div></div>");
   html += F("<div class='row'><a href='/settings'><button class='btn blue'>Settings</button></a>");
-  html += F("<a href='/safety'><button class='btn orange' style='margin-left:8px'>⚠️ Safety</button></a></div>");
+  html += F("<a href='/safety'><button class='btn orange' style='margin-left:8px'>⚠️ Safety</button></a>");
+  html += F("<a href='/console'><button class='btn teal' style='margin-left:8px;width:auto;padding:12px 16px'>🖥️</button></a></div>");
   html += F("<span class='muted'>IP: "); html += WiFi.localIP().toString(); html += F("</span></div>");
   // thresholds for client-side coloring
   float phMin = _phMin? *_phMin : 6.80f; float phMax = _phMax? *_phMax : 7.60f; int orpMin = _orpMin? *_orpMin : 250; int orpMax = _orpMax? *_orpMax : 850;
@@ -351,6 +353,37 @@ void WebUI::handleSafety(){
   sendFooter(html);
   _http.send(200, "text/html; charset=UTF-8", html);
 }
+
+void WebUI::log(const String &msg) {
+  if (!_active) return;
+  // Simple JSON log packet
+  String safe = msg;
+  safe.replace("\"", "\\\""); 
+  safe.replace("\n", "\\n");
+  safe.replace("\r", "");
+  String json = "{\"log\":\"" + safe + "\"}";
+  _ws.broadcastTXT(json);
+}
+
+void WebUI::handleConsole(){
+  String html; sendStyleHeader(html);
+  html += F("<div class='card'><h3>🖥️ Web Console</h3>");
+  html += F("<div id='logs' style='background:#111;color:#0f0;font-family:monospace;padding:12px;height:400px;overflow-y:scroll;border:1px solid #333;border-radius:4px;font-size:12px;white-space:pre-wrap'></div>");
+  html += F("<div class='row' style='margin-top:10px'><button onclick='document.getElementById(\"logs\").innerHTML=\"\"'>Clear</button>");
+  html += F("<button onclick='ws.send(\"ping\")' class='btn blue'>Ping</button></div>");
+  html += F("</div>");
+  html += F("<div style='text-align:center;margin-top:20px'><a href='/' style='color:#4caf50'>← Back to Home</a></div>");
+  
+  // Script handles receiving logs
+  html += F("<script>");
+  html += F("var ws=new WebSocket('ws://'+location.host+':81/');");
+  html += F("ws.onmessage=function(e){try{var d=JSON.parse(e.data); if(d.log){var l=document.getElementById('logs'); l.innerHTML+=d.log+'\\n'; l.scrollTop=l.scrollHeight;}}catch(_){}};");
+  html += F("</script>");
+  
+  sendFooter(html);
+  _http.send(200, "text/html; charset=UTF-8", html);
+}
+
 } // namespace io
 
 
