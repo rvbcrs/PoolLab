@@ -243,9 +243,11 @@ with BuildPart() as ctp09_mount:
     # Left Pillars are at X = -ctp_w/2 = -11.5. (Actually dx = 11.5)
     # Cutout location: X = -11.5.
     with Locations((-ctp_w/2, 0, standoff_z)):
-        # Cut a box to clear the pillars.
-        # Height: pillar_h (full height).
-        Box(10, 9, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+        # User requested "Opening -> Narrowing -> Opening".
+        # We start with Box(12,12) but leave a small rib in the middle (Y=0).
+        # Splitting into two cutouts to leave 2mm rib in center.
+        with Locations([(0, 3.5), (0, -3.5)]):
+             Box(12, 5, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")
@@ -363,7 +365,9 @@ usb_loc = Location((length/2 - 8, 0, 0)) * Rotation(0, -90, 0) * Rotation(180, 0
 # GX12 at X=-45 (1cm to the right of -55).
 # Y aligned with Wall (-width/2). 
 gx12_loc_y = -width/2 + wall_thickness # On the wall
-gx12_loc_x = -45
+# GX12 at X=-45 (1cm to the right of -55).
+# User request: Shift 5mm Left. -45 -> -50.
+gx12_loc_x = -50
 gx12_pos = Location((gx12_loc_x, gx12_loc_y, 0))
 
 # Rotation: 
@@ -375,7 +379,7 @@ gx12_loc = gx12_pos * Rotation(0, 0, 0) # Visual (Flip 180)
 gx12_cutout_loc = gx12_pos * Rotation(90, 0, 0) 
 
 # === Sensors ===
-sensor_x_shift = 30 
+sensor_x_shift = 22 # Shifted Left (was 30) to avoid Right Post conflict 
 sensor_space = 35 
 sensor1_x = sensor_x_shift - sensor_space/2
 sensor2_x = sensor_x_shift + sensor_space/2
@@ -390,7 +394,7 @@ sensor2_loc = Location((sensor2_x, sensor_y, sensor_z)) * sensor_rot
 # === LM2596 ===
 # Shift with sensors to keep right side organized.
 # Was -15. Move to +5?
-lm2596_loc_x = 5 # Shifted right significantly
+lm2596_loc_x = -10 # Shifted Left (was 5) to match sensors
 lm2596_loc_y = (sensor_y + pcb_l/2) + 5 + lm_width_y/2
 lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + standoff_h))
 
@@ -400,7 +404,10 @@ lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + 
 # LM2596 ends at Y=-29.
 # CTP09 at Y=-40. (Center). Max Y = -34.25. Gap to LM = 5mm. Safe.
 # TB6612 at Y=-65. (Center). Max Y = -54. Gap to CTP = 14mm. Safe.
-left_module_x = -20
+# Left Side Modules (TB6612 & CTP09)
+# User request: Shift further LEFT to avoid sensor mount conflict.
+# Previously -20. Move to -30.
+left_module_x = -30
 
 # TB6612 (Front-Left)
 # User: Increase gap to CTP09, mounts were overlapping.
