@@ -27,17 +27,7 @@ public:
     pinMode(_pins.m2In2, OUTPUT);
     
     // Use ESP-IDF LEDC API directly to avoid timer conflicts with backlight (timer 1)
-    // Configure Timer 2 for M1
-    ledc_timer_config_t timer2_cfg = {
-      .speed_mode = LEDC_LOW_SPEED_MODE,
-      .duty_resolution = (ledc_timer_bit_t)pwmBits,
-      .timer_num = LEDC_TIMER_2,
-      .freq_hz = (uint32_t)pwmFreq,
-      .clk_cfg = LEDC_AUTO_CLK
-    };
-    ledc_timer_config(&timer2_cfg);
-    
-    // Configure Timer 3 for M2
+    // Configure Timer 3 for M1 (Timer 2 has conflict on S3)
     ledc_timer_config_t timer3_cfg = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
       .duty_resolution = (ledc_timer_bit_t)pwmBits,
@@ -47,26 +37,36 @@ public:
     };
     ledc_timer_config(&timer3_cfg);
     
-    // Configure Channel 4 for M1 (using Timer 2)
+    // Configure Timer 2 for M2
+    ledc_timer_config_t timer2_cfg = {
+      .speed_mode = LEDC_LOW_SPEED_MODE,
+      .duty_resolution = (ledc_timer_bit_t)pwmBits,
+      .timer_num = LEDC_TIMER_2,
+      .freq_hz = (uint32_t)pwmFreq,
+      .clk_cfg = LEDC_AUTO_CLK
+    };
+    ledc_timer_config(&timer2_cfg);
+    
+    // Configure Channel 5 for M1 (using Timer 3)
     ledc_channel_config_t m1_channel_cfg = {
       .gpio_num = _pins.m1Pwm,
       .speed_mode = LEDC_LOW_SPEED_MODE,
-      .channel = LEDC_CHANNEL_4,
+      .channel = LEDC_CHANNEL_5,
       .intr_type = LEDC_INTR_DISABLE,
-      .timer_sel = LEDC_TIMER_2,
+      .timer_sel = LEDC_TIMER_3,
       .duty = 0,
       .hpoint = 0,
       .flags = {.output_invert = 0}
     };
     ledc_channel_config(&m1_channel_cfg);
     
-    // Configure Channel 5 for M2 (using Timer 3)
+    // Configure Channel 4 for M2 (using Timer 2)
     ledc_channel_config_t m2_channel_cfg = {
       .gpio_num = _pins.m2Pwm,
       .speed_mode = LEDC_LOW_SPEED_MODE,
-      .channel = LEDC_CHANNEL_5,
+      .channel = LEDC_CHANNEL_4,
       .intr_type = LEDC_INTR_DISABLE,
-      .timer_sel = LEDC_TIMER_3,
+      .timer_sel = LEDC_TIMER_2,
       .duty = 0,
       .hpoint = 0,
       .flags = {.output_invert = 0}
@@ -79,10 +79,10 @@ public:
     digitalWrite(_pins.m1In2, LOW);
     digitalWrite(_pins.m2In1, LOW);
     digitalWrite(_pins.m2In2, LOW);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);  // M1
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);  // M2
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
     
     _policy = new domain::ControlPolicy(_pins.stby, _pins.m1In1, _pins.m1In2, _pins.m1Pwm, _pins.m2In1, _pins.m2In2, _pins.m2Pwm);
   }
@@ -94,10 +94,10 @@ public:
   }
 
   void stopAll() {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);  // M1
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);  // M2
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
     // Ensure H-bridges are coasting
     digitalWrite(_pins.m1In1, LOW);
     digitalWrite(_pins.m1In2, LOW);

@@ -134,6 +134,14 @@ void Storage::setWhatsAppPhone(const String &v) { _prefs.putString("wa_phone", v
 bool Storage::getWhatsAppEnabled(bool def) const { return _prefs.getBool("wa_enabled", def); }
 void Storage::setWhatsAppEnabled(bool en) { _prefs.putBool("wa_enabled", en); }
 
+// Audio
+bool Storage::getSoundEnabled(bool def) const {
+  return _prefs.getBool("snd_en", def);
+}
+void Storage::setSoundEnabled(bool en) {
+  _prefs.putBool("snd_en", en);
+}
+
 } // namespace core
 
 

@@ -243,11 +243,17 @@ with BuildPart() as ctp09_mount:
     # Left Pillars are at X = -ctp_w/2 = -11.5. (Actually dx = 11.5)
     # Cutout location: X = -11.5.
     with Locations((-ctp_w/2, 0, standoff_z)):
-        # User requested "Opening -> Narrowing -> Opening".
-        # We start with Box(12,12) but leave a small rib in the middle (Y=0).
-        # Splitting into two cutouts to leave 2mm rib in center.
-        with Locations([(0, 3.5), (0, -3.5)]):
-             Box(12, 5, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+        # User requested: "Opening -> Narrowing -> Opening".
+        # Profile: Wide (12mm) - Narrow (10.2mm) - Wide (12mm). For Friction Grip.
+        # X range relative to Mount Center (X=0):
+        # Outer (Plug) & Inner (Socket): Wide Cutout
+        with Locations([(-3, 0), (3, 0)]):
+             # Box(4mm X-len, 12mm Y-wid) -> Covers -5 to -1 and 1 to 5.
+             Box(4, 12, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+        # Middle (Narrow Cutout - The Grip)
+        with Locations((0, 0)):
+             # Box(2mm X-len, 10.2mm Y-wid) -> Covers -1 to 1.
+             Box(2, 10.2, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")

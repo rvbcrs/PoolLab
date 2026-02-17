@@ -407,15 +407,15 @@ ADS1115 (aanbevolen op S3)
   - `-D ADS_CH_PH=0`
   - `-D ADS_CH_ORP=1`
 
-ROB‑14450 / TB6612FNG (voorbeeld S3‑mapping)
+ROB‑14450 / TB6612FNG (S3‑mapping, getest)
 - Logica 3.3 V, GND gemeenschappelijk
-- STBY → GPIO14 (S3 header IO14)
+- STBY → GPIO46 (S3 header IO46)
 - M1 (pH pomp)
   - IN1 → GPIO15 (IO15)
   - IN2 → GPIO16 (IO16)
-  - PWM → GPIO5  (IO5)  [LEDC PWM]
+  - PWM → GPIO17 (IO17)  [LEDC PWM Channel 5 / Timer 3]
 - M2 (ORP pomp)
-  - IN1 → GPIO6  (IO6)
-  - IN2 → GPIO7  (IO7)
-  - PWM → GPIO9  (IO9)  [LEDC PWM]
-- Opmerking: vermijd GPIO46 (input‑only) voor driver‑uitgangen/PWM. Pas de pin‑constanten in `src/main.cpp` aan wanneer je de motorsturing inschakelt (`MOTOR_ENABLE=true`).
+  - IN1 → GPIO18 (IO18)
+  - IN2 → GPIO14 (IO14)
+  - PWM → GPIO9  (IO9)   [LEDC PWM Channel 4 / Timer 2]
+- Opmerking: GPIO46 is een strapping pin (standaard LOW). Zorg dat de driver STBY niet omlaag trekt tijdens boot, of verbind STBY direct met 3.3V als software-control faalt.

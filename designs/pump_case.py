@@ -223,9 +223,11 @@ with BuildPart() as bucket:
     
     # Screw Posts (Corners) - Matching Lid Holes
     # Top of post needs to be at -lid_thick (flush with lid bottom).
-    # Post height? Say 10mm down from top.
+    # Request: "doorlopen tot onderin" -> Full height from floor to lid.
     post_top_z = -lid_thick
-    post_h = 10
+    # Floor Z = -lid_thick - bucket_depth + wall_thick
+    # Height = Top - Floor = bucket_depth - wall_thick
+    post_h = bucket_depth - wall_thick
     
     with Locations(corner_locs):
          with Locations((0, 0, post_top_z - post_h)):

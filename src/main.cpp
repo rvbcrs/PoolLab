@@ -13,6 +13,7 @@
 */
 
 #include <Arduino.h>
+#include "driver/ledc.h"
 #include <stdio.h>
 #include <stdarg.h>
 #if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
@@ -138,6 +139,8 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/ZigbeeClient.h"
 #include "io/CaptivePortal.h"
 #include "io/PowerManager.h"
+#include "io/Speaker.h"
+#include "io/Speaker.h"
 #include "ui/UI.h"
 // Provide C-linkage declarations for image assets used by UI when included here
 extern "C" {
@@ -232,6 +235,9 @@ static const bool SIMPLE_VIEW = true;
   #define ORP_ADC_PIN -1
   #endif
   io::AnalogPhOrpSensor g_analog(PH_ADC_PIN, ORP_ADC_PIN);
+  // Expose to UI namespace for calibration
+  namespace ui { extern io::AnalogPhOrpSensor& g_analog; }
+  io::AnalogPhOrpSensor& ui::g_analog = ::g_analog;
 #endif
 #if USE_ADS1115
   #ifndef ADS_ADDR
@@ -372,15 +378,18 @@ static const bool FORCE_MOTOR_A_ON = false;
 //  BIN1  → M2_IN1,  BIN2 → M2_IN2,  PWMB → M2_PWM  (Motor 2)
 // Choose pins that are free; these are not used by LCD/UART.
 #if defined(BOARD_ESP32S3_35)
-// S3 3.5" mapping (header IO5/6/7/9/14/15/16/46): avoid IO46 (input-only)
-// NOTE: GPIO 5 is used by battery ADC! Use GPIO 17 (P4 header) for M1_PWM instead.
-static const int TB_STBY = 14;
+// S3 3.5" mapping (header IO5/6/7/9/14/15/16/46)
+// M1: 15, 16, 17 (PWM) - pH motor
+// M2: 18, 14, 9 (PWM) - ORP motor
+// STBY: 46
+// Sensors: 6 (pH), 7 (ORP) -- reserved for future ADC use
+static const int TB_STBY = 46;
 static const int M1_IN1  = 15;
 static const int M1_IN2  = 16;
-static const int M1_PWM  = 17;  // LEDC PWM (was 5, now 17 to avoid battery ADC conflict)
-static const int M2_IN1  = 6;
-static const int M2_IN2  = 7;
-static const int M2_PWM  = 9;   // LEDC PWM
+static const int M1_PWM  = 17;
+static const int M2_IN1  = 18;
+static const int M2_IN2  = 14;
+static const int M2_PWM  = 9;
 #elif defined(BOARD_ESP32P4_43)
 // P4 4.3" mapping: avoid GPIO 7/8 (I2C touch), GPIO 16/17 (C6 UART)
 // Use free GPIOs: 11, 12, 13, 14, 15, 36, 37, 38 etc.
@@ -622,8 +631,10 @@ static void on_all_off_cb(lv_event_t *e){
     digitalWrite(M1_IN2, LOW);
     digitalWrite(M2_IN1, LOW);
     digitalWrite(M2_IN2, LOW);
-    ledcWrite(M1_PWM, 0);
-    ledcWrite(M2_PWM, 0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);  // M1
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);  // M2
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
   }
   // Hide pump icons if present
   if (USE_LVGL_UI) {
@@ -1202,6 +1213,9 @@ static void sendWhatsAppAsync(void* param) {
 
 // Safety alert callback: sends MQTT alerts and WhatsApp notifications
 void handleSafetyAlert(domain::SafetyAlert alert) {
+  // Trigger audible alarm
+  speaker.alarm();
+
   // Map alert enum to human-readable strings
   const char* alertNames[] = {
     "none", "daily_limit_m1", "daily_limit_m2", 
@@ -1390,6 +1404,15 @@ static void p4WifiInitTask(void *arg) {
 }
 #endif
 
+// Feedback callback for LVGL input devices (touch)
+// CRITICAL: Do NOT call blocking functions (like i2s_write) here if called from ISR/Timer!
+volatile bool g_click_requested = false;
+void my_input_feedback_cb(lv_indev_drv_t *drv, uint8_t code) {
+  if (code == LV_EVENT_PRESSED) {
+    g_click_requested = true;
+  }
+}
+
 void setup() {
   // USB serial (do not block UI waiting for monitor)
   Serial.begin(115200);
@@ -1443,6 +1466,7 @@ void setup() {
     // Note: Do not overlap with Touch pins (7,8) if BSP uses them via IDF driver
     // We use I2C1 (Legacy) internally in PowerManager to avoid conflict with BSP on I2C0.
     Power.begin(18, 19); 
+    speaker.setup(); 
     
     if (!Power.isConnected()) {
         Serial.println("PowerManager: IP5306 not found on 18,19.");
@@ -1705,6 +1729,16 @@ void setup() {
     ESP_LOGI("UI", "Before ui::init; res=%dx%d", (int)lv_disp_get_hor_res(NULL), (int)lv_disp_get_ver_res(NULL));
     ui::init(disp);
     ESP_LOGI("UI", "After ui::init");
+    
+    // Register audio feedback callback for all input devices
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    while (indev) {
+        if (indev->driver->type == LV_INDEV_TYPE_POINTER) {
+            indev->driver->feedback_cb = my_input_feedback_cb;
+            ESP_LOGI("MAIN", "Registered audio feedback for pointer device");
+        }
+        indev = lv_indev_get_next(indev);
+    }
     // Ensure we remove the temporary banner and any prior objects before building UI
     lv_obj_clean(lv_scr_act());
     // Apply a dark theme so text contrasts on black backgrounds (do this under lock)
@@ -1844,14 +1878,14 @@ void setup() {
         // M1: pH pump
         digitalWrite(M1_IN1, M1_DIR_A ? HIGH : LOW);
         digitalWrite(M1_IN2, M1_DIR_A ? LOW : HIGH);
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 1023); // 100%
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
       } else if (motor_num == 2) {
         // M2: ORP pump
         digitalWrite(M2_IN1, M2_DIR_A ? HIGH : LOW);
         digitalWrite(M2_IN2, M2_DIR_A ? LOW : HIGH);
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 1023); // 100%
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 1023); // 100%
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
       }
       digitalWrite(TB_STBY, HIGH);  // Ensure driver enabled
     };
@@ -1859,13 +1893,13 @@ void setup() {
       ESP_LOGI("UI", "Stopping pump calibration for M%d", motor_num);
       // Stop motor
       if (motor_num == 1) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
         digitalWrite(M1_IN1, LOW);
         digitalWrite(M1_IN2, LOW);
       } else if (motor_num == 2) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);  // M2
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
         digitalWrite(M2_IN1, LOW);
         digitalWrite(M2_IN2, LOW);
       }
@@ -2718,25 +2752,24 @@ void setup() {
              ESP_LOGE("MAIN", "P4: Failed to create WiFi init task!");
            }
          } else {
-           Serial.println("P4: Zigbee mode - WiFi disabled, C6 handles Zigbee");
-           Serial.flush();
-           ESP_LOGI("MAIN", "P4: Zigbee mode active (C6 bridge)");
          }
-         #endif
-         
-         ESP_LOGI("BOOT", "Setup complete");
-         Serial.println("Setup done");
-      }
+    #endif
+  
+  ESP_LOGI("BOOT", "Setup complete");
+  Serial.println("Setup done");
+}
 
 void loop() {
-  if (USE_LVGL_UI) {
-    #if !defined(BOARD_ESP32S3_35)
-    lv_timer_handler();
-    #if !defined(BOARD_ESP32P4_43)
-    g_ui_last_lvgl_ms = millis();
-    #endif
-    #endif
-    // Let LVGL task run; then light yield
+     // Audio Feedback (Offloaded from ISR/Timer context - GLOBAL)
+    if (g_click_requested) {
+        g_click_requested = false;
+        if (g_storage.getSoundEnabled(true)) {
+            speaker.beep();
+        }
+    }
+    speaker.loop();
+
+    if (USE_LVGL_UI) {
     delay(0);
     // Apply deferred UI IP update from WiFi callback without crossing threads
     if (g_ui_ip_dirty) {

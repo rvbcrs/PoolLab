@@ -197,10 +197,10 @@ void ControlPolicy::update(const ControlConfig &cfg,
     // Safety check failed - emergency stop all motors
     if (m1Running || m2Running) {
       ESP_LOGE("SAFETY", "Emergency stop - shutting down all motors");
-      ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-      ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
-      ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+      ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);  // M1
       ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+      ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);  // M2
+      ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
       digitalWrite(_m1_in1, LOW);
       digitalWrite(_m1_in2, LOW);
       digitalWrite(_m2_in1, LOW);
@@ -218,8 +218,8 @@ void ControlPolicy::update(const ControlConfig &cfg,
     bool dirA = (M1_DIR_A != 0);
     digitalWrite(_m1_in1, dirA ? HIGH : LOW);
     digitalWrite(_m1_in2, dirA ? LOW  : HIGH);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 1023);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 1023);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
     m1Running = true;
     updatePumpStats(_m1Stats, _m1LastStartMs, _m1LastSpeedPc, m1Running, 100, cfg.m1FlowRateMlPerMin);
     return;
@@ -236,14 +236,14 @@ void ControlPolicy::update(const ControlConfig &cfg,
         digitalWrite(_m1_in1, dirA ? HIGH : LOW);
         digitalWrite(_m1_in2, dirA ? LOW  : HIGH);
         uint32_t duty = (uint32_t)(cfg.m1SpeedPc * 1023 / 100);  // 10-bit: 0-1023
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, duty);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, duty);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
         m1Running = true;
       }
     } else if (phBack) {
       if (m1Running) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
         digitalWrite(_m1_in1, LOW);
         digitalWrite(_m1_in2, LOW);
         m1Running = false;
@@ -263,14 +263,14 @@ void ControlPolicy::update(const ControlConfig &cfg,
         digitalWrite(_m2_in1, dirA ? HIGH : LOW);
         digitalWrite(_m2_in2, dirA ? LOW  : HIGH);
         uint32_t duty = (uint32_t)(cfg.m2SpeedPc * 1023 / 100);  // 10-bit: 0-1023
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, duty);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, duty);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
         m2Running = true;
       }
     } else if (orpBack) {
       if (m2Running) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
         digitalWrite(_m2_in1, LOW);
         digitalWrite(_m2_in2, LOW);
         m2Running = false;
@@ -284,14 +284,14 @@ void ControlPolicy::update(const ControlConfig &cfg,
         digitalWrite(_m1_in1, dirA ? HIGH : LOW);
         digitalWrite(_m1_in2, dirA ? LOW  : HIGH);
         uint32_t duty = (uint32_t)(cfg.m1SpeedPc * 1023 / 100);  // 10-bit: 0-1023
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, duty);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, duty);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
         m1Running = true;
       }
     } else if (orpBack) {
       if (m1Running) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
         digitalWrite(_m1_in1, LOW);
         digitalWrite(_m1_in2, LOW);
         m1Running = false;

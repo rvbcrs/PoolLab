@@ -111,6 +111,10 @@ public:
   bool getWhatsAppEnabled(bool def = false) const;
   void setWhatsAppEnabled(bool en);
 
+  // Audio / Sound enabled
+  bool getSoundEnabled(bool def = true) const;
+  void setSoundEnabled(bool en);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

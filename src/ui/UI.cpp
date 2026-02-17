@@ -8,6 +8,10 @@
 #include "io/PowerManager.h"
 #if USE_ANALOG_SENSORS
 #include "io/AnalogPhOrpSensor.h"
+#if USE_ANALOG_SENSORS
+#include "io/AnalogPhOrpSensor.h"
+namespace ui { extern io::AnalogPhOrpSensor& g_analog; }
+#endif
 #endif
 
 extern ::core::Storage g_storage;
@@ -905,6 +909,22 @@ void showSettings(){
   const lv_coord_t wifi_y_offset = 0;
   #endif
   
+  // Audio Toggle
+  lv_obj_t *swAudio = lv_switch_create(content);
+  lv_obj_align(swAudio, LV_ALIGN_TOP_RIGHT, -20, 148 + wifi_y_offset);
+  if (g_storage.getSoundEnabled(true)) lv_obj_add_state(swAudio, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(swAudio, [](lv_event_t *e){
+      // Code is implicitly filtered by registration, but double check doesn't hurt
+      if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+          bool en = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+          g_storage.setSoundEnabled(en);
+          ESP_LOGI("UI", "Audio enabled: %d", en);
+      }
+  }, LV_EVENT_VALUE_CHANGED, NULL);
+  lv_obj_t *lblAudio = lv_label_create(content);
+  lv_label_set_text(lblAudio, "Audio / Click");
+  lv_obj_align_to(lblAudio, swAudio, LV_ALIGN_OUT_LEFT_MID, -10, 0);
+
   lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148 + wifi_y_offset);
   lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172 + wifi_y_offset);
   lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220 + wifi_y_offset);
@@ -1221,14 +1241,14 @@ void showPhCalibration(){
   Ctx *ctx = (Ctx*)lv_mem_alloc(sizeof(Ctx)); ctx->modal=modal; ctx->v4=val4; ctx->v10=val10; ctx->s4=0; ctx->s10=0;
   lv_obj_add_event_cb(btn4, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
 #if USE_ANALOG_SENSORS
-    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsPh();
+    float v = g_analog.sampleVoltsPh();
 #else
     float v = 0.0f;
 #endif
     c->s4 = v; char b[24]; snprintf(b,sizeof(b),"V4: %.3f V", v); lv_label_set_text(c->v4,b);} }, LV_EVENT_CLICKED, ctx);
   lv_obj_add_event_cb(btn10, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
 #if USE_ANALOG_SENSORS
-    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsPh();
+    float v = g_analog.sampleVoltsPh();
 #else
     float v = 0.0f;
 #endif
@@ -1236,7 +1256,7 @@ void showPhCalibration(){
   lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); modal_close_async(c->modal); lv_mem_free(c); } }, LV_EVENT_CLICKED, ctx);
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); ::g_storage.setPhVAt4(c->s4 > 0 ? c->s4 : ::g_storage.getPhVAt4(3.00f)); ::g_storage.setPhVAt10(c->s10 > 0 ? c->s10 : ::g_storage.getPhVAt10(2.00f));
 #if USE_ANALOG_SENSORS
-    extern io::AnalogPhOrpSensor g_analog; io::AnalogPhOrpSensor::PhCal cal = g_analog.getPhCalibration(); cal.voltsAtPh4 = ::g_storage.getPhVAt4(cal.voltsAtPh4); cal.voltsAtPh10 = ::g_storage.getPhVAt10(cal.voltsAtPh10); g_analog.setPhCalibration(cal);
+    io::AnalogPhOrpSensor::PhCal cal = g_analog.getPhCalibration(); cal.voltsAtPh4 = ::g_storage.getPhVAt4(cal.voltsAtPh4); cal.voltsAtPh10 = ::g_storage.getPhVAt10(cal.voltsAtPh10); g_analog.setPhCalibration(cal);
 #endif
     modal_close_async(c->modal); lv_mem_free(c);} }, LV_EVENT_CLICKED, ctx);
 }
@@ -1268,7 +1288,7 @@ void showOrpCalibration(){
   Ctx *ctx = (Ctx*)lv_mem_alloc(sizeof(Ctx)); ctx->modal=modal; ctx->v0=val0; ctx->ta=taScale; ctx->s0=0;
   lv_obj_add_event_cb(btn0, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { Ctx *c=(Ctx*)lv_event_get_user_data(e);
 #if USE_ANALOG_SENSORS
-    extern io::AnalogPhOrpSensor g_analog; float v = g_analog.sampleVoltsOrp();
+    float v = g_analog.sampleVoltsOrp();
 #else
     float v = 0.0f;
 #endif
@@ -1276,7 +1296,7 @@ void showOrpCalibration(){
   lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); modal_close_async(c->modal); lv_mem_free(c); } }, LV_EVENT_CLICKED, ctx);
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED){ Ctx *c=(Ctx*)lv_event_get_user_data(e); float mvperv = 1000.0f; const char *t=lv_textarea_get_text(c->ta); if (t && *t) { mvperv = (float)atof(t); if (mvperv < 100.0f) mvperv = 100.0f; if (mvperv > 5000.0f) mvperv = 5000.0f; } ::g_storage.setOrpVAt0(c->s0 > 0 ? c->s0 : ::g_storage.getOrpVAt0(2.50f)); ::g_storage.setOrpMvPerV(mvperv);
 #if USE_ANALOG_SENSORS
-    extern io::AnalogPhOrpSensor g_analog; io::AnalogPhOrpSensor::OrpCal cal = g_analog.getOrpCalibration(); cal.voltsAt0mV = ::g_storage.getOrpVAt0(cal.voltsAt0mV); cal.mVPerVolt = ::g_storage.getOrpMvPerV(cal.mVPerVolt); g_analog.setOrpCalibration(cal);
+    io::AnalogPhOrpSensor::OrpCal cal = g_analog.getOrpCalibration(); cal.voltsAt0mV = ::g_storage.getOrpVAt0(cal.voltsAt0mV); cal.mVPerVolt = ::g_storage.getOrpMvPerV(cal.mVPerVolt); g_analog.setOrpCalibration(cal);
 #endif
     modal_close_async(c->modal); lv_mem_free(c);} }, LV_EVENT_CLICKED, ctx);
 }
