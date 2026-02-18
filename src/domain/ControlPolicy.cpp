@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "driver/ledc.h"
 #include <esp_log.h>
+#include <cmath>
 
 namespace domain {
 
@@ -42,11 +43,11 @@ bool ControlPolicy::checkSafety(const ControlConfig& cfg, bool havePh, float phV
   
   // 1. Check sensor timeouts
   if (cfg.sensorTimeoutSec > 0) {
-    if (!havePh && (now - _lastPhSensorMs) > (cfg.sensorTimeoutSec * 1000)) {
+    if (!havePh && (now - _lastPhSensorMs) > ((uint32_t)cfg.sensorTimeoutSec * 1000UL)) {
       triggerAlert(SafetyAlert::PH_SENSOR_TIMEOUT);
       return false;
     }
-    if (!haveOrp && (now - _lastOrpSensorMs) > (cfg.sensorTimeoutSec * 1000)) {
+    if (!haveOrp && (now - _lastOrpSensorMs) > ((uint32_t)cfg.sensorTimeoutSec * 1000UL)) {
       triggerAlert(SafetyAlert::ORP_SENSOR_TIMEOUT);
       return false;
     }
@@ -67,7 +68,7 @@ bool ControlPolicy::checkSafety(const ControlConfig& cfg, bool havePh, float phV
     }
     
     // Check for sudden jumps (> 1.0 pH in 1 sec) - indicates sensor glitch
-    if (abs(phVal - _lastValidPh) > 1.0f) {
+    if (fabsf(phVal - _lastValidPh) > 1.0f) {
       ESP_LOGW("SAFETY", "pH sudden jump detected: %.2f -> %.2f (ignoring)", _lastValidPh, phVal);
       return false;  // Ignore this reading but don't trigger emergency
     }
@@ -88,7 +89,7 @@ bool ControlPolicy::checkSafety(const ControlConfig& cfg, bool havePh, float phV
     }
     
     // Check for sudden jumps (> 300 mV in 1 sec)
-    if (abs(orpMv - _lastValidOrp) > 300.0f) {
+    if (fabsf(orpMv - _lastValidOrp) > 300.0f) {
       ESP_LOGW("SAFETY", "ORP sudden jump detected: %.0f -> %.0f (ignoring)", _lastValidOrp, orpMv);
       return false;
     }

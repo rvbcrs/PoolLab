@@ -133,6 +133,8 @@ String Storage::getWhatsAppPhone(const String &def) const { return _prefs.getStr
 void Storage::setWhatsAppPhone(const String &v) { _prefs.putString("wa_phone", v); }
 bool Storage::getWhatsAppEnabled(bool def) const { return _prefs.getBool("wa_enabled", def); }
 void Storage::setWhatsAppEnabled(bool en) { _prefs.putBool("wa_enabled", en); }
+String Storage::getCallMeBotApiKey(const String &def) const { return _prefs.getString("cmb_key", def); }
+void Storage::setCallMeBotApiKey(const String &v) { _prefs.putString("cmb_key", v); }
 
 // Audio
 bool Storage::getSoundEnabled(bool def) const {

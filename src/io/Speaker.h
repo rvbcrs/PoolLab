@@ -6,7 +6,7 @@
 class Speaker {
 public:
     Speaker();
-    void setup();
+    void setup(int bclk = -1, int lrc = -1, int din = -1);
     void loop();
     
     // Core functions
@@ -30,10 +30,10 @@ private:
     uint8_t _savedVolume;
     bool _isMuted;
     
-    // Pin Definitions (MAX98357A)
-    static const int I2S_BCLK = 42;
-    static const int I2S_LRC = 2;
-    static const int I2S_DIN = 41;
+    // Pin Definitions (MAX98357A) — set at runtime via setup()
+    int _i2sBclk;
+    int _i2sLrc;
+    int _i2sDin;
 };
 
 extern Speaker speaker;

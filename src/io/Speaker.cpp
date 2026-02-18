@@ -9,18 +9,21 @@ Speaker speaker;
 #define SAMPLE_RATE     44100
 #define BITS_PER_SAMPLE 16
 
-// Speaker::Speaker() : _volume(12), _savedVolume(12), _isMuted(false) {}
-Speaker::Speaker() : _volume(12), _savedVolume(12), _isMuted(false) {
+Speaker::Speaker() : _volume(12), _savedVolume(12), _isMuted(false),
+                     _i2sBclk(-1), _i2sLrc(-1), _i2sDin(-1) {
 }
 
-void Speaker::setup() {
-    // Initialize Audio library capabilities
-    // Pin config: BCLK, LRC, DIN
-    // _audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
-    // _audio.setVolume(_volume);
-    
+void Speaker::setup(int bclk, int lrc, int din) {
+    _i2sBclk = bclk;
+    _i2sLrc  = lrc;
+    _i2sDin  = din;
+
+    if (_i2sBclk < 0 || _i2sLrc < 0 || _i2sDin < 0) {
+        ESP_LOGW("SPK", "Speaker pins not set — skipping I2S init");
+        return;
+    }
+
     // Explicitly install I2S driver for beep() functionality (Direct I2S Write)
-    // Use standard CD quality config which matches Audio library defaults
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = SAMPLE_RATE,
@@ -33,12 +36,12 @@ void Speaker::setup() {
         .use_apll = false,
         .tx_desc_auto_clear = true
     };
-    
+
     i2s_pin_config_t pin_config = {
-        .bck_io_num = I2S_BCLK,
-        .ws_io_num = I2S_LRC,
-        .data_out_num = I2S_DIN,
-        .data_in_num = I2S_PIN_NO_CHANGE
+        .bck_io_num   = _i2sBclk,
+        .ws_io_num    = _i2sLrc,
+        .data_out_num = _i2sDin,
+        .data_in_num  = I2S_PIN_NO_CHANGE
     };
 
     // Install driver (ignore error if already installed)

@@ -16,19 +16,10 @@
 #include "driver/ledc.h"
 #include <stdio.h>
 #include <stdarg.h>
-#if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
-#include <Arduino_GFX_Library.h>
-#endif
 #include <HardwareSerial.h>
 #include <SPI.h>
 #include <vector>
-#if !defined(USE_JC3248W535)
-// Legacy Adafruit fonts removed; LVGL handles fonts across boards
-#endif
 #include <lvgl.h>
-#if !defined(USE_JC3248W535)
-// Legacy Adafruit_GFX include removed; not used by LVGL path
-#endif
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <PubSubClient.h>
@@ -38,30 +29,11 @@
 #include <FS.h>
 #include "domain/DummySensor.h"
 #include "domain/Telemetry.h"
-#if !defined(USE_JC3248W535)
-// Legacy Adafruit fonts removed
-#endif
-#if defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
-#include "esp_bsp.h"
-#include "display.h"
-#include "lv_port.h"
-#endif
-#if defined(USE_JC3248W535)
-#include "jc3248w535.h"
-// #include <demos/lv_demos.h>
-//#include <Wire.h>
-#endif
+// Board-specific display/touch/BSP includes are in core/boards/ implementations
 
-#if defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)
-#define LVGL_LOCK() jc3248w535_lock(1)
-#define LVGL_UNLOCK() jc3248w535_unlock()
-#elif defined(BOARD_ESP32S3_35)
-#define LVGL_LOCK() bsp_display_lock(1)
-#define LVGL_UNLOCK() bsp_display_unlock()
-#else
-#define LVGL_LOCK() true
-#define LVGL_UNLOCK() do{}while(0)
-#endif
+// Board-agnostic LVGL locking — delegates to the active Board implementation
+#define LVGL_LOCK()   getBoard().lvglLock()
+#define LVGL_UNLOCK() getBoard().lvglUnlock()
 #ifndef ZB_ENABLED
 #if defined(BOARD_ESP32P4_43)
 // P4: No native Zigbee, uses C6 bridge
@@ -111,7 +83,7 @@ static bool wifiOff = false;
 static volatile bool g_settingsRequested = false;
 static volatile bool g_startPortalRequested = false;
 static volatile bool g_ui_ip_dirty = false;
-static String g_ui_ip_text;
+static char g_ui_ip_buf[24] = {0};  // Thread-safe fixed buffer for IP text (replaces String)
 static volatile bool g_showMainRequested = false;
 
 extern "C" void requestShowMain(){ g_showMainRequested = true; }
@@ -125,9 +97,7 @@ static uint32_t APP_BOOT_MS = 0;
 
 // Core modules
 #include "core/Storage.h"
-#if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
-#include "core/DisplayBridge.h"
-#endif
+#include "core/Board.h"
 #include "domain/Metrics.h"
 #include "domain/ControlPolicy.h"
 // IO modules
@@ -140,15 +110,12 @@ static uint32_t APP_BOOT_MS = 0;
 #include "io/CaptivePortal.h"
 #include "io/PowerManager.h"
 #include "io/Speaker.h"
-#include "io/Speaker.h"
 #include "ui/UI.h"
 // Provide C-linkage declarations for image assets used by UI when included here
 extern "C" {
   extern const lv_img_dsc_t water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
   extern const lv_img_dsc_t water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40;
 }
-#if USES_ARDUINO_GFX && !defined(USE_JC3248W535)
-#endif
 #include "io/WebUI.h"
 #include "io/WiFiManager.h"
 #include "boards/BoardSelect.h"
@@ -174,11 +141,6 @@ extern "C" const lv_font_t lv_font_source_code_pro_18;
 extern "C" const lv_font_t lv_font_source_code_pro_36;
 extern "C" const lv_font_t lv_font_source_code_pro_36_bold;
 #include "core/Log.h"
-#if defined(USE_JC3248W535)
-static jc3248w535_handles_t jc_handles; // zero-initialized
-// Keep JC path free of legacy helpers; do not define pushLine/connectWiFi... stubs here
-#endif
-
 // ====== USER CONFIG ======
 // Set to true for a minimal diagnostic mode (serial prints + color flashes)
 static const bool DIAG_MODE = false;
@@ -186,19 +148,9 @@ static const uint32_t TUYA_BAUD = 115200; // 115200 default; change to 9600 if n
 static const int RX_A_PIN = 16;          // MCU -> WiFi
 static const int RX_B_PIN = 17;          // WiFi -> MCU
 static const bool USE_CHANNEL_B = true; // set false if only one direction
-// Backlight pin (as in your working example)
 
-// Helper macro to group boards that use Arduino_GFX
-// Note: ESP32-P4 does NOT use Arduino_GFX - it uses native MIPI-DSI
-#define USES_ARDUINO_GFX (defined(BOARD_ESP32C6_TOUCH_1_47))
-
-#if defined(BOARD_ESP32C6_TOUCH_1_47)
-static const int LCD_BL_PIN = 23;        // C6 original working backlight pin
-#elif defined(BOARD_ESP32P4_43)
-static const int LCD_BL_PIN = -1;        // P4: TBD, adjust based on actual board
-#else
-static const int LCD_BL_PIN = 23;
-#endif
+// Board pins snapshot — populated in setup() from getBoard().pins()
+static core::BoardPins g_pins;
 
 // Optional transmit pins to inject Tuya frames (leave -1 for sniff-only)
 static const int TX_A_PIN = -1;          // drive MCU<-WiFi line (rarely needed)
@@ -371,45 +323,15 @@ static const bool MOTOR_TEST   = false; // jog both motors at boot to verify wir
 // Force Motor A continuously on (test). Set true for hard-on at 100% duty.
 static const bool FORCE_MOTOR_A_ON = false;
 
-// Pinout (change to suit your wiring). All pins must be 3.3V tolerant GPIOs.
-// TB6612 → ESP32 mapping (C6 defaults; S3 remapped per board below):
-//  STBY  → TB_STBY
-//  AIN1  → M1_IN1,  AIN2 → M1_IN2,  PWMA → M1_PWM  (Motor 1)
-//  BIN1  → M2_IN1,  BIN2 → M2_IN2,  PWMB → M2_PWM  (Motor 2)
-// Choose pins that are free; these are not used by LCD/UART.
-#if defined(BOARD_ESP32S3_35)
-// S3 3.5" mapping (header IO5/6/7/9/14/15/16/46)
-// M1: 15, 16, 17 (PWM) - pH motor
-// M2: 18, 14, 9 (PWM) - ORP motor
-// STBY: 46
-// Sensors: 6 (pH), 7 (ORP) -- reserved for future ADC use
-static const int TB_STBY = 46;
-static const int M1_IN1  = 15;
-static const int M1_IN2  = 16;
-static const int M1_PWM  = 17;
-static const int M2_IN1  = 18;
-static const int M2_IN2  = 14;
-static const int M2_PWM  = 9;
-#elif defined(BOARD_ESP32P4_43)
-// P4 4.3" mapping: avoid GPIO 7/8 (I2C touch), GPIO 16/17 (C6 UART)
-// Use free GPIOs: 11, 12, 13, 14, 15, 36, 37, 38 etc.
-static const int TB_STBY = 11;  // STBY
-static const int M1_IN1  = 12;
-static const int M1_IN2  = 13;
-static const int M1_PWM  = 14;  // LEDC PWM
-static const int M2_IN1  = 15;
-static const int M2_IN2  = 36;
-static const int M2_PWM  = 37;  // LEDC PWM
-#else
-// C6 defaults
-static const int TB_STBY = 3;  // use free GPIO3 (SPI MISO pad) for STBY
-static const int M1_IN1  = 7;
-static const int M1_IN2  = 8;
-static const int M1_PWM  = 5;  // LEDC PWM
-static const int M2_IN1  = 4;
-static const int M2_IN2  = 6;
-static const int M2_PWM  = 9;  // LEDC PWM
-#endif
+// Motor pin aliases resolved from g_pins (populated in setup() via getBoard().pins()).
+// Defined as references to g_pins fields for readable use at call sites.
+#define TB_STBY (g_pins.motorStby)
+#define M1_IN1  (g_pins.m1in1)
+#define M1_IN2  (g_pins.m1in2)
+#define M1_PWM  (g_pins.m1pwm)
+#define M2_IN1  (g_pins.m2in1)
+#define M2_IN2  (g_pins.m2in2)
+#define M2_PWM  (g_pins.m2pwm)
 
 // Control policy thresholds and timing
 static float PH_MIN = 6.80f, PH_MAX = 7.60f;   // outside → run Motor1
@@ -433,7 +355,7 @@ static int ORP_SANITY_MAX = 1200;             // mV above this is sensor error
 static int SENSOR_TIMEOUT = 300;              // seconds without valid sensor data before stop
 
 // WhatsApp notifications (CallMeBot API)
-static const char* CALLMEBOT_API_KEY = "1378196";  // User's API key
+static String CALLMEBOT_API_KEY = "";             // Loaded from storage (NVS)
 static String WHATSAPP_PHONE = "";             // +31... format (loaded from storage)
 static bool WHATSAPP_ENABLED = false;          // Enable/disable notifications
 
@@ -468,10 +390,7 @@ static volatile uint32_t g_s3_lvgl_heartbeat_ms = 0;
 
 // MQTT is handled by io::MqttClient now
 core::Storage g_storage("poolcfg");
-#if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
-static core::DisplayBridge *displayBridge = nullptr;
 static uint32_t g_ui_last_lvgl_ms = 0;
-#endif
 static io::MotorController g_motor;
 static io::MqttClient mqttClient;
 static io::WiFiManager wifiMgr;
@@ -486,20 +405,9 @@ static bool motorsEnabled = true; // persisted via Storage
 #if defined(USE_JC3248W535)
 static bool g_minimal_ui_active = false;
 #endif
-// --- Button for Zigbee commissioning (monitor both common BOOT pins)
-#if defined(BOARD_ESP32C6_TOUCH_1_47)
-static const int BTN_PIN1 = 9;   // C6: BOOT (GPIO9)
-static const int BTN_PIN2 = 0;   // backup
-#elif defined(BOARD_ESP32P4_43)
-static const int BTN_PIN1 = -1;  // P4: TBD
-static const int BTN_PIN2 = -1;  // P4: TBD
-#elif defined(BOARD_ESP32S3_35)
-static const int BTN_PIN1 = -1;  // S3: no button logic
-static const int BTN_PIN2 = -1;  // unused
-#else
-static const int BTN_PIN1 = 0;
-static const int BTN_PIN2 = -1;
-#endif
+// Button pin aliases resolved from g_pins (populated in setup())
+#define BTN_PIN1 (g_pins.btn1)
+#define BTN_PIN2 (g_pins.btn2)
 // If BOOT is not wired on this board, fall back to GPIO0 only
 static io::Buttons g_buttons;
 
@@ -509,73 +417,8 @@ static const int BL_CANDIDATES[] = {2, 1, 3, 20, 21, 19, 18, 17, 16, 15, 14, 13,
 static const size_t BL_CANDIDATES_COUNT = sizeof(BL_CANDIDATES) / sizeof(BL_CANDIDATES[0]);
 // =========================
 
-// ---- Display setup (match working HelloWorld) ----
-
-
-
-#if defined(BOARD_ESP32C6_TOUCH_1_47)
-#include "core/Board.h"
-#include "core/boards/Esp32C6Board.h"
-#include "core/display/DisplayDriver.h"
-#include "core/display/St7789C6.h"
-#include "core/touch/TouchDriver.h"
-#include "core/touch/Axs5106L.h"
-static core::Esp32C6Board g_boardC6;
-Arduino_DataBus *bus = new Arduino_HWSPI(15 /* DC */, 14 /* CS */, 1 /* SCK */, 2 /* MOSI */, -1 /* MISO */);
-Arduino_GFX *gfx = new Arduino_ST7789(bus, DISPLAY_CFG.rstPin, DISPLAY_CFG.rotation, false /* IPS */,
-                                      DISPLAY_CFG.width, DISPLAY_CFG.height,
-                                      DISPLAY_CFG.colOffset1, DISPLAY_CFG.rowOffset1,
-                                      DISPLAY_CFG.colOffset2, DISPLAY_CFG.rowOffset2);
-static core::St7789C6 displayDriver(gfx, bus);
-static core::Axs5106L touchDriver(18,19,20,21,0x63);
-// Legacy UI removed; C6 uses LVGL UI like S3
-
-#if 0
-static void lcd_reg_init(void) {}
-#endif
-#elif defined(BOARD_ESP32P4_43)
-#include "core/Board.h"
-#include "core/boards/Esp32P4Board.h"
-#include "boards/pins_config_p4.h"
-#include "st7701_lcd.h"
-#include "gt911_touch.h"
-#include "driver/i2c_master.h"
-
-static core::Esp32P4Board g_boardP4;
-
-// ESP32-P4 uses MIPI-DSI display (ST7701) + GT911 touch
-// NO Arduino_GFX - uses native ESP-IDF MIPI-DSI driver
-// Direct instances like in the example
-static st7701_lcd p4_lcd(LCD_RST);
-static gt911_touch p4_touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
-static bsp_lcd_handles_t p4_lcd_panels;
-// MUST be non-static so GT911 driver can access it via extern declaration
-i2c_master_bus_handle_t p4_i2c_handle = NULL;
-
-// LVGL buffers for P4 (480x800 requires large buffers in PSRAM)
-static lv_disp_draw_buf_t p4_draw_buf;
-static lv_color_t *p4_buf = nullptr;
-static lv_color_t *p4_buf1 = nullptr;
-
-// Callback to sync touch driver rotation with display rotation
-static void p4_lvgl_port_update_callback(lv_disp_drv_t *drv)
-{
-    switch (drv->rotated) {
-    case LV_DISP_ROT_NONE:
-        p4_touch.set_rotation(0);
-        break;
-    case LV_DISP_ROT_90:
-        p4_touch.set_rotation(1);
-        break;
-    case LV_DISP_ROT_180:
-        p4_touch.set_rotation(2);
-        break;
-    case LV_DISP_ROT_270:
-        p4_touch.set_rotation(3);
-        break;
-    }
-}
-#endif
+// ---- Display / touch objects now live in core/boards/ implementations ----
+// getBoard().initDisplay() and getBoard().initTouch() replace the old #ifdef blocks.
 
 
 
@@ -657,9 +500,7 @@ static void updateLvglValues(){
   // On JC path, rely on the LVGL timer in UI.cpp to update values to avoid flooding
   return;
   #endif
-  #if defined(BOARD_ESP32S3_35)
   if (!LVGL_LOCK()) return;
-  #endif
   if (lv_lbl_ph) {
     if (METRICS().havePh) { char b[24]; snprintf(b, sizeof(b), "%.2f", (double)METRICS().phVal); lv_label_set_text(lv_lbl_ph, b); }
     else lv_label_set_text(lv_lbl_ph, "--.--");
@@ -742,9 +583,7 @@ static void updateLvglValues(){
       lv_obj_move_foreground(lv_img_link);
     }
   }
-  #if defined(BOARD_ESP32S3_35)
   LVGL_UNLOCK();
-  #endif
 }
 
 // Ensure LVGL centers the first tile after the first few ticks (post-layout)
@@ -1171,16 +1010,16 @@ static void sendWhatsAppAsync(void* param) {
   
   const char* alertMsg = alertMessages[alertIdx];
   
-  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && CALLMEBOT_API_KEY.length() > 0 && WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    
+
     // URL encode the message
     String encodedMsg = "POOLLAB+ALERT:+";
     encodedMsg += String(alertMsg).c_str();
     encodedMsg.replace(" ", "+");
     encodedMsg.replace(",", "%2C");
     encodedMsg.replace("-", "%2D");
-    
+
     // Build CallMeBot URL
     String url = "https://api.callmebot.com/whatsapp.php?phone=";
     url += WHATSAPP_PHONE;
@@ -1260,16 +1099,16 @@ void handleSafetyAlert(domain::SafetyAlert alert) {
   ESP_LOGI("SAFETY", "WhatsApp check: enabled=%d phone_len=%d wifi=%d", 
            WHATSAPP_ENABLED, WHATSAPP_PHONE.length(), WiFi.status() == WL_CONNECTED);
   
-  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && WiFi.status() == WL_CONNECTED) {
+  if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() > 0 && CALLMEBOT_API_KEY.length() > 0 && WiFi.status() == WL_CONNECTED) {
     // Create a copy of the alert for the async task
     domain::SafetyAlert* alertCopy = (domain::SafetyAlert*)malloc(sizeof(domain::SafetyAlert));
     *alertCopy = alert;
-    
+
     // Launch WhatsApp sender in separate task with 8KB stack (enough for SSL/TLS)
     xTaskCreate(sendWhatsAppAsync, "whatsapp_send", 8192, alertCopy, 1, NULL);
     ESP_LOGI("SAFETY", "WhatsApp notification task launched");
-  } else if (WHATSAPP_ENABLED && WHATSAPP_PHONE.length() == 0) {
-    ESP_LOGW("SAFETY", "WhatsApp enabled but no phone number configured");
+  } else if (WHATSAPP_ENABLED && (WHATSAPP_PHONE.length() == 0 || CALLMEBOT_API_KEY.length() == 0)) {
+    ESP_LOGW("SAFETY", "WhatsApp enabled but phone or API key not configured");
   } else if (!WHATSAPP_ENABLED) {
     ESP_LOGI("SAFETY", "WhatsApp notifications disabled");
   } else if (WiFi.status() != WL_CONNECTED) {
@@ -1346,7 +1185,7 @@ static void p4WifiInitTask(void *arg) {
           Serial.flush();
           
           if (USE_LVGL_UI) { 
-            g_ui_ip_text = WiFi.localIP().toString(); 
+            strncpy(g_ui_ip_buf, WiFi.localIP().toString().c_str(), sizeof(g_ui_ip_buf)-1); g_ui_ip_buf[sizeof(g_ui_ip_buf)-1] = '\0'; 
             g_ui_ip_dirty = true; 
           }
           
@@ -1442,36 +1281,17 @@ void setup() {
   // Avoid enabling debug output to USB CDC to prevent any hidden blocking
   // Serial.setDebugOutput(true);
 
+  // Populate board pin map early (needed before speaker.setup() and motor init)
+  g_pins = getBoard().pins();
+
+  // S3 JC path: Power Manager (IP5306) + Speaker
+  // (Display init is handled by getBoard().initDisplay() below)
   #if defined(USE_JC3248W535)
-  ESP_LOGI("MAIN", "Starting display init (JC3248W535)");
-  
-
-
-  // Ensure Arduino Wire (driver_ng) is not used on S3; no Wire calls on JC path
-  
-    (void)jc3248w535_begin_simple(90, &jc_handles);
-    (void)jc3248w535_backlight_set(100);
-    // Minimal banner before full UI to confirm panel
-    if (jc3248w535_lock(5)) {
-      lv_obj_clean(lv_scr_act());
-      lv_obj_t *label = lv_label_create(lv_scr_act());
-      lv_label_set_text(label, "Starting UI...");
-      lv_obj_center(label);
-      jc3248w535_unlock();
-    }
-    g_minimal_ui_active = true;
-    ESP_LOGI("MAIN", "Proceeding to full UI build");
-
-    // Initialize Power Manager (IP5306) - try standard I2C first
-    // Note: Do not overlap with Touch pins (7,8) if BSP uses them via IDF driver
-    // We use I2C1 (Legacy) internally in PowerManager to avoid conflict with BSP on I2C0.
-    Power.begin(18, 19); 
-    speaker.setup(); 
-    
+    Power.begin(18, 19);
+    speaker.setup(g_pins.i2sBclk, g_pins.i2sLrc, g_pins.i2sDin);
     if (!Power.isConnected()) {
-        Serial.println("PowerManager: IP5306 not found on 18,19.");
+      Serial.println("PowerManager: IP5306 not found on 18,19.");
     }
-
   #endif
 
   // S3: Initialize Tuya UART explicitly (as initPeripherals is skipped)
@@ -1508,224 +1328,19 @@ void setup() {
   );
   #endif
 
-  // Avoid Arduino SPI init on S3 JC path (conflicts with QSPI LCD bus)
-  #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-    // Use board abstraction to init peripherals
-  #if defined(BOARD_ESP32C6_TOUCH_1_47)
-    g_boardC6.earlyInit();
-    g_boardC6.initPeripherals();
-  #elif defined(BOARD_ESP32P4_43)
-    g_boardP4.earlyInit();
-    g_boardP4.initPeripherals();
-  #else
-  SPI.begin();
-    #endif
-  #else
-    ESP_LOGI("MAIN", "Skipping SPI.begin() on S3 JC path");
+  // Board-agnostic: early init and peripheral setup
+  getBoard().earlyInit();
+  getBoard().initPeripherals();
+
+  // Display + LVGL initialisation — all board-specific code is in core/boards/
+  lv_disp_t *disp = getBoard().initDisplay();
+  #if defined(USE_JC3248W535)
+  g_minimal_ui_active = true;
   #endif
-
-  // Backlight on (default)
-  // #if !defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
-  // if (LCD_BL_PIN >= 0) { pinMode(LCD_BL_PIN, OUTPUT); digitalWrite(LCD_BL_PIN, HIGH); }
-  // #endif
-  
-  // Remove broad BL scan to avoid toggling reserved pins
-
-  #if USES_ARDUINO_GFX && !defined(USE_JC3248W535)
-  // Hardware reset pulse on LCD reset pin for the active board
-  if (DISPLAY_CFG.rstPin >= 0) {
-    pinMode(DISPLAY_CFG.rstPin, OUTPUT);
-    digitalWrite(DISPLAY_CFG.rstPin, LOW);
-    delay(10);
-    digitalWrite(DISPLAY_CFG.rstPin, HIGH);
-    delay(120);
-  }
-  #endif
-
-  // LCD init
-  // For ESP32-S3 3.5" board, the display is initialized via BSP when LVGL UI starts below.
-  
-  // Initialize display - different paths for different boards
-  #if defined(BOARD_ESP32P4_43)
-    // ESP32-P4: Initialize MIPI-DSI display (ST7701) - matching lvgl_demo_v8.ino
-    ESP_LOGI("MAIN", "Initializing P4 MIPI-DSI display (480x800)");
-    
-    // Initialize IO
-    // Initialize IO
-    // Initialize I2C master bus for touch (I2C_NUM_1)
-    // IMPORTANT: Use global handle so GT911 driver can retrieve it later!
-    i2c_master_bus_config_t i2c_bus_conf = {
-      .i2c_port = I2C_NUM_1,
-      .sda_io_num = (gpio_num_t)TP_I2C_SDA,
-      .scl_io_num = (gpio_num_t)TP_I2C_SCL,
-      .clk_source = I2C_CLK_SRC_DEFAULT,
-      .glitch_ignore_cnt = 7,
-      .intr_priority = 0,
-      .trans_queue_depth = 0,
-      .flags = {.enable_internal_pullup = 1},
-    };
-    i2c_new_master_bus(&i2c_bus_conf, &p4_i2c_handle);
-    
-    // Initialize LCD and touch (exact sequence like working example)
-    p4_lcd.begin();
-    
-    p4_touch.begin();  // Will call i2c_master_get_bus_handle(1) internally
-    
-    p4_touch.set_rotation(0);  // Keep touch in portrait mode, we'll transform in callback
-    p4_lcd.get_handle(&p4_lcd_panels);
-    
-    ESP_LOGI("MAIN", "P4 display initialized");
-  #elif USES_ARDUINO_GFX && !defined(USE_JC3248W535)
-    // ESP32-C6: Initialize Arduino_GFX SPI display
-    if (gfx) {
-      displayDriver.begin();
-      // Match master: rotation(1) for landscape
-      displayDriver.setRotation(1);
-      // Turn on backlight
-      if (LCD_BL_PIN >= 0) { pinMode(LCD_BL_PIN, OUTPUT); digitalWrite(LCD_BL_PIN, HIGH); }
-      // Clear screen to black
-  gfx->fillScreen(BLACK);
-      delay(10);
-      // Only draw legacy banner/UI when not using LVGL UI
-      if (!USE_LVGL_UI) {
-        gfx->setTextColor(WHITE);
-        gfx->setTextWrap(false);
-        const char *banner = "PoolLab Ready";
-        int16_t text_w = (int16_t)(6 * (int)strlen(banner) * 2);
-        int16_t text_h = (int16_t)(8 * 2);
-        int16_t cx = (int16_t)((int)gfx->width() - text_w) / 2;
-        int16_t cy = (int16_t)((int)gfx->height() - text_h) / 2;
-        gfx->setTextSize(2);
-        gfx->setCursor(cx < 0 ? 0 : cx, cy < 0 ? 0 : cy);
-        gfx->print(banner);
-        delay(150);
-        gfx->fillScreen(BLACK);
-        // legacy static draw flag removed
-        drawStaticUI();
-        updateValueAreas();
-      }
-    }
-  #endif
- 
-
-  // Begin touch - MUST be after display init but BEFORE LVGL (matching working code)
-  // io::touchBegin(); // MOVED to after LVGL init
 
   if (USE_LVGL_UI) {
-    // Initialize LVGL display
-    lv_disp_t *disp = nullptr;
-    
-    #if defined(BOARD_ESP32P4_43)
-    // ESP32-P4: Initialize LVGL with MIPI-DSI display in LANDSCAPE
-    lv_init();
-    // Use hardware resolution with software rotation
-    size_t buffer_size = sizeof(lv_color_t) * LCD_V_RES * 100;  // 800 * 100 lines
-    p4_buf = (lv_color_t *)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
-    p4_buf1 = (lv_color_t *)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
-    assert(p4_buf && p4_buf1 && "Failed to allocate LVGL buffers");
-    
-    lv_disp_draw_buf_init(&p4_draw_buf, p4_buf, p4_buf1, LCD_V_RES * 100);
-    
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = LCD_H_RES;  // 480
-    disp_drv.ver_res = LCD_V_RES;  // 800
-    disp_drv.draw_buf = &p4_draw_buf;
-    disp_drv.full_refresh = false;
-    disp_drv.sw_rotate = 1;  // Enable software rotation
-    disp_drv.rotated = LV_DISP_ROT_270;  // 270° for landscape
-    disp_drv.flush_cb = [](lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
-      const int offsetx1 = area->x1;
-      const int offsetx2 = area->x2;
-      const int offsety1 = area->y1;
-      const int offsety2 = area->y2;
-      p4_lcd.lcd_draw_bitmap(offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, &color_p->full);
-    };
-    disp = lv_disp_drv_register(&disp_drv);
-    
-    // Register DPI panel callback
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {0};
-    cbs.on_color_trans_done = [](esp_lcd_panel_handle_t panel_io, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx) -> bool {
-      lv_disp_drv_t *drv = (lv_disp_drv_t *)user_ctx;
-      if (drv) lv_disp_flush_ready(drv);
-      return false;
-    };
-    esp_lcd_dpi_panel_register_event_callbacks(p4_lcd_panels.panel, &cbs, &disp_drv);
-    
-    // Register touch input for portrait mode with debouncing
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = [](lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
-      (void)indev_driver;
-      static uint32_t last_press_time = 0;
-      static uint32_t last_release_time = 0;
-      static uint16_t stable_x = 0, stable_y = 0;
-      static bool was_pressed = false;
-      bool touched;
-      uint16_t touchX, touchY;
-      uint32_t now = millis();
-      
-      touched = p4_touch.getTouch(&touchX, &touchY);
-      
-      // Validate touch data (GT911 sometimes returns 0,0 or max values on error)
-      if (touched && (touchX == 0 || touchY == 0 || touchX >= LCD_H_RES || touchY >= LCD_V_RES)) {
-        touched = false;  // Ignore invalid touches
-      }
-      
-      if (!touched) {
-        // Released - but require minimum press time
-        if (was_pressed && (now - last_press_time) > 100) {  // Minimum 100ms press
-          data->state = LV_INDEV_STATE_REL;
-          was_pressed = false;
-          last_release_time = now;
-        } else {
-          // Still report as pressed to avoid spurious release
-          data->state = was_pressed ? LV_INDEV_STATE_PR : LV_INDEV_STATE_REL;
-          data->point.x = stable_x;
-          data->point.y = stable_y;
-        }
-      } else {
-        // Touched - require debounce after release
-        if (!was_pressed && (now - last_release_time) < 200) {
-          // Too soon after release, ignore to prevent double-tap
-          data->state = LV_INDEV_STATE_REL;
-        } else {
-          data->state = LV_INDEV_STATE_PR;
-          // Portrait mode - pass coordinates directly
-          data->point.x = touchX;
-          data->point.y = touchY;
-          
-          if (!was_pressed) {
-            last_press_time = now;
-            stable_x = touchX;
-            stable_y = touchY;
-            was_pressed = true;
-          } else {
-            // Update stable position for movement
-            stable_x = touchX;
-            stable_y = touchY;
-          }
-        }
-      }
-    };
-    lv_indev_drv_register(&indev_drv);
-    
-    ESP_LOGI("MAIN", "P4 LVGL initialized (%dx%d)", LCD_H_RES, LCD_V_RES);
-    #elif !defined(USE_JC3248W535)
-    // C6/S3: Initialize LVGL via Arduino_GFX bridge
-    displayBridge = new core::DisplayBridge(gfx);
-    displayBridge->initLvgl(20);
-    disp = displayBridge->registerDisplay();
-    #else
-    // With JC path active, 'disp' comes from jc3248w535; keep as lv_disp_get_default()
-    disp = lv_disp_get_default();
-    #endif
-    
-    // Ensure LVGL is locked on BSP path during UI creation (S3 BSP)
-    #if defined(BOARD_ESP32S3_35)
+    // Acquire LVGL mutex (no-op on C6/P4; BSP semaphore on S3)
     LVGL_LOCK();
-    #endif
     ESP_LOGI("UI", "Before ui::init; res=%dx%d", (int)lv_disp_get_hor_res(NULL), (int)lv_disp_get_ver_res(NULL));
     ui::init(disp);
     ESP_LOGI("UI", "After ui::init");
@@ -1772,14 +1387,6 @@ void setup() {
     }
     // Unlock immediately after UI work to avoid blocking BSP LVGL task
     LVGL_UNLOCK();
-    // Tune touch repeat thresholds to avoid double key insert on on-screen keyboard
-    {
-      lv_indev_t *indev = bsp_display_get_input_dev();
-      if (indev && indev->driver) {
-        indev->driver->long_press_time = 800;           // ms before repeat starts
-        indev->driver->long_press_repeat_time = 0;      // disable key repeat to avoid doubles
-      }
-    }
     #endif
     // Load persisted configuration early so UI defaults and startup mode are correct
     g_storage.begin(false);
@@ -1803,6 +1410,7 @@ void setup() {
     // Load WhatsApp notification settings
     WHATSAPP_PHONE = g_storage.getWhatsAppPhone("");
     WHATSAPP_ENABLED = g_storage.getWhatsAppEnabled(false);
+    CALLMEBOT_API_KEY = g_storage.getCallMeBotApiKey("");
   // Load mode from storage
   #if defined(BOARD_ESP32S3_35)
   // S3: Force WiFi mode (no Zigbee support)
@@ -1967,146 +1575,8 @@ void setup() {
     ui::setThresholds(PH_MIN, PH_MAX, ORP_MIN, ORP_MAX);
     ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
-    // Theme already set earlier under lock for S3; C6 keeps default path
-
-    // Input device (touch) bridge (enabled with safe polling read_cb)
-    // P4 already registers its own touch handler earlier (GT911 via p4_touch.begin())
-    #if !defined(BOARD_ESP32S3_35) && !defined(BOARD_ESP32P4_43)
-    if (true) {
-      static lv_indev_drv_t indev_drv;
-      lv_indev_drv_init(&indev_drv);
-      // Tune gesture/scroll parameters at runtime to avoid macro redefinition warnings
-      indev_drv.scroll_limit = 4;            // match UI expectation for drag start
-      indev_drv.scroll_throw = 8;            // moderate deceleration
-      indev_drv.long_press_time = 400;       // ms
-      indev_drv.long_press_repeat_time = 0;  // ms (disable repeat to avoid double key inserts)
-      indev_drv.gesture_limit = 20;          // pixels
-      indev_drv.gesture_min_velocity = 2;    // pixels per tick
-      indev_drv.type = LV_INDEV_TYPE_POINTER;
-      indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data)->void{
-        uint8_t buf[14] = {0};
-        if (!io::i2cRead(io::AXS5106L_ADDR, io::AXS5106L_TOUCH_DATA_REG, buf, sizeof(buf))) {
-          static bool fail_reported = false;
-          if (!fail_reported) {
-            ESP_LOGI("TOUCH", "LVGL read_cb: I2C read failed!");
-            fail_reported = true;
-          }
-          data->state = LV_INDEV_STATE_RELEASED; 
-          return;
-        }
-
-        uint8_t n = buf[1]; // Number of touch points
-        if (n == 0) { 
-          data->state = LV_INDEV_STATE_RELEASED; 
-          return; 
-        }
-
-        // At least one point detected, let's process and report it
-        uint16_t rx = (((uint16_t)(buf[2] & 0x0F)) << 8) | buf[3];
-        uint16_t ry = (((uint16_t)(buf[4] & 0x0F)) << 8) | buf[5];
-        int16_t x = (int16_t)ry; // Swapped for landscape
-        int16_t y = (int16_t)rx;
-        
-        // Clamp to LVGL display resolution (avoid Arduino_GFX rotation mismatch)
-        lv_disp_t *disp_local = lv_disp_get_default();
-        int hor = disp_local ? (int)lv_disp_get_hor_res(disp_local) : 320;
-        int ver = disp_local ? (int)lv_disp_get_ver_res(disp_local) : 172;
-        x = constrain(x, 0, hor - 1);
-        y = constrain(y, 0, ver - 1);
-        
-        data->point.x = x; 
-        data->point.y = y; 
-        data->state = LV_INDEV_STATE_PRESSED;
-        
-        static uint32_t last_press_ms = 0;
-        const uint32_t DEBOUNCE_MS = 400;
-        uint32_t now = millis();
-        if (now - last_press_ms < DEBOUNCE_MS) {
-          data->state = LV_INDEV_STATE_RELEASED;
-          return;
-        }
-        last_press_ms = now;
-        
-        static uint32_t last_read_ms = 0;
-        if (now - last_read_ms < 50) return; // Throttle reads to 20Hz max to avoid overload
-        last_read_ms = now;
-        
-        static uint32_t last_print = 0;
-        if (millis() - last_print > 100) { // Rate limit printing
-            last_print = millis();
-            // Avoid heavy logging of touch events; it stalls UI if no CDC consumer
-            //ESP_LOGI("TOUCH", "LVGL: PRESSED at x=%d, y=%d, points=%d", x, y, n);
-        }
-      };
-      (void)lv_indev_drv_register(&indev_drv);
-    }
-    #elif defined(BOARD_ESP32S3_35)
-    // S3 JC path: BSP touch disabled; register our own LVGL indev using io::Touch (new i2c_master)
-    {
-      static lv_indev_drv_t indev_drv;
-      lv_indev_drv_init(&indev_drv);
-      indev_drv.type = LV_INDEV_TYPE_POINTER;
-      indev_drv.read_cb = [](lv_indev_drv_t *d, lv_indev_data_t *data){
-        (void)d;
-        
-        // State tracking for debouncing
-        static uint32_t last_touch_ms = 0;
-        static int16_t last_x = 0, last_y = 0;
-        static bool was_pressed = false;
-        
-        // Debouncing parameters (tuned for responsive but stable touch)
-        const uint32_t TOUCH_DEBOUNCE_MS = 150;      // Minimum time between new touch events
-        const uint32_t RELEASE_TIMEOUT_MS = 100;      // Time without touch before considering released
-        const uint16_t JITTER_TOLERANCE_PX = 8;       // Ignore small movements (jitter)
-        
-        io::TouchPoint p{};
-        uint32_t now = millis();
-        
-        if (io::readTouchOnce(p) && p.pressed) {
-          // Touch detected
-          int16_t dx = abs(p.x - last_x);
-          int16_t dy = abs(p.y - last_y);
-          
-          // Check if this is a new touch or just jitter/bounce
-          if (was_pressed && 
-              (now - last_touch_ms < TOUCH_DEBOUNCE_MS) &&
-              dx <= JITTER_TOLERANCE_PX && 
-              dy <= JITTER_TOLERANCE_PX) {
-            // Within debounce window and same location - maintain current state
-            data->point.x = last_x;
-            data->point.y = last_y;
-            data->state = LV_INDEV_STATE_PRESSED;
-            return;
-          }
-          
-          // Valid new touch or continued press outside jitter zone
-          if (!was_pressed || (now - last_touch_ms >= TOUCH_DEBOUNCE_MS) || 
-              dx > JITTER_TOLERANCE_PX || dy > JITTER_TOLERANCE_PX) {
-            last_touch_ms = now;
-            last_x = p.x;
-            last_y = p.y;
-            was_pressed = true;
-            data->point.x = p.x;
-            data->point.y = p.y;
-            data->state = LV_INDEV_STATE_PRESSED;
-          }
-        } else {
-          // No touch detected
-          if (was_pressed && (now - last_touch_ms < RELEASE_TIMEOUT_MS)) {
-            // Still within release timeout - maintain press state to avoid flicker
-            data->point.x = last_x;
-            data->point.y = last_y;
-            data->state = LV_INDEV_STATE_PRESSED;
-          } else {
-            // Confirmed release
-            was_pressed = false;
-            data->state = LV_INDEV_STATE_RELEASED;
-          }
-        }
-      };
-      (void)lv_indev_drv_register(&indev_drv);
-    }
-    #endif
+    // Register board-specific touch input device driver
+    getBoard().initTouch();
 
     // Build LVGL UI
     auto build_lvgl_ui = [=](){
@@ -2527,15 +1997,9 @@ void setup() {
       #endif
     #endif
     ESP_LOGI("UI", "After layout timer");
-    #if defined(BOARD_ESP32S3_35)
     LVGL_UNLOCK();
-    #endif
   }
 
-  // Begin touch AFTER LVGL init (never on S3 JC path; BSP handles it; P4 inits touch earlier)
-  #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535)) && !defined(BOARD_ESP32P4_43)
-  touchDriver.begin();
-  #endif
   // If touch is noisy at boot it can stall UI. Add a short debounce warmup.
   delay(50);
 
@@ -2667,7 +2131,7 @@ void setup() {
         {
           String ssid = g_storage.getWifiSsid("");
           String pass = g_storage.getWifiPass("");
-          wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { g_ui_ip_text = ip; g_ui_ip_dirty = true; } });
+          wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { strncpy(g_ui_ip_buf, ip.c_str(), sizeof(g_ui_ip_buf)-1); g_ui_ip_buf[sizeof(g_ui_ip_buf)-1] = '\0'; g_ui_ip_dirty = true; } });
           if (USE_LVGL_UI) {
             #if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
             if (LVGL_LOCK()) { ui::setSsid(ssid.c_str()); LVGL_UNLOCK(); }
@@ -2699,18 +2163,8 @@ void setup() {
 
   if (USE_LVGL_UI) ui::setInitialMode(runMode == core::Storage::MODE_ZIGBEE);
 
-  // Load custom speeds if present
-  M1_SPEED_PC = (uint8_t)g_storage.getM1Speed(M1_SPEED_PC);
-  M2_SPEED_PC = (uint8_t)g_storage.getM2Speed(M2_SPEED_PC);
   motorsEnabled = g_storage.getMotorsEnabled(true);
-  
-  // TEMPORARY: Force motors enabled if accidentally disabled (remove after confirming working)
-  if (!motorsEnabled) {
-    ESP_LOGW("MAIN", "⚠️ Motors were disabled! Re-enabling...");
-    motorsEnabled = true;
-    g_storage.setMotorsEnabled(true);
-  }
-  
+
   if (USE_LVGL_UI) ui::setInitialSpeeds(M1_SPEED_PC, M2_SPEED_PC);
 
   // TB6612 motor init already done above (before P4 goto)
@@ -2775,9 +2229,9 @@ void loop() {
     if (g_ui_ip_dirty) {
       g_ui_ip_dirty = false;
       #if defined(BOARD_ESP32S3_35)
-      if (LVGL_LOCK()) { ui::setIp(g_ui_ip_text.c_str()); LVGL_UNLOCK(); }
+      if (LVGL_LOCK()) { ui::setIp(g_ui_ip_buf); LVGL_UNLOCK(); }
       #else
-      ui::setIp(g_ui_ip_text.c_str());
+      ui::setIp(g_ui_ip_buf);
       #endif
     }
     updateLvglValues();
@@ -2804,12 +2258,9 @@ void loop() {
     if (now - last > 1000) {
       last = now;
       ESP_LOGI("DIAG", "millis=%u", (unsigned)now);
-      // visual heartbeat on screen border
+      // visual heartbeat (serial only — display objects are now board-local)
       static bool toggle = false; toggle = !toggle;
-      #if !defined(USE_JC3248W535) && !defined(BOARD_ESP32P4_43)
-      uint16_t c = toggle ? YELLOW : CYAN;
-      gfx->drawRect(0, 0, 171, 319, c);
-      #endif
+      ESP_LOGI("DIAG", "heartbeat %s", toggle ? "ON" : "OFF");
     }
     return;
   }
@@ -2963,16 +2414,8 @@ void loop() {
                domain::Metrics::instance().tempC);
     }
     
-    // Update LVGL values (this might hang if LVGL task is stuck!)
-    if (USE_LVGL_UI) {
-      ESP_LOGV("DUMMY", "Calling updateLvglValues...");
-      updateLvglValues();
-      ESP_LOGV("DUMMY", "updateLvglValues done");
-    }
-  } else {
-    // Ensure LVGL reflects real telemetry as it updates
-    if (USE_LVGL_UI) updateLvglValues();
   }
+  // updateLvglValues() already called at top of loop(); no need to repeat here
 
   // Read sensors (internal ADC or ADS1115) and update Metrics when enabled
   #if USE_ANALOG_SENSORS
@@ -3079,7 +2522,6 @@ void loop() {
       m1Running = false; m2Running = false;
     }
     if (USE_LVGL_UI) {
-      updateLvglValues();
       #if defined(USE_JC3248W535)
       Power.update();
       // Note: Battery UI is now handled by UI module (ui::refreshNetworkStatus calls Power.getBatteryLevel())

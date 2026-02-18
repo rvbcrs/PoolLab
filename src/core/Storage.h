@@ -110,6 +110,8 @@ public:
   void setWhatsAppPhone(const String &v);
   bool getWhatsAppEnabled(bool def = false) const;
   void setWhatsAppEnabled(bool en);
+  String getCallMeBotApiKey(const String &def = "") const;
+  void setCallMeBotApiKey(const String &v);
 
   // Audio / Sound enabled
   bool getSoundEnabled(bool def = true) const;

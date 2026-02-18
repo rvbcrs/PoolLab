@@ -14,7 +14,10 @@ struct MotorPins {
 
 class MotorController {
 public:
+  ~MotorController() { delete _policy; _policy = nullptr; }
+
   void begin(const MotorPins &pins, int pwmFreq, int pwmBits) {
+    delete _policy; _policy = nullptr;  // Clean up previous instance on re-init
     _pins = pins;
     _pwmFreq = pwmFreq;
     _pwmBits = pwmBits;

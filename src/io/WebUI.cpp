@@ -215,6 +215,7 @@ void WebUI::handleApiSave(){
   // WhatsApp notification settings
   if (_storage) {
     if (_http.hasArg("wa_phone")) _storage->setWhatsAppPhone(_http.arg("wa_phone"));
+    if (_http.hasArg("wa_apikey")) _storage->setCallMeBotApiKey(_http.arg("wa_apikey"));
     bool waEnabled = _http.hasArg("wa_enabled");
     _storage->setWhatsAppEnabled(waEnabled);
   }
@@ -293,19 +294,24 @@ void WebUI::handleSafety(){
   // WhatsApp notifications config
   html += F("<form method='POST' action='/api/save'>");
   String waPhone = _storage ? _storage->getWhatsAppPhone("") : String("");
+  String waApiKey = _storage ? _storage->getCallMeBotApiKey("") : String("");
   bool waEnabled = _storage ? _storage->getWhatsAppEnabled(false) : false;
-  
+
   html += F("<h4 style='margin-top:20px'>📱 WhatsApp Notifications</h4>");
   html += F("<label>Phone Number</label>");
   html += F("<input name='wa_phone' placeholder='+31612345678' value='");
   html += waPhone;
   html += F("'><small>International format (e.g., +31612345678)</small>");
-  
+  html += F("<label>CallMeBot API Key</label>");
+  html += F("<input name='wa_apikey' placeholder='Your API key' value='");
+  html += waApiKey;
+  html += F("'><small>Get your key at callmebot.com/blog/free-api-whatsapp-messages</small>");
+
   html += F("<div style='margin:12px 0'><label style='display:flex;align-items:center;gap:8px'>");
   html += F("<input type='checkbox' name='wa_enabled' value='1'");
   if (waEnabled) html += F(" checked");
   html += F("> Enable WhatsApp notifications</label></div>");
-  
+
   html += F("<button type='submit'>Save WhatsApp Settings</button>");
   html += F("</form>");
   

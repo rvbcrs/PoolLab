@@ -2,6 +2,13 @@
 
 // Select board via build flag: -D BOARD_ESP32C6_TOUCH_1_47 or -D BOARD_ESP32S3_35 or -D BOARD_ESP32P4_43
 
+// Forward declaration
+namespace core { class Board; }
+
+// Returns the singleton Board instance for the current build target.
+// Call this once and store the reference — do not call before static init completes.
+core::Board& getBoard();
+
 // Capability flags default (can be overridden by build flags)
 #ifndef HAS_ZIGBEE
 #if CONFIG_IDF_TARGET_ESP32C6
