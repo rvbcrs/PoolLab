@@ -588,6 +588,12 @@ void build(bool safeBaseline){
 }
 
 void updateValues(){
+  // Always tick the watchdog first — even on the settings screen.
+  // The heartbeat must fire every 500 ms regardless of active screen so the
+  // watchdog only triggers when the LVGL task is truly frozen, not just because
+  // the user has been in Settings for >8 s.
+  getBoard().updateHeartbeat();
+
   // Defensive: ensure labels exist before touching
   if (onSettings) return;
   auto &M = domain::Metrics::instance();
@@ -853,8 +859,6 @@ void updateValues(){
   }
   #endif
 
-  // Prove to the board watchdog that the LVGL task is alive
-  getBoard().updateHeartbeat();
 }
 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
@@ -954,22 +958,31 @@ void showSettings(){
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0); }
 
   // ── Scrollable content area ──────────────────────────────────────────────
+  // content = fixed-size scrollable shell (no flex — avoids LVGL 8 layout loop)
+  // inner   = non-scrollable flex-column child that grows to fit all sections
   lv_obj_t *content = lv_obj_create(scr);
   lv_obj_remove_style_all(content);
   lv_obj_set_size(content, scr_w, scr_h - hdr_h - footer_h);
   lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, hdr_h);
   lv_obj_set_style_bg_color(content, g_theme.bg, 0);
   lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
-  lv_obj_set_style_pad_all(content, pad, 0);
-  lv_obj_set_style_pad_row(content, pad, 0);
-  lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(content, 0, 0);
   lv_obj_set_scroll_dir(content, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
+  lv_obj_t *inner = lv_obj_create(content);
+  lv_obj_remove_style_all(inner);
+  lv_obj_set_width(inner, lv_pct(100));
+  lv_obj_set_height(inner, LV_SIZE_CONTENT);
+  lv_obj_set_style_pad_all(inner, pad, 0);
+  lv_obj_set_style_pad_row(inner, pad, 0);
+  lv_obj_set_flex_flow(inner, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
+
   // Helper: create a themed section card (flex column)
   auto make_section = [&](const char *title) -> lv_obj_t* {
-    lv_obj_t *card = lv_obj_create(content);
+    lv_obj_t *card = lv_obj_create(inner);
     lv_obj_remove_style_all(card);
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -1013,6 +1026,11 @@ void showSettings(){
     lv_obj_set_style_radius(ta, 6, 0);
     lv_obj_set_style_pad_all(ta, 8, 0);
     lv_obj_set_width(ta, lv_pct(100));
+    // Prevent textarea from intercepting scroll gestures.
+    // lv_textarea_create() sets LV_OBJ_FLAG_SCROLLABLE by default; clearing it
+    // makes LVGL skip this object and scroll the nearest scrollable ancestor (content) instead.
+    lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ta, LV_OBJ_FLAG_GESTURE_BUBBLE);
   };
 
   // Helper: create a labelled row (flex row) for a toggle switch
@@ -1362,6 +1380,14 @@ void showSettings(){
       if (handlers.onCancelSettings) handlers.onCancelSettings();
     }
   }, LV_EVENT_CLICKED, NULL);
+
+  // ── Freeze inner height ───────────────────────────────────────────────────
+  // inner uses LV_SIZE_CONTENT which LVGL may recalculate on every scroll event,
+  // causing an expensive nested-flex cascade. Force layout immediately, then
+  // lock the height to a fixed pixel value so scroll never triggers recalculation.
+  lv_obj_update_layout(inner);
+  lv_coord_t inner_h = lv_obj_get_height(inner);
+  if (inner_h > 0) lv_obj_set_height(inner, inner_h);
 
   // ── Keyboard binding ──────────────────────────────────────────────────────
   lv_obj_t *kb = lv_keyboard_create(scr);

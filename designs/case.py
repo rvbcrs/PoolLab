@@ -185,29 +185,58 @@ tb_w = tb_bbox.size.X
 tb_l = tb_bbox.size.Y
 tb_h = 1.6 # PCB Thickness estimate (usually 1.6)
 
-# Mount Logic: 4 Corner "Pillars"
-# Simple Cylinders at the corners, with the PCB shape cut out of them.
+# Mount Logic: Snap-fit clip mount.
+# ±X fixed guide walls + 2 cantilever snap clips on BOTH ±Y sides (4 clips total).
+# PCB pressed in from above; both pairs snap simultaneously.
+# To release: flex one clip with a screwdriver, tilt PCB out.
 with BuildPart() as tb6612_mount:
-    # Standoff Height (clearance for inverted chips/components)
-    standoff_z = 4 
-    tb_standoff_z = standoff_z # Expose for ghosting 
-    
-    # Pillar settings
-    pillar_r = 3.5
-    pillar_h = standoff_z + tb_h + 1.5 # 1.5mm stickout on top
-    
-    # Locations for the 4 corners (Centered on PCB corners)
-    dx = tb_w/2
-    dy = tb_l/2
-    
-    # 1. Create 4 Solid Pillars
-    with Locations([(dx, dy), (dx, -dy), (-dx, dy), (-dx, -dy)]):
-         Cylinder(radius=pillar_r, height=pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN))
-         
-    # 2. Cut the "Seat" (The PCB volume)
-    # We cut a box corresponding to the PCB size, starting from standoff_z
-    with Locations((0,0, standoff_z)):
-        Box(tb_w, tb_l, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+    tb_standoff_z = 4       # clearance under PCB for bottom components
+    wall_t  = 2.5           # fixed guide wall thickness (±X sides only)
+    guide_h = 3.0           # ±X wall height above PCB top
+    arm_t   = 1.1           # clip arm thickness (flex direction, keep thin)
+    hook_d  = 0.65          # hook barb overhang into PCB area
+    hook_h  = 1.5           # height of hook barb zone
+    clr     = 0.30          # lateral fit clearance per side
+
+    pcb_h   = tb_h
+    pkt_w   = tb_w + 2 * clr
+    pkt_l   = tb_l + 2 * clr
+    pcb_top = tb_standoff_z + pcb_h
+    arm_h   = pcb_top + hook_h + arm_t + hook_d
+
+    # 1. Floor platform – extends arm_t beyond PCB on ±Y to anchor clip bases
+    Box(pkt_w + 2 * wall_t, pkt_l + 2 * arm_t, tb_standoff_z,
+        align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+    # 2. Side walls (±X only) – lateral guide, no front/back wall needed
+    for sx in [1, -1]:
+        with Locations((sx * (pkt_w / 2 + wall_t / 2), 0, tb_standoff_z)):
+            Box(wall_t, pkt_l, pcb_h + guide_h,
+                align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+    # 3. Snap clips on BOTH ±Y sides – 2 arms per side at ±pkt_w/4 in X
+    #    For each side: iy = inner PCB edge, outward direction = sign
+    #      arm body:  from iy outward by arm_t
+    #      hook barb: from iy inward by hook_d (into PCB area) at pcb_top level
+    #      45 deg lead-in: from outer-top down to hook tip top
+    arm_w = min(4.0, pkt_w / 3)   # arm extrusion width, max 4 mm
+
+    for sign, iy in [(-1, -pkt_l / 2), (+1, +pkt_l / 2)]:
+        # sign = outward direction (+1 for +Y side, -1 for -Y side)
+        for cx in [-pkt_w / 4, pkt_w / 4]:
+            with BuildSketch(Plane.YZ.offset(cx)):
+                with BuildLine():
+                    Polyline(
+                        (iy,                    0),
+                        (iy + sign * arm_t,     0),              # outer base
+                        (iy + sign * arm_t,     arm_h),          # outer top
+                        (iy - sign * hook_d,    pcb_top + hook_h), # hook tip top
+                        (iy - sign * hook_d,    pcb_top),        # hook tip bottom
+                        (iy,                    pcb_top),        # inner at PCB surface
+                        close=True,
+                    )
+                make_face()
+            extrude(amount=arm_w, both=True)
         
 # === 3c. Define CTP09 Part & Mount ===
 # User request: Replace CTP09 with custom ghost: 23 * 11.5 * 4mm.
@@ -220,40 +249,90 @@ with BuildPart() as ctp09_def:
 
 ctp09_centered = ctp09_def.part
 
-# Mount Logic: Same Pillar Seat as TB6612
+# Mount Logic: Snap-fit clip mount for CTP09.
+# +X fixed guide wall.
+# ±Y: 2 cantilever snap clips each side (4 clips total).
+# -X (USB-C side): 2 small retention tabs at the Y-corners to prevent -X slide.
+#   Tabs flex in -X direction during top-down PCB insertion, then snap back.
+#   They sit at the ±Y extremes, clear of the USB-C connector in the centre.
 with BuildPart() as ctp09_mount:
-    standoff_z = 3 
-    ctp_standoff_z = standoff_z # Expose
-    pillar_r = 3.5
-    pillar_h = standoff_z + ctp_h + 1.5 
-    
-    dx = ctp_w/2
-    dy = ctp_l/2
-    
-    # Pillars
-    with Locations([(dx, dy), (dx, -dy), (-dx, dy), (-dx, -dy)]):
-         Cylinder(radius=pillar_r, height=pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    # Seat Cut
-    with Locations((0,0, standoff_z)):
-        Box(ctp_w, ctp_l, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
-        
-    # USB-C Clearance Cut for Plug (Left Side / -X)
-    # User feedback: "Cutout disappeared". Restoring it.
-    # Plug width ~9mm. Depth ~10mm.
-    # Left Pillars are at X = -ctp_w/2 = -11.5. (Actually dx = 11.5)
-    # Cutout location: X = -11.5.
-    with Locations((-ctp_w/2, 0, standoff_z)):
-        # User requested: "Opening -> Narrowing -> Opening".
-        # Profile: Wide (12mm) - Narrow (10.2mm) - Wide (12mm). For Friction Grip.
-        # X range relative to Mount Center (X=0):
-        # Outer (Plug) & Inner (Socket): Wide Cutout
-        with Locations([(-3, 0), (3, 0)]):
-             # Box(4mm X-len, 12mm Y-wid) -> Covers -5 to -1 and 1 to 5.
-             Box(4, 12, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
-        # Middle (Narrow Cutout - The Grip)
-        with Locations((0, 0)):
-             # Box(2mm X-len, 10.2mm Y-wid) -> Covers -1 to 1.
-             Box(2, 10.2, pillar_h, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+    ctp_standoff_z = 3      # clearance under PCB
+    wall_t  = 2.0           # fixed guide wall thickness (+X side)
+    guide_h = 1.5           # +X wall height above PCB top
+    arm_t   = 1.1           # Y-clip arm thickness
+    hook_d  = 0.65          # Y-clip hook barb overhang
+    hook_h  = 1.2           # Y-clip hook zone height
+    clr     = 0.30          # lateral fit clearance per side
+
+    pcb_h   = ctp_h
+    pkt_w   = ctp_w + 2 * clr
+    pkt_l   = ctp_l + 2 * clr
+    pcb_top = ctp_standoff_z + pcb_h
+    arm_h   = pcb_top + hook_h + arm_t + hook_d
+
+    # 1. Floor platform
+    #    +X direction: extended by wall_t to sit under the fixed wall
+    #    ±Y direction: extended by arm_t to anchor the ±Y clip bases
+    #    -X direction: no extension (USB-C access)
+    with Locations((wall_t / 2, 0, 0)):
+        Box(pkt_w + wall_t, pkt_l + 2 * arm_t, ctp_standoff_z,
+            align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+    # 2. Right wall (+X fixed guide)
+    with Locations((pkt_w / 2 + wall_t / 2, 0, ctp_standoff_z)):
+        Box(wall_t, pkt_l, pcb_h + guide_h,
+            align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+    # 3. Snap clips on ±Y sides – 2 arms per side at ±pkt_w/4 in X
+    arm_w = min(4.0, pkt_w / 3)
+
+    for sign, iy in [(-1, -pkt_l / 2), (+1, +pkt_l / 2)]:
+        for cx in [-pkt_w / 4, pkt_w / 4]:
+            with BuildSketch(Plane.YZ.offset(cx)):
+                with BuildLine():
+                    Polyline(
+                        (iy,                    0),
+                        (iy + sign * arm_t,     0),
+                        (iy + sign * arm_t,     arm_h),
+                        (iy - sign * hook_d,    pcb_top + hook_h),
+                        (iy - sign * hook_d,    pcb_top),
+                        (iy,                    pcb_top),
+                        close=True,
+                    )
+                make_face()
+            extrude(amount=arm_w, both=True)
+
+    # 4. USB-C side retention tabs (-X corners)
+    #    Two small snap-tabs at the ±Y corners of the -X PCB edge.
+    #    Each tab flexes outward in -X when PCB is pressed in, then snaps back
+    #    over the PCB's -X top edge to prevent the board sliding toward the cable.
+    #    Positioned outside the USB-C connector span (≈9 mm centred → ±4.5 mm).
+    tab_arm_t  = 0.9    # thin so it flexes easily in X
+    tab_hook_d = 0.50   # small overhang – needs to clear only clr=0.3 mm
+    tab_hook_h = 1.0    # hook zone height
+    tab_arm_w  = 1.0    # narrow tab so it fits in the corner next to USB-C
+    tab_arm_h  = pcb_top + tab_hook_h + tab_arm_t + tab_hook_d
+
+    ix = -pkt_w / 2    # inner -X face of PCB pocket
+
+    # Place tab centres just inside the ±Y pocket edges, clear of USB-C
+    tab_cy = pkt_l / 2 - tab_arm_w / 2 - 0.2
+
+    for cy_tab in [-tab_cy, tab_cy]:
+        # Profile in XZ plane – arm body outward (-X), hook inward (+X)
+        with BuildSketch(Plane.XZ.offset(cy_tab)):
+            with BuildLine():
+                Polyline(
+                    (ix,               0),
+                    (ix - tab_arm_t,   0),                       # outer base
+                    (ix - tab_arm_t,   tab_arm_h),               # outer top
+                    (ix + tab_hook_d,  pcb_top + tab_hook_h),    # hook tip top
+                    (ix + tab_hook_d,  pcb_top),                 # hook tip bottom
+                    (ix,               pcb_top),                 # inner at PCB surface
+                    close=True,
+                )
+            make_face()
+        extrude(amount=tab_arm_w, both=True)
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")
@@ -400,7 +479,8 @@ sensor2_loc = Location((sensor2_x, sensor_y, sensor_z)) * sensor_rot
 # === LM2596 ===
 # Shift with sensors to keep right side organized.
 # Was -15. Move to +5?
-lm2596_loc_x = -10 # Shifted Left (was 5) to match sensors
+# Push as far left as possible: left inner wall + component half-width + 1 mm margin
+lm2596_loc_x = -(length/2 - wall_thickness - lm_bbox.size.X/2 - 1)
 lm2596_loc_y = (sensor_y + pcb_l/2) + 5 + lm_width_y/2
 lm2596_loc = Location((lm2596_loc_x, lm2596_loc_y, -height/2 + wall_thickness + standoff_h))
 
@@ -690,13 +770,12 @@ screen_ghost = screen_def.part.moved(screen_loc) # Screen is built from primitiv
 lid_part = lid.part.moved(Location((0,0, height/2))) # Lid Base at top of case
 
 # TB6612 Ghost & Mount
-standoff_lift = 3 
-tb6612_ghost = tb6612_centered.moved(tb6612_loc * Location((0,0, standoff_lift)))
+# Use the actual standoff height from each mount so the ghost sits on the floor.
+tb6612_ghost = tb6612_centered.moved(tb6612_loc * Location((0,0, tb_standoff_z)))
 ts6612_mount_part = tb6612_mount.part.moved(tb6612_loc)
 
 # CTP09 Ghost & Mount
-# CTP09 Ghost & Mount
-ctp09_ghost = ctp09_centered.moved(ctp09_loc * Location((0,0, standoff_lift))) 
+ctp09_ghost = ctp09_centered.moved(ctp09_loc * Location((0,0, ctp_standoff_z)))
 ctp09_mount_part = ctp09_mount.part.moved(ctp09_loc)
 
 print(f"DEBUG: CTP09 Loc: {ctp09_loc}")
