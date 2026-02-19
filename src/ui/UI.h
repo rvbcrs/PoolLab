@@ -55,6 +55,10 @@ void configureHandlers(const Handlers &h);
 void setInitialSpeeds(uint8_t m1, uint8_t m2);
 void setInitialMode(bool zigbee);
 
+// Theme
+void setTheme(bool dark);  // switch to dark (true) or light (false) + rebuild
+bool getThemeDark();       // returns current theme
+
 // Calibration UI API
 void showPhCalibration();
 void showOrpCalibration();
