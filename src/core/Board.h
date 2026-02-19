@@ -63,6 +63,10 @@ public:
   // Called every main-loop tick to check for stalled LVGL task and rebuild UI if needed.
   // Default: no-op. Override on boards that run LVGL on a dedicated task (S3 BSP path).
   virtual void lvglWatchdogTick() {}
+
+  // Called from within the LVGL task context (e.g. update timer) to prove the task is alive.
+  // Default: no-op. Override on boards with a watchdog (S3).
+  virtual void updateHeartbeat() {}
 };
 
 } // namespace core

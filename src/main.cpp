@@ -94,9 +94,6 @@ static const bool DIAG_MODE = false;
 // Board pins snapshot — populated in setup() from getBoard().pins()
 static core::BoardPins g_pins;
 
-// If true, show only the key metrics (pH, ORP, Temp) on screen
-static const bool SIMPLE_VIEW = true;
-
 // ===== Analog sensor (PH4502C/ORP) integration =====
 // Enable to read pH and ORP from two ADC pins (PH-4502C / ORP-4502C boards)
 #ifndef USE_ANALOG_SENSORS
@@ -154,7 +151,6 @@ static lv_obj_t *lv_tv = nullptr;
 static lv_obj_t *lv_tile_main = nullptr;
 static lv_obj_t *lv_tile_settings = nullptr;
 static lv_obj_t *lv_dots = nullptr;
-// static lv_obj_t *lv_lbl_dbg = nullptr; // debug label (removed)
 // Card containers + titles
 static lv_obj_t *lv_card_ph = nullptr;
 static lv_obj_t *lv_card_orp = nullptr;
@@ -212,7 +208,7 @@ static void updateLvglValues();
 static void showRangeEditorProxy(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
 #if USE_ANALOG_SENSORS
-static const bool DUMMY_MODE = false;  // real sensors active
+static const bool DUMMY_MODE = true;   // TODO: set false when sensors are connected
 #else
 static const bool DUMMY_MODE = true;   // simulate values
 #endif
@@ -263,13 +259,11 @@ static const bool FORCE_MOTOR_A_ON = false;
 // Control policy thresholds and timing
 static float PH_MIN = 6.80f, PH_MAX = 7.60f;   // outside → run Motor1
 static int   ORP_MIN = 250, ORP_MAX = 850;     // mV outside → run Motor2
-// static const uint32_t MOTOR_RUN_MS = 5000;     // run time per correction burst (disabled: policy controls)
 static uint8_t  M1_SPEED_PC = 60;     // PWM duty % (pH)
 static uint8_t  M2_SPEED_PC = 60;     // PWM duty % (ORP)
 // Pump flow rates (ml/min at 100% speed) - default 50ml/min for 5x3mm tube
 static float M1_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 1
 static float M2_FLOW_RATE = 50.0f;   // ml/min at 100% speed for Motor 2
-// static const uint32_t MOTOR_COOLDOWN_MS = 2000; // pause after burst (disabled)
 
 // Safety limits (loaded from storage, with sensible defaults)
 static float MAX_DAILY_VOLUME = 500.0f;       // ml per day per pump (prevents runaway)
@@ -291,8 +285,6 @@ static const int PWM_FREQ = 6000; // 6 kHz (smoother for TB6612)
 static const int PWM_BITS = 10;   // 0..1023 finer control
 
 // Internal motor state
-// static uint32_t m1StopAt = 0, m2StopAt = 0;     // disabled
-// static uint32_t m1CoolUntil = 0, m2CoolUntil = 0; // disabled
 static bool m1Running = false, m2Running = false;
 static bool emergencyStop = false; // when true, force both motors off until reboot or future clear
 // Hysteresis for continuous control (no burst/cooldown)
@@ -2045,7 +2037,7 @@ void loop() {
 
   // Read sensors (internal ADC or ADS1115) and update Metrics when enabled
   #if USE_ANALOG_SENSORS
-  {
+  if (!DUMMY_MODE) {
     static uint32_t lastRead = 0;
     domain::Telemetry t{};
     if (g_analog.read(t)) {
@@ -2056,7 +2048,7 @@ void loop() {
   }
   #endif
   #if USE_ADS1115
-  {
+  if (!DUMMY_MODE) {
     domain::Telemetry t{};
     if (g_ads.read(t)) {
       if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }

@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(~/.platformio/penv/bin/python:*)",
-      "Bash(/Library/Frameworks/Python.framework/Versions/3.12/bin/pip3 install:*)"
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.12/bin/pip3 install:*)",
+      "Bash(ls:*)",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab status --short)",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab ls-files -d)",
+      "Bash(while read file)",
+      "Bash(do basename \"$file\")",
+      "Bash(done)",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab log --name-status --oneline -5)",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab log --oneline --all -- \"wrapper_test_standalone\")",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab log --oneline --all -- \"test_i2c_p4.cpp\")",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab show:*)",
+      "Bash(git -C /Users/rvbcrs/GitHub/PoolLab diff --name-status)"
     ]
   }
 }

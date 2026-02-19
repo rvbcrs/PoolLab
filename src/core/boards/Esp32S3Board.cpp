@@ -44,6 +44,7 @@ lv_disp_t* Esp32S3Board::initDisplay() {
     ESP_LOGI("BOARD", "S3: Starting display init (JC3248W535)");
     (void)jc3248w535_begin_simple(90, &s_jc_handles);
     (void)jc3248w535_backlight_set(100);
+    _heartbeatMs = millis(); // start watchdog clock from here
     // Brief startup banner (runs under the BSP LVGL task)
     if (jc3248w535_lock(5)) {
         lv_obj_clean(lv_scr_act());
@@ -158,7 +159,7 @@ void Esp32S3Board::lvglWatchdogTick() {
     uint32_t now_ms = millis();
     if (now_ms < _watchdogNext) return;
 
-    if (_heartbeatMs != 0 && (now_ms - _heartbeatMs) > 8000) {
+    if ((now_ms - _heartbeatMs) > 8000) {
         ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled, rebuilding UI");
         if (lvglLock()) {
             lv_obj_clean(lv_scr_act());

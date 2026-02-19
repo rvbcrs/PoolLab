@@ -681,6 +681,9 @@ void updateValues(){
     }
   }
   #endif
+
+  // Prove to the board watchdog that the LVGL task is alive
+  getBoard().updateHeartbeat();
 }
 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax){

@@ -16,6 +16,7 @@ public:
   void lvglUnlock()              override;
   bool hasZigbee()         const override { return false; }
   void lvglWatchdogTick()        override;
+  void updateHeartbeat()         override { _heartbeatMs = millis(); }
 
 private:
   uint32_t _watchdogNext  = 0;
