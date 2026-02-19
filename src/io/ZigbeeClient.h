@@ -60,10 +60,17 @@ public:
   void     clearCommissionTimer();
 
   // Called from ZCL AO callbacks (public so plain lambdas can reach them).
+#if HAVE_ARDUINO_ZIGBEE
   void onPhMinWrite(float v)   { _phMinValue  = v; _phMinPending  = true; }
   void onPhMaxWrite(float v)   { _phMaxValue  = v; _phMaxPending  = true; }
   void onOrpMinWrite(float v)  { _orpMinValue = v; _orpMinPending = true; }
   void onOrpMaxWrite(float v)  { _orpMaxValue = v; _orpMaxPending = true; }
+#else
+  void onPhMinWrite(float)  {}
+  void onPhMaxWrite(float)  {}
+  void onOrpMinWrite(float) {}
+  void onOrpMaxWrite(float) {}
+#endif
 
 private:
   static constexpr const char* PREF_NS    = "poollab";

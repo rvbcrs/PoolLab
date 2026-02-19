@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(~/.platformio/penv/bin/python:*)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.12/bin/pip3 install:*)"
+    ]
+  }
+}

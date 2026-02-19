@@ -1,16 +1,4 @@
-/*
-  ESP32-C6 Waveshare Touch — Tuya UART Sniffer + On-screen Viewer
-  - Uses Arduino_GFX to drive the onboard 1.47" JD9853 LCD via ST7789 driver
-  - Shows latest Tuya frames on the display (and prints to USB Serial)
-  Pins per working HelloWorld on ESP32-C6-Touch-LCD-1.47 (your test):
-    DC=15, CS=14, SCK=1, MOSI=2, RST=22, BL=23
-    LCD size: 172x320, col offset 34, row offset 0
-  Sniffer wiring (non-intrusive):
-    GND  -> common ground
-    MCU -> CB3S RXD1 (pin 15) -> ESP32-C6 RX_A (GPIO 4 by default)
-    CB3S TXD1 (pin 16) -> MCU -> ESP32-C6 RX_B (GPIO 5, optional)
-    Leave ESP TX pins unconnected while sniffing.
-*/
+// PoolLab — ESP32 pool monitor (pH, ORP, temp) with LVGL UI, MQTT, motors
 
 #include <Arduino.h>
 #include "driver/ledc.h"
@@ -63,7 +51,6 @@ static uint32_t APP_BOOT_MS = 0;
 // IO modules
 #include "io/MqttClient.h"
 #include "io/Touch.h"
-#include "io/Tuya.h"
 #include "io/AnalogPhOrpSensor.h"
 #include "io/AdsPhOrpSensor.h"
 #include "io/ZigbeeClient.h"
@@ -104,34 +91,14 @@ extern "C" const lv_font_t lv_font_source_code_pro_36_bold;
 // ====== USER CONFIG ======
 // Set to true for a minimal diagnostic mode (serial prints + color flashes)
 static const bool DIAG_MODE = false;
-static const uint32_t TUYA_BAUD = 115200; // 115200 default; change to 9600 if needed
-static const int RX_A_PIN = 16;          // MCU -> WiFi
-static const int RX_B_PIN = 17;          // WiFi -> MCU
-static const bool USE_CHANNEL_B = true; // set false if only one direction
-
 // Board pins snapshot — populated in setup() from getBoard().pins()
 static core::BoardPins g_pins;
-
-// Optional transmit pins to inject Tuya frames (leave -1 for sniff-only)
-static const int TX_A_PIN = -1;          // drive MCU<-WiFi line (rarely needed)
-static const int TX_B_PIN = -1;          // drive WiFi->MCU line (emulate WiFi)
-// Send a small set of Tuya queries on boot if TX pin is configured
-static const bool SEND_ON_BOOT = false;  // set true after wiring TX safely
-static const uint8_t TUYA_VER = 0x03;    // common Tuya protocol version
-
-// ---- DP mapping (adjust if needed) ----
-// VALUE (T2) big-endian, scales below
-static const uint8_t DP_TEMP = 8;     // value / 10.0 => °C
-static const uint8_t DP_ORP  = 131;   // signed value / 10.0 => mV (negative values seen here)
-static const uint8_t DP_PH   = 106;   // value / 100.0 => pH (observed around 12.2..13.6)
-static const uint8_t DP_ORP_ALT1 = 122; // alternative ORP (positive range)
-static const uint8_t DP_PH_ALT1  = 118; // alternative pH
 
 // If true, show only the key metrics (pH, ORP, Temp) on screen
 static const bool SIMPLE_VIEW = true;
 
 // ===== Analog sensor (PH4502C/ORP) integration =====
-// Enable to read pH and ORP from two ADC pins instead of Tuya UART
+// Enable to read pH and ORP from two ADC pins (PH-4502C / ORP-4502C boards)
 #ifndef USE_ANALOG_SENSORS
 #define USE_ANALOG_SENSORS 0
 #endif
@@ -379,33 +346,9 @@ static const size_t BL_CANDIDATES_COUNT = sizeof(BL_CANDIDATES) / sizeof(BL_CAND
 
 
 
-// ---- UARTs ----
 #ifndef ARDUINO_USB_CDC_ON_BOOT
 #define ARDUINO_USB_CDC_ON_BOOT 1
 #endif
-HardwareSerial TUYA_A(0); // UART0 RX-only
-HardwareSerial TUYA_B(1); // UART1 RX-only
-
-// ---- Tuya helpers ----
-// moved to io/Tuya
-
-// ---- Simple ring buffer for lines on screen ----
-static const uint16_t MAX_LINES = 6;       // lines in landscape with larger font
-static const uint16_t MAX_LINE_CHARS = 22; // clipped per line (size=2)
-
-std::vector<String> lines;
-
-// Live RX counters to verify activity even if frames don't parse
-static uint32_t rxA_count = 0;
-static uint32_t rxB_count = 0;
-static uint8_t lastA[7];
-static uint8_t lastB[7];
-static uint8_t idxA = 0;
-static uint8_t idxB = 0;
-static String asciiA;
-static String asciiB;
-static uint8_t rawCountA = 0;
-static uint8_t rawCountB = 0;
 
 // Live metrics (persist and render in header)
 // Metrics moved to domain::Metrics (singleton). Temporary aliases are provided in domain/Metrics.h
@@ -661,9 +604,6 @@ static void showZigbeeHoldToPairModal(){
 // ---- Simple vector icons (drawn with primitives) ----
 // Legacy Arduino_GFX icon helpers removed
 
-// Legacy C6 GFX stubs removed; use LVGL-only path for both boards
-static inline void drawStaticUI() {}
-static inline void drawPagination() {}
 static void updateValueAreas() { updateLvglValues(); }
 
 // WiFi helpers are fully handled by WiFiManager now
@@ -796,24 +736,6 @@ static void updateDummyTelemetry() {
   updateValueAreas();
 }
 
-void pushLine(const String &s) {
-  String t = s;
-  if (t.length() > MAX_LINE_CHARS) t = t.substring(0, MAX_LINE_CHARS);
-  if (lines.size() >= MAX_LINES) lines.erase(lines.begin());
-  lines.push_back(t);
-}
-
-#if USES_ARDUINO_GFX && !defined(USE_JC3248W535)
-static inline void drawScreen() {}
-#else
-static inline void drawScreen() {}
-#endif
-
-
-
-// (legacy parser verwijderd; io/Tuya wordt gebruikt)
-
-// Parser moved to io/Tuya
 
 // Async WhatsApp sender task (runs in separate task to avoid LVGL stack overflow)
 static void sendWhatsAppAsync(void* param) {
@@ -1128,15 +1050,6 @@ void setup() {
     }
   #endif
 
-  // S3: Initialize Tuya UART explicitly (as initPeripherals is skipped)
-  #if defined(BOARD_ESP32S3_35)
-    TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
-    ESP_LOGI("MAIN", "Tuya UART initialized (S3) on RX=%d", RX_A_PIN);
-    // If Channel B is used/wired
-    #if defined(USE_CHANNEL_B) && USE_CHANNEL_B
-    TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
-    #endif
-  #endif
 
   // Create a pinned UI task on core 1 for LVGL processing (S3 only, but NOT when using JC BSP which provides its own LVGL task)
   #if defined(BOARD_ESP32S3_35) && !defined(USE_JC3248W535)
@@ -1852,18 +1765,6 @@ void setup() {
   }
   #endif
 
-  #if !USE_ANALOG_SENSORS
-  if (!DIAG_MODE) {
-    // UARTs (RX only) unless TX pins are provided
-    TUYA_A.begin(TUYA_BAUD, SERIAL_8N1, RX_A_PIN, TX_A_PIN);
-    if (USE_CHANNEL_B) TUYA_B.begin(TUYA_BAUD, SERIAL_8N1, RX_B_PIN, TX_B_PIN);
-  }
-  #endif
-
-  // Configure Tuya DP ids for new parser module
-  #if !USE_ANALOG_SENSORS
-  io::tuyaConfigure(DP_TEMP, DP_ORP, DP_PH, DP_ORP_ALT1, DP_PH_ALT1);
-  #endif
 
   // Initialize analog sensors when enabled
   #if USE_ANALOG_SENSORS
@@ -1888,9 +1789,7 @@ void setup() {
 
   #if USES_ARDUINO_GFX && !defined(USE_JC3248W535)
   if (!USE_LVGL_UI) {
-    pushLine("Ready. Waiting for frames...");
-  drawStaticUI();
-  updateValueAreas();
+    updateValueAreas();
   }
   #endif
   // Load persisted configuration early when not using LVGL UI (so boot mode is honored)
@@ -1981,21 +1880,6 @@ void setup() {
 
   // TB6612 motor init already done above (before P4 goto)
   
-  // Optionally send Tuya queries after boot (requires TX pin wired!)
-  #if !USE_ANALOG_SENSORS
-  if (SEND_ON_BOOT) {
-    #if !defined(USE_JC3248W535)
-    pushLine("TX: query product info"); drawScreen();
-    io::tuyaSendQueryProductInfo(TUYA_A);
-    delay(200);
-    pushLine("TX: set wifi status 0x00"); drawScreen();
-    io::tuyaSendSetWifiStatus(TUYA_A, 0x00);
-    delay(200);
-    pushLine("TX: DP query"); drawScreen();
-    io::tuyaSendDpQuery(TUYA_A);
-    #endif
-  }
-  #endif
 
          #if defined(BOARD_ESP32P4_43)
          skip_wifi_init_p4:
@@ -2139,54 +2023,6 @@ void loop() {
     }
   }
 
-  #if !USE_ANALOG_SENSORS
-  {
-    int processed = 0;
-    #if !defined(USE_JC3248W535) || defined(BOARD_ESP32S3_35)
-    while (TUYA_A.available()) {
-      uint8_t b = TUYA_A.read();
-      rxA_count++;
-      lastA[idxA] = b; idxA = (uint8_t)((idxA + 1) % 7);
-      io::tuyaFeedA(b);
-      // Reduce debug/printing when UI is active to avoid lag
-      if (!USE_LVGL_UI && DIAG_MODE) {
-        // ASCII line capture for quick human-readable sniffing
-        if (b == '\n' || b == '\r') {
-          if (asciiA.length() > 0) { pushLine(String("A> ") + asciiA); asciiA = ""; }
-        } else {
-          if (b >= 0x20 && b <= 0x7E) asciiA += (char)b; else asciiA += '.';
-          if (asciiA.length() >= MAX_LINE_CHARS) { pushLine(String("A> ") + asciiA); asciiA = ""; }
-        }
-        // RAW hex dump to USB Serial (16 bytes per line)
-        if ((rawCountA % 16) == 0) { /* skip noisy raw */ }
-        rawCountA++;
-      }
-      if (USE_LVGL_UI && ++processed > 256) break; // yield to UI
-    }
-    #endif
-  }
-  #endif
-  #if !defined(USE_JC3248W535) || defined(BOARD_ESP32S3_35)
-  #if !USE_ANALOG_SENSORS
-  if (USE_CHANNEL_B && !USE_LVGL_UI) {
-    while (TUYA_B.available()) {
-      uint8_t b = TUYA_B.read();
-      rxB_count++;
-      lastB[idxB] = b; idxB = (uint8_t)((idxB + 1) % 7);
-      io::tuyaFeedB(b);
-      if (b == '\n' || b == '\r') {
-        if (asciiB.length() > 0) { pushLine(String("B> ") + asciiB); asciiB = ""; }
-      } else {
-        if (b >= 0x20 && b <= 0x7E) asciiB += (char)b; else asciiB += '.';
-        if (asciiB.length() >= MAX_LINE_CHARS) { pushLine(String("B> ") + asciiB); asciiB = ""; }
-      }
-      // RAW hex dump to USB Serial (16 bytes per line)
-      if ((rawCountB % 16) == 0) { /* skip noisy raw */ }
-      rawCountB++;
-    }
-  }
-  #endif
-  #endif
 
   // Avoid drawing directly with Arduino_GFX while LVGL UI is active
 

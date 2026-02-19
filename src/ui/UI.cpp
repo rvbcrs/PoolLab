@@ -1,6 +1,7 @@
 #include "UI.h"
 #include <Arduino.h>
 #include "boards/BoardSelect.h"
+#include "core/Board.h"
 #include <esp_log.h>
 #include <WiFi.h>
 #include <math.h>

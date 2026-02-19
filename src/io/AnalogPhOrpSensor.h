@@ -12,14 +12,17 @@ class AnalogPhOrpSensor : public domain::SensorSource {
 public:
   struct PhCal {
     // Two-point calibration around pH 7.0. Provide volts measured at pH4 and pH10.
-    // Defaults are typical but must be calibrated for your sensor.
-    PhCal() : voltsAtPh4(3.00f), voltsAtPh10(2.00f) {}
+    // Defaults assume MCP6002 / LM358 on 3.3 V supply (mid-supply = 1.65 V at pH 7,
+    // gain ≈ 5.2×: pH 4 ≈ +0.93 V offset → 2.58 V, pH 10 ≈ −0.93 V offset → 0.72 V).
+    // Calibrate with pH 4 and pH 7 buffer solutions for accurate readings.
+    PhCal() : voltsAtPh4(2.58f), voltsAtPh10(0.72f) {}
     float voltsAtPh4;
     float voltsAtPh10;
   };
   struct OrpCal {
     // Analog output is assumed centered near voltsAt0mV for 0 mV ORP with linear scale.
-    OrpCal() : voltsAt0mV(2.50f), mVPerVolt(1000.0f) {}
+    // Default assumes 3.3 V supply: mid-supply = 1.65 V at 0 mV ORP.
+    OrpCal() : voltsAt0mV(1.65f), mVPerVolt(1000.0f) {}
     float voltsAt0mV;
     float mVPerVolt; // scale factor (mV per Volt delta)
   };
