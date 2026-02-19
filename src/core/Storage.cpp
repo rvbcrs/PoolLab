@@ -144,6 +144,14 @@ void Storage::setSoundEnabled(bool en) {
   _prefs.putBool("snd_en", en);
 }
 
+// UI theme
+bool Storage::getThemeDark(bool def) const {
+  return _prefs.getBool("theme_dark", def);
+}
+void Storage::setThemeDark(bool dark) {
+  _prefs.putBool("theme_dark", dark);
+}
+
 } // namespace core
 
 

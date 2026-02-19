@@ -117,6 +117,10 @@ public:
   bool getSoundEnabled(bool def = true) const;
   void setSoundEnabled(bool en);
 
+  // UI theme
+  bool getThemeDark(bool def = true) const;
+  void setThemeDark(bool dark);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

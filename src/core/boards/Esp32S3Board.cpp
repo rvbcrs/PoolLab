@@ -159,18 +159,34 @@ void Esp32S3Board::lvglWatchdogTick() {
     uint32_t now_ms = millis();
     if (now_ms < _watchdogNext) return;
 
-    if ((now_ms - _heartbeatMs) > 8000) {
-        ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled, rebuilding UI");
-        if (lvglLock()) {
-            lv_obj_clean(lv_scr_act());
-            ui::build(false);
-            ui::updateValues();
-            lvglUnlock();
-            ESP_LOGI("UI", "S3 LVGL watchdog: rebuild complete");
-            _heartbeatMs = now_ms;
-        }
-        _watchdogNext = now_ms + 15000; // cool-down
+    uint32_t stall_ms = now_ms - _heartbeatMs;
+    if (stall_ms < 8000) {
+        _watchdogNext = now_ms + 2000;
+        return;
+    }
+
+    // LVGL task has not updated the heartbeat for >8 s — it is frozen.
+    ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled %lu ms", stall_ms);
+
+    if (stall_ms > 20000) {
+        // lvglLock() keeps failing (1 ms timeout) because the task holds the
+        // mutex while frozen.  Nothing safe can be done — restart the device.
+        ESP_LOGE("UI", "S3 LVGL watchdog: LVGL task unrecoverable, restarting");
+        esp_restart();
+    }
+
+    if (lvglLock()) {
+        // ui::showMain() resets onSettings, rebuilds the dashboard and calls
+        // updateValues() which re-arms the heartbeat timer.
+        ui::showMain();
+        lvglUnlock();
+        _heartbeatMs = millis();
+        _watchdogNext = millis() + 5000; // short cool-down after rebuild
+        ESP_LOGI("UI", "S3 LVGL watchdog: UI rebuilt");
     } else {
+        // Mutex held by frozen task — retry in 2 s; restart threshold above
+        // will fire once total stall exceeds 20 s.
+        ESP_LOGW("UI", "S3 LVGL watchdog: lock busy, retry in 2 s");
         _watchdogNext = now_ms + 2000;
     }
 }

@@ -77,7 +77,51 @@ static int g_cal_countdown = 0;
 static lv_obj_t *lv_lbl_cal_m1_status = nullptr;
 static lv_obj_t *lv_lbl_cal_m2_status = nullptr;
 
-void init(lv_disp_t* disp){ (void)disp; }
+// ── Theme system ──────────────────────────────────────────────────────────
+struct UiTheme {
+  lv_color_t bg, card, card2, status;
+  lv_color_t text, text2;
+  lv_color_t accent, warn, bad;
+  lv_color_t ph_arc, orp_arc;
+};
+static UiTheme uiThemeMake(
+    uint32_t bg, uint32_t card, uint32_t card2, uint32_t status,
+    uint32_t text, uint32_t text2,
+    uint32_t accent, uint32_t warn, uint32_t bad,
+    uint32_t ph_arc, uint32_t orp_arc) {
+  UiTheme t;
+  t.bg=lv_color_hex(bg); t.card=lv_color_hex(card); t.card2=lv_color_hex(card2);
+  t.status=lv_color_hex(status); t.text=lv_color_hex(text); t.text2=lv_color_hex(text2);
+  t.accent=lv_color_hex(accent); t.warn=lv_color_hex(warn); t.bad=lv_color_hex(bad);
+  t.ph_arc=lv_color_hex(ph_arc); t.orp_arc=lv_color_hex(orp_arc);
+  return t;
+}
+//                        bg       card     card2    status   text     text2
+static const UiTheme THEME_DARK  = uiThemeMake(
+  0x0D1B2A, 0x1B2A3B, 0x243447, 0x0A1520, 0xFFFFFF, 0x8899AA,
+  0x00C896, 0xFFA726, 0xEF5350, 0x29B6F6, 0xAB47BC);
+static const UiTheme THEME_LIGHT = uiThemeMake(
+  0xEDF2F7, 0xFFFFFF, 0xD6E4F0, 0x1B2A3B, 0x1B2A3B, 0x546E7A,
+  0x00A87A, 0xF57C00, 0xD32F2F, 0x0288D1, 0x7B1FA2);
+
+static bool    g_theme_dark = true;
+static UiTheme g_theme      = THEME_DARK;
+
+// Arc widget handles (Pool Dark dashboard)
+static lv_obj_t *lv_arc_ph              = nullptr;
+static lv_obj_t *lv_arc_orp             = nullptr;
+static lv_obj_t *lv_lbl_ph_status       = nullptr;
+static lv_obj_t *lv_lbl_orp_status      = nullptr;
+static lv_obj_t *lv_lbl_ph_range        = nullptr;
+static lv_obj_t *lv_lbl_orp_range       = nullptr;
+static lv_obj_t *lv_lbl_pump_ph_status  = nullptr;
+static lv_obj_t *lv_lbl_pump_orp_status = nullptr;
+
+void init(lv_disp_t* disp){
+  (void)disp;
+  g_theme_dark = ::g_storage.getThemeDark(true);
+  g_theme = g_theme_dark ? THEME_DARK : THEME_LIGHT;
+}
 static lv_timer_t *g_update_timer = nullptr;
 
 // Pump calibration timer callback (60-second countdown)
@@ -253,7 +297,7 @@ void build(bool safeBaseline){
     lv_lbl_temp = lv_label_create(scr);
     lv_label_set_text(lv_lbl_temp, "--.-");
     lv_obj_align(lv_lbl_temp, LV_ALIGN_LEFT_MID, 10, 24);
-    lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0);
+    lv_obj_set_style_text_color(lv_lbl_temp, g_theme.text, 0);
     lv_lbl_temp_unit = lv_label_create(scr);
     lv_label_set_text(lv_lbl_temp_unit, " °C");
     lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
@@ -298,161 +342,242 @@ void build(bool safeBaseline){
     //ESP_LOGI("UI","Baseline labels + sliders created");
     return;
   }
-  // Minimal main labels in center (keeps build small for first split)
-  // --- Web-style UI: three cards + IP + Settings ---
-  // Slightly lighter background (38,38,38)
-  lv_obj_set_style_bg_color(scr, lv_color_make(46,46,46), 0);
+  // --- Pool Dark dashboard (480×320 landscape) ---
+  lv_obj_set_style_bg_color(scr, g_theme.bg, 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-  int scr_w = (int)lv_disp_get_hor_res(NULL);
-  int scr_h = (int)lv_disp_get_ver_res(NULL);
-  int pad = 12;
-  int col_gap = 12;
-  const core::UiConfig ucfg = getBoard().uiConfig();
+  lv_obj_set_style_pad_all(scr, 0, 0);
+  lv_obj_set_style_border_width(scr, 0, 0);
+  lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-  // Container with padding
-  lv_obj_t *root = lv_obj_create(scr);
-  lv_obj_remove_style_all(root);
-  lv_obj_set_size(root, scr_w - pad*2, scr_h - pad*2);
-  lv_obj_align(root, LV_ALIGN_TOP_MID, 0, pad);
-  lv_obj_set_style_pad_all(root, pad, 0);
-  lv_obj_set_style_bg_color(root, lv_color_make(24,24,24), 0);
-  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(root, 14, 0);
-  lv_obj_set_style_shadow_width(root, 16, 0);
-  lv_obj_set_style_shadow_opa(root, LV_OPA_30, 0);
+  // --- Status bar (480×26) ---
+  lv_obj_t *statusBar = lv_obj_create(scr);
+  lv_obj_remove_style_all(statusBar);
+  lv_obj_set_size(statusBar, 480, 26);
+  lv_obj_set_pos(statusBar, 0, 0);
+  lv_obj_set_style_bg_color(statusBar, g_theme.status, 0);
+  lv_obj_set_style_bg_opa(statusBar, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_SCROLLABLE);
 
-  // Horizontal row for three cards
-  lv_obj_t *row = lv_obj_create(root);
-  lv_obj_remove_style_all(row);
-  lv_obj_set_width(row, LV_PCT(100));
-  lv_obj_set_height(row, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(row, col_gap, 0);
-  lv_obj_set_style_pad_bottom(row, 8, 0);
-  lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 0);
-  lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+  // Static app title (no live update needed)
+  { lv_obj_t *ttl = lv_label_create(statusBar);
+    lv_label_set_text(ttl, "PoolLab");
+    lv_obj_set_style_text_color(ttl, g_theme.text, 0);
+    lv_obj_set_style_text_font(ttl, &lv_font_montserrat_14, 0);
+    lv_obj_align(ttl, LV_ALIGN_LEFT_MID, 8, 0); }
+  lv_lbl_ssid = nullptr;
+  lv_lbl_mqtt = nullptr;
 
-  auto make_card = [&](lv_obj_t *parent, lv_color_t c1, lv_coord_t cw)->lv_obj_t*{
-    lv_obj_t *card = lv_obj_create(parent);
+  // IP address (right side, before gear button)
+  lv_lbl_ip = lv_label_create(statusBar);
+  lv_label_set_text(lv_lbl_ip, "---.---.---.---");
+  lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
+  lv_obj_set_style_text_color(lv_lbl_ip, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_ip, &lv_font_montserrat_12, 0);
+  lv_obj_align(lv_lbl_ip, LV_ALIGN_RIGHT_MID, -34, 0);
+
+  lv_obj_t *btnHdr = lv_btn_create(statusBar);
+  lv_obj_set_size(btnHdr, 22, 22);
+  lv_obj_set_style_radius(btnHdr, 4, 0);
+  lv_obj_set_style_bg_color(btnHdr, g_theme.card2, 0);
+  lv_obj_set_style_bg_opa(btnHdr, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(btnHdr, 0, 0);
+  lv_obj_align(btnHdr, LV_ALIGN_RIGHT_MID, -8, 0);
+  { lv_obj_t *g = lv_label_create(btnHdr); lv_label_set_text(g, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(g, lv_color_white(), 0);
+    lv_obj_set_style_text_font(g, &lv_font_montserrat_12, 0);
+    lv_obj_center(g); }
+  lv_obj_add_event_cb(btnHdr, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; if (handlers.onSettings) handlers.onSettings(); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
+
+  // --- Arc card builder ---
+  auto make_arc_card = [&](lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h,
+                            const char *title, lv_color_t arc_color,
+                            lv_obj_t **out_arc, lv_obj_t **out_val,
+                            lv_obj_t **out_status, lv_obj_t **out_range) -> lv_obj_t* {
+    lv_obj_t *card = lv_obj_create(scr);
     lv_obj_remove_style_all(card);
-    lv_obj_set_style_bg_color(card, c1, 0);
+    lv_obj_set_size(card, w, h);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_style_bg_color(card, g_theme.card, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 12, 0);
-    lv_obj_set_style_pad_all(card, 14, 0);
-    lv_obj_set_style_shadow_width(card, 10, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
-    lv_obj_set_size(card, cw, ucfg.cardHeight);
+    lv_obj_set_style_radius(card, 10, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    // title
+    lv_obj_t *lbl_t = lv_label_create(card);
+    lv_label_set_text(lbl_t, title);
+    lv_obj_set_style_text_color(lbl_t, g_theme.text2, 0);
+    lv_obj_set_style_text_font(lbl_t, &lv_font_montserrat_14, 0);
+    lv_obj_align(lbl_t, LV_ALIGN_TOP_LEFT, 10, 8);
+    // arc
+    lv_obj_t *arc = lv_arc_create(card);
+    lv_obj_set_size(arc, 130, 130);
+    lv_arc_set_rotation(arc, 135);
+    lv_arc_set_bg_start_angle(arc, 0);
+    lv_arc_set_bg_end_angle(arc, 270);
+    lv_arc_set_range(arc, 0, 100);
+    lv_arc_set_value(arc, 0);
+    lv_arc_set_mode(arc, LV_ARC_MODE_NORMAL);
+    lv_obj_set_style_arc_color(arc, g_theme.card2, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, 10, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, arc_color, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 22);
+    // value label (centered inside arc)
+    lv_obj_t *lbl_v = lv_label_create(card);
+    lv_label_set_text(lbl_v, "--");
+    lv_obj_set_style_text_color(lbl_v, g_theme.text, 0);
+    lv_obj_set_style_text_font(lbl_v, &lv_font_montserrat_28, 0);
+    lv_obj_align(lbl_v, LV_ALIGN_TOP_MID, 0, 72);
+    // status label
+    lv_obj_t *lbl_s = lv_label_create(card);
+    lv_label_set_text(lbl_s, "--");
+    lv_obj_set_style_text_color(lbl_s, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl_s, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_bg_opa(lbl_s, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(lbl_s, g_theme.card2, 0);
+    lv_obj_set_style_radius(lbl_s, 8, 0);
+    lv_obj_set_style_pad_hor(lbl_s, 8, 0);
+    lv_obj_set_style_pad_ver(lbl_s, 3, 0);
+    lv_obj_align(lbl_s, LV_ALIGN_TOP_MID, 0, 104);
+    // range label at bottom
+    lv_obj_t *lbl_r = lv_label_create(card);
+    lv_label_set_text(lbl_r, "-- / --");
+    lv_obj_set_style_text_color(lbl_r, g_theme.text2, 0);
+    lv_obj_set_style_text_font(lbl_r, &lv_font_montserrat_12, 0);
+    lv_obj_align(lbl_r, LV_ALIGN_BOTTOM_MID, 0, -6);
+    *out_arc = arc; *out_val = lbl_v; *out_status = lbl_s; *out_range = lbl_r;
     return card;
   };
 
-  lv_obj_t *card_ph = nullptr, *card_orp = nullptr, *card_tmp = nullptr;
-  lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
-
-  bool small_layout = !ucfg.forceThreeCards && ((scr_w <= 320) || (scr_h <= 180));
-  if (small_layout) {
-    // 2-tile layout for C6
-    lv_coord_t cw = (inner_w - col_gap) / 2;
-    card_ph  = make_card(row, lv_palette_darken(LV_PALETTE_BLUE, 3), cw);
-    card_orp = make_card(row, lv_palette_darken(LV_PALETTE_TEAL, 3), cw);
-  } else {
-    // 3-card layout for S3
-    lv_coord_t cw = (inner_w - (col_gap * 2)) / 3;
-    card_ph  = make_card(row, lv_palette_darken(LV_PALETTE_BLUE, 3), cw);
-    card_orp = make_card(row, lv_palette_darken(LV_PALETTE_TEAL, 3), cw);
-    card_tmp = make_card(row, lv_palette_darken(LV_PALETTE_AMBER, 4), cw);
-  }
-
-  const lv_font_t *value_font = (ucfg.valueFontSize >= 48) ? &lv_font_montserrat_48 : &lv_font_montserrat_28;
-  const lv_font_t *stats_font = (ucfg.statsFontSize >= 14) ? &lv_font_montserrat_14 : &lv_font_montserrat_12;
-  const int value_y      = ucfg.valueY;
-  const int sub_lbl_y    = ucfg.subLblY;
-  const int sub_vals_y   = ucfg.subValsY;
-  const int pump_stats_y = ucfg.pumpStatsY;
-  const int unit_spacing = ucfg.unitSpacing;
-  
-  lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
-  lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, value_font, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, value_y);
-  lv_obj_t *icon_orp = lv_img_create(card_orp); lv_img_set_src(icon_orp, &water_orp_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_orp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_orp, lv_color_white(), 0);
-  lv_lbl_orp = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp, "----");  lv_obj_set_style_text_font(lv_lbl_orp, value_font, 0); lv_obj_align(lv_lbl_orp, LV_ALIGN_TOP_LEFT, 0, value_y);
-  lv_lbl_orp_unit = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_lbl_orp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_orp_unit, " mV"); lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, unit_spacing, 0);
-  // Pump stats labels (above pump icon, with descriptive text)
-  lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, stats_font, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, stats_font, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
-  const int pump_icon_y = ucfg.pumpIconY;
-  lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
-  lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
-  if (card_tmp) {
-    lv_obj_t *icon_tmp = lv_img_create(card_tmp); lv_img_set_src(icon_tmp, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_tmp, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_tmp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_tmp, lv_color_white(), 0);
-    lv_lbl_temp = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp, "--.-"); lv_obj_set_style_text_font(lv_lbl_temp, value_font, 0); lv_obj_align(lv_lbl_temp, LV_ALIGN_TOP_LEFT, 0, value_y);
-    lv_lbl_temp_unit = lv_label_create(card_tmp); lv_obj_set_style_text_color(lv_lbl_temp_unit, lv_color_white(), 0); lv_label_set_text(lv_lbl_temp_unit, " °C"); lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, unit_spacing, 0);
-    lv_card_temp = card_tmp;
-  }
-
-  // Subtext: two-line layout (label, then values)
-  lv_obj_t *ph_sub_lbl = lv_label_create(card_ph);  lv_obj_set_style_text_color(ph_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(ph_sub_lbl, "Target"); lv_obj_align(ph_sub_lbl, LV_ALIGN_TOP_LEFT, 0, sub_lbl_y);
-  lv_obj_t *ph_sub_vals = lv_label_create(card_ph); lv_obj_set_style_text_color(ph_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(ph_sub_vals, "6.80 - 7.60"); lv_obj_align(ph_sub_vals, LV_ALIGN_TOP_LEFT, 0, sub_vals_y);
-  lv_obj_t *or_sub_lbl = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_lbl, lv_palette_lighten(LV_PALETTE_GREY,3), 0); lv_label_set_text(or_sub_lbl, "Min/Max"); lv_obj_align(or_sub_lbl, LV_ALIGN_TOP_LEFT, 0, sub_lbl_y);
-  lv_obj_t *or_sub_vals = lv_label_create(card_orp); lv_obj_set_style_text_color(or_sub_vals, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(or_sub_vals, "250 / 850"); lv_obj_align(or_sub_vals, LV_ALIGN_TOP_LEFT, 0, sub_vals_y);
-
-  // Click handlers to open range editor modals
-  lv_obj_add_flag(card_ph, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(card_ph, [](lv_event_t *e){
+  // --- pH arc card (x=4, y=30, w=233, h=198) ---
+  lv_obj_t *phCard = make_arc_card(4, 30, 233, 198, "pH",
+    g_theme.ph_arc, &lv_arc_ph, &lv_lbl_ph, &lv_lbl_ph_status, &lv_lbl_ph_range);
+  lv_arc_set_range(lv_arc_ph, 0, 140);
+  { char rb[24]; snprintf(rb, sizeof(rb), "%.2f - %.2f", g_phMin, g_phMax); lv_label_set_text(lv_lbl_ph_range, rb); }
+  lv_obj_add_flag(phCard, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(phCard, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
-      // Defer modal creation to next tick to avoid re-entrancy during event processing
       lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showRangeEditor(true); }, 0, NULL);
       lv_timer_set_repeat_count(t, 1);
     }
   }, LV_EVENT_CLICKED, NULL);
-  lv_obj_add_flag(card_orp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(card_orp, [](lv_event_t *e){
+
+  // --- ORP arc card (x=243, y=30, w=233, h=198) ---
+  lv_lbl_orp_unit = nullptr; // mV shown in card title
+  lv_obj_t *orpCard = make_arc_card(243, 30, 233, 198, "ORP (mV)",
+    g_theme.orp_arc, &lv_arc_orp, &lv_lbl_orp, &lv_lbl_orp_status, &lv_lbl_orp_range);
+  lv_arc_set_range(lv_arc_orp, 0, 1200);
+  { char rb[24]; snprintf(rb, sizeof(rb), "%d - %d", g_orpMin, g_orpMax); lv_label_set_text(lv_lbl_orp_range, rb); }
+  lv_obj_add_flag(orpCard, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(orpCard, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
       lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showRangeEditor(false); }, 0, NULL);
       lv_timer_set_repeat_count(t, 1);
     }
   }, LV_EVENT_CLICKED, NULL);
 
-  // Replace Settings button with floating speed-dial
-  ui_create_speed_dial(root);
-  // Adjust IP label anchor: align to root bottom area instead of removed button
-  if (lv_lbl_ip) {
-    lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24);
-  }
+  // --- Bottom row: 4 mini-cards (x=4..474, y=232, h=84, each w=113, gap=6) ---
+  auto make_mini = [&](lv_coord_t x) -> lv_obj_t* {
+    lv_obj_t *c = lv_obj_create(scr);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, 113, 84);
+    lv_obj_set_pos(c, x, 232);
+    lv_obj_set_style_bg_color(c, g_theme.card, 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(c, 8, 0);
+    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    return c;
+  };
 
-  const lv_font_t *info_font = &lv_font_montserrat_14;
-  
-  // IP label (content width), placed near bottom-left above the speed dial with more spacing from cards
-  lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, info_font, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(lv_lbl_ip, LV_SIZE_CONTENT); lv_obj_set_style_text_align(lv_lbl_ip, LV_TEXT_ALIGN_LEFT, 0); lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24); lv_label_set_text(lv_lbl_ip, "IP: --");
+  // Temp mini-card
+  lv_card_temp = make_mini(4);
+  { lv_obj_t *ic = lv_img_create(lv_card_temp);
+    lv_img_set_src(ic, &device_thermostat_32dp_999999_FILL0_wght400_GRAD0_opsz40);
+    lv_obj_set_style_img_recolor_opa(ic, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(ic, g_theme.text2, 0);
+    lv_obj_align(ic, LV_ALIGN_TOP_LEFT, 6, 6); }
+  lv_lbl_temp = lv_label_create(lv_card_temp);
+  lv_label_set_text(lv_lbl_temp, "--.-");
+  lv_obj_set_style_text_color(lv_lbl_temp, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lv_lbl_temp, &lv_font_montserrat_20, 0);
+  lv_obj_align(lv_lbl_temp, LV_ALIGN_BOTTOM_LEFT, 6, -8);
+  lv_lbl_temp_unit = lv_label_create(lv_card_temp);
+  lv_label_set_text(lv_lbl_temp_unit, "\xc2\xb0""C");
+  lv_obj_set_style_text_color(lv_lbl_temp_unit, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_temp_unit, &lv_font_montserrat_12, 0);
+  lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_BOTTOM, 2, -2);
 
-  // MQTT host label onder IP
-  lv_lbl_mqtt = lv_label_create(root);
-  lv_obj_set_style_text_color(lv_lbl_mqtt, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_text_font(lv_lbl_mqtt, info_font, 0);
-  lv_label_set_long_mode(lv_lbl_mqtt, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(lv_lbl_mqtt, LV_SIZE_CONTENT);
-  lv_obj_set_style_text_align(lv_lbl_mqtt, LV_TEXT_ALIGN_LEFT, 0);
-  lv_obj_align_to(lv_lbl_mqtt, lv_lbl_ip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
-  lv_label_set_text(lv_lbl_mqtt, "MQTT: --");
+  // pH pump mini-card
+  lv_obj_t *pumpPhCard = make_mini(123);
+  lv_pump_ph = lv_img_create(pumpPhCard);
+  lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+  lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(lv_pump_ph, g_theme.accent, 0);
+  lv_obj_align(lv_pump_ph, LV_ALIGN_TOP_LEFT, 6, 6);
+  lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
+  { lv_obj_t *l = lv_label_create(pumpPhCard); lv_label_set_text(l, "pH Pump");
+    lv_obj_set_style_text_color(l, g_theme.text2, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, 34, 9); }
+  lv_lbl_pump_ph_status = lv_label_create(pumpPhCard);
+  lv_label_set_text(lv_lbl_pump_ph_status, "OFF");
+  lv_obj_set_style_text_color(lv_lbl_pump_ph_status, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_pump_ph_status, &lv_font_montserrat_14, 0);
+  lv_obj_align(lv_lbl_pump_ph_status, LV_ALIGN_BOTTOM_LEFT, 6, -8);
+  lv_pump_ph_stats = lv_label_create(pumpPhCard);
+  lv_label_set_text(lv_pump_ph_stats, "");
+  lv_obj_set_style_text_color(lv_pump_ph_stats, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_pump_ph_stats, &lv_font_montserrat_12, 0);
+  lv_obj_align(lv_pump_ph_stats, LV_ALIGN_BOTTOM_LEFT, 6, -24);
+  lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
 
-  // Battery indicator - same row as MQTT, right side
-  lv_lbl_battery = lv_label_create(root);
-  lv_obj_set_style_text_color(lv_lbl_battery, lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
-  lv_obj_set_style_text_font(lv_lbl_battery, &lv_font_montserrat_14, 0);
-  lv_label_set_text(lv_lbl_battery, LV_SYMBOL_BATTERY_3 " --%");
-  // Align to right side of screen, same Y as MQTT label
-  lv_obj_align(lv_lbl_battery, LV_ALIGN_BOTTOM_RIGHT, -80, -2);
+  // ORP pump mini-card
+  lv_obj_t *pumpOrpCard = make_mini(242);
+  lv_pump_orp = lv_img_create(pumpOrpCard);
+  lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24);
+  lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0);
+  lv_obj_set_style_img_recolor(lv_pump_orp, g_theme.accent, 0);
+  lv_obj_align(lv_pump_orp, LV_ALIGN_TOP_LEFT, 6, 6);
+  lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
+  { lv_obj_t *l = lv_label_create(pumpOrpCard); lv_label_set_text(l, "ORP Pump");
+    lv_obj_set_style_text_color(l, g_theme.text2, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, 34, 9); }
+  lv_lbl_pump_orp_status = lv_label_create(pumpOrpCard);
+  lv_label_set_text(lv_lbl_pump_orp_status, "OFF");
+  lv_obj_set_style_text_color(lv_lbl_pump_orp_status, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_pump_orp_status, &lv_font_montserrat_14, 0);
+  lv_obj_align(lv_lbl_pump_orp_status, LV_ALIGN_BOTTOM_LEFT, 6, -8);
+  lv_pump_orp_stats = lv_label_create(pumpOrpCard);
+  lv_label_set_text(lv_pump_orp_stats, "");
+  lv_obj_set_style_text_color(lv_pump_orp_stats, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_pump_orp_stats, &lv_font_montserrat_12, 0);
+  lv_obj_align(lv_pump_orp_stats, LV_ALIGN_BOTTOM_LEFT, 6, -24);
+  lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
 
-  // SSID label above IP (stacked), left aligned with proper spacing
-  lv_lbl_ssid = lv_label_create(root);
-  lv_obj_set_style_text_color(lv_lbl_ssid, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_text_font(lv_lbl_ssid, info_font, 0);
-  lv_label_set_long_mode(lv_lbl_ssid, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(lv_lbl_ssid, LV_SIZE_CONTENT);
-  lv_obj_set_style_text_align(lv_lbl_ssid, LV_TEXT_ALIGN_LEFT, 0);
-  // place directly above the IP label on the left with more spacing
-  lv_obj_align_to(lv_lbl_ssid, lv_lbl_ip, LV_ALIGN_OUT_TOP_LEFT, 0, -8);
-  lv_label_set_text(lv_lbl_ssid, "SSID: --");
+  // Settings mini-card
+  lv_obj_t *settingsCard = make_mini(361);
+  lv_obj_add_flag(settingsCard, LV_OBJ_FLAG_CLICKABLE);
+  { lv_obj_t *g = lv_label_create(settingsCard); lv_label_set_text(g, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(g, g_theme.accent, 0);
+    lv_obj_set_style_text_font(g, &lv_font_montserrat_28, 0);
+    lv_obj_align(g, LV_ALIGN_CENTER, 0, -10); }
+  { lv_obj_t *l = lv_label_create(settingsCard); lv_label_set_text(l, "Settings");
+    lv_obj_set_style_text_color(l, g_theme.text2, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -6); }
+  lv_obj_add_event_cb(settingsCard, [](lv_event_t *e){
+    if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
+      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; if (handlers.onSettings) handlers.onSettings(); }, 0, NULL);
+      lv_timer_set_repeat_count(t, 1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
 
   // Ensure periodic value updates
   if (!g_update_timer) {
@@ -463,6 +588,12 @@ void build(bool safeBaseline){
 }
 
 void updateValues(){
+  // Always tick the watchdog first — even on the settings screen.
+  // The heartbeat must fire every 500 ms regardless of active screen so the
+  // watchdog only triggers when the LVGL task is truly frozen, not just because
+  // the user has been in Settings for >8 s.
+  getBoard().updateHeartbeat();
+
   // Defensive: ensure labels exist before touching
   if (onSettings) return;
   auto &M = domain::Metrics::instance();
@@ -476,7 +607,7 @@ void updateValues(){
       snprintf(buf_ph, sizeof(buf_ph), "%d.%02d", ph_i, ph_f);
       lv_label_set_text_static(lv_lbl_ph, buf_ph);
       // Colorize by thresholds
-      lv_color_t c = lv_color_white();
+      lv_color_t c = g_theme.text;
       bool below = M.phVal < g_phMin; bool above = M.phVal > g_phMax;
       bool warn = (!below && !above) && (M.phVal <= g_phMin + 0.05f || M.phVal >= g_phMax - 0.05f);
       if (below || above) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
@@ -484,6 +615,24 @@ void updateValues(){
     } else {
       strncpy(buf_ph, "--.--", sizeof(buf_ph) - 1);
       lv_label_set_text_static(lv_lbl_ph, buf_ph);
+    }
+  }
+  // Update pH arc (value + color + status)
+  if (lv_arc_ph) {
+    int av = M.havePh ? (int)(M.phVal * 10.0f + 0.5f) : 0;
+    if (av < 0) av = 0; if (av > 140) av = 140;
+    lv_arc_set_value(lv_arc_ph, av);
+    lv_color_t ac = M.havePh ?
+      ((M.phVal < 6.5f || M.phVal > 8.0f) ? g_theme.bad : (M.phVal < 6.8f || M.phVal > 7.6f) ? g_theme.warn : g_theme.accent)
+      : g_theme.text2;
+    lv_obj_set_style_arc_color(lv_arc_ph, ac, LV_PART_INDICATOR);
+    if (lv_lbl_ph_status) {
+      const char *st = !M.havePh ? "--" :
+        (M.phVal < 6.5f ? "LOW" : M.phVal > 8.0f ? "HIGH" :
+         (M.phVal < 6.8f || M.phVal > 7.6f) ? "WARN" : "GOOD");
+      lv_label_set_text(lv_lbl_ph_status, st);
+      lv_obj_set_style_bg_color(lv_lbl_ph_status, M.havePh ? ac : g_theme.card2, 0);
+      lv_obj_set_style_text_color(lv_lbl_ph_status, lv_color_white(), 0);
     }
   }
   // ORP as integer - thread-safe with static buffer
@@ -499,7 +648,7 @@ void updateValues(){
       }
       // Colorize by thresholds
       int v = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
-      lv_color_t c = lv_color_white();
+      lv_color_t c = g_theme.text;
       bool low = v < g_orpMin; bool high = v > g_orpMax;
       bool warn = (!low && !high) && (v <= g_orpMin + 20 || v >= g_orpMax - 20);
       if (low || high) c = lv_palette_main(LV_PALETTE_RED); else if (warn) c = lv_palette_main(LV_PALETTE_ORANGE);
@@ -507,6 +656,24 @@ void updateValues(){
     } else {
       strncpy(buf_orp, "----", sizeof(buf_orp) - 1);
       lv_label_set_text_static(lv_lbl_orp, buf_orp);
+    }
+  }
+  // Update ORP arc (value + color + status)
+  if (lv_arc_orp) {
+    int ov = M.haveOrp ? (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : 0.0f) : 0;
+    if (ov < 0) ov = 0; if (ov > 1200) ov = 1200;
+    lv_arc_set_value(lv_arc_orp, ov);
+    int omv = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
+    lv_color_t ac = M.haveOrp ?
+      (omv < 200 ? g_theme.bad : (omv < 400 || omv > 800) ? g_theme.warn : g_theme.accent)
+      : g_theme.text2;
+    lv_obj_set_style_arc_color(lv_arc_orp, ac, LV_PART_INDICATOR);
+    if (lv_lbl_orp_status) {
+      const char *st = !M.haveOrp ? "--" :
+        (omv < 200 ? "LOW" : omv > 800 ? "HIGH" : omv < 400 ? "WARN" : "GOOD");
+      lv_label_set_text(lv_lbl_orp_status, st);
+      lv_obj_set_style_bg_color(lv_lbl_orp_status, M.haveOrp ? ac : g_theme.card2, 0);
+      lv_obj_set_style_text_color(lv_lbl_orp_status, lv_color_white(), 0);
     }
   }
   // Temp with 1 decimal (unit in separate label) - thread-safe with static buffer
@@ -569,6 +736,16 @@ void updateValues(){
     }
   }
   
+  // Update pump ON/OFF status labels
+  if (lv_lbl_pump_ph_status) {
+    lv_label_set_text(lv_lbl_pump_ph_status, g_pumpPh ? "ON" : "OFF");
+    lv_obj_set_style_text_color(lv_lbl_pump_ph_status, g_pumpPh ? g_theme.accent : g_theme.text2, 0);
+  }
+  if (lv_lbl_pump_orp_status) {
+    lv_label_set_text(lv_lbl_pump_orp_status, g_pumpOrp ? "ON" : "OFF");
+    lv_obj_set_style_text_color(lv_lbl_pump_orp_status, g_pumpOrp ? g_theme.accent : g_theme.text2, 0);
+  }
+
   // Refresh IP/SSID/hostname on each tick - thread-safe with static buffers
   static char buf_ip[128] = "IP: --";
   static char buf_mqtt[96] = "MQTT: --";
@@ -682,8 +859,6 @@ void updateValues(){
   }
   #endif
 
-  // Prove to the board watchdog that the LVGL task is alive
-  getBoard().updateHeartbeat();
 }
 
 void setThresholds(float phMin, float phMax, int orpMin, int orpMax){
@@ -749,56 +924,192 @@ void setSsid(const char *ssid){
 
 void showSettings(){
   onSettings = true;
-  lv_lbl_ph = lv_lbl_orp = lv_lbl_orp_unit = lv_lbl_temp = lv_lbl_ip = lv_lbl_ssid = nullptr;
-  
-  // Create a new screen instead of cleaning the current one to avoid crashes with software rotation
+  lv_lbl_ph = lv_lbl_orp = lv_lbl_orp_unit = lv_lbl_temp = lv_lbl_ip = lv_lbl_ssid = lv_lbl_mqtt = nullptr;
+  lv_arc_ph = lv_arc_orp = nullptr;
+  lv_lbl_ph_status = lv_lbl_orp_status = nullptr;
+  lv_lbl_ph_range  = lv_lbl_orp_range  = nullptr;
+  lv_lbl_pump_ph_status = lv_lbl_pump_orp_status = nullptr;
+
   lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr, g_theme.bg, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_scr_load(scr);
 
-  const lv_coord_t scr_w = lv_disp_get_hor_res(NULL);
-  const lv_coord_t scr_h = lv_disp_get_ver_res(NULL);
-  const lv_coord_t pad = 12;
-  const lv_coord_t footer_h = 48;
+  const lv_coord_t scr_w    = lv_disp_get_hor_res(NULL);
+  const lv_coord_t scr_h    = lv_disp_get_ver_res(NULL);
+  const lv_coord_t pad      = 8;
+  const lv_coord_t hdr_h    = 44;
+  const lv_coord_t footer_h = 52;
 
-  // Scrollable content area
+  // ── Header bar ───────────────────────────────────────────────────────────
+  lv_obj_t *hdr = lv_obj_create(scr);
+  lv_obj_remove_style_all(hdr);
+  lv_obj_set_size(hdr, scr_w, hdr_h);
+  lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(hdr, g_theme.status, 0);
+  lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_hor(hdr, 12, 0);
+  lv_obj_set_style_pad_ver(hdr, 0, 0);
+  lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+  { lv_obj_t *lbl = lv_label_create(hdr);
+    lv_label_set_text(lbl, LV_SYMBOL_LEFT "  Settings");
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0); }
+
+  // ── Scrollable content area ──────────────────────────────────────────────
+  // content = fixed-size scrollable shell (no flex — avoids LVGL 8 layout loop)
+  // inner   = non-scrollable flex-column child that grows to fit all sections
   lv_obj_t *content = lv_obj_create(scr);
   lv_obj_remove_style_all(content);
-  lv_obj_set_size(content, scr_w - pad*2, scr_h - pad*2 - footer_h);
-  lv_obj_align(content, LV_ALIGN_TOP_MID, 0, pad);
-  lv_obj_set_style_bg_color(content, lv_color_make(24,24,24), 0);
+  lv_obj_set_size(content, scr_w, scr_h - hdr_h - footer_h);
+  lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, hdr_h);
+  lv_obj_set_style_bg_color(content, g_theme.bg, 0);
   lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(content, 12, 0);
-  lv_obj_set_style_pad_all(content, pad, 0);
+  lv_obj_set_style_pad_all(content, 0, 0);
   lv_obj_set_scroll_dir(content, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
-  lv_obj_t *title = lv_label_create(content);
-  lv_label_set_text(title, "Settings");
-  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_t *inner = lv_obj_create(content);
+  lv_obj_remove_style_all(inner);
+  lv_obj_set_width(inner, lv_pct(100));
+  lv_obj_set_height(inner, LV_SIZE_CONTENT);
+  lv_obj_set_style_pad_all(inner, pad, 0);
+  lv_obj_set_style_pad_row(inner, pad, 0);
+  lv_obj_set_flex_flow(inner, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
 
-  // pH slider
-  lv_obj_t *lblm1 = lv_label_create(content); lv_label_set_text(lblm1, "pH Motor Speed"); lv_obj_align(lblm1, LV_ALIGN_TOP_LEFT, 0, 28);
-  lv_lbl_val_m1 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m1); lv_label_set_text(lv_lbl_val_m1, b);} lv_obj_align(lv_lbl_val_m1, LV_ALIGN_TOP_RIGHT, 0, 28);
-  lv_slider_m1 = lv_slider_create(content); lv_obj_set_width(lv_slider_m1, lv_pct(100)); lv_obj_align(lv_slider_m1, LV_ALIGN_TOP_LEFT, 0, 48);
+  // Helper: create a themed section card (flex column)
+  auto make_section = [&](const char *title) -> lv_obj_t* {
+    lv_obj_t *card = lv_obj_create(inner);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, g_theme.card, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 10, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    if (title && title[0]) {
+      lv_obj_t *lbl = lv_label_create(card);
+      lv_label_set_text(lbl, title);
+      lv_obj_set_style_text_color(lbl, g_theme.text2, 0);
+      lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+      lv_obj_set_width(lbl, lv_pct(100));
+    }
+    return card;
+  };
+
+  // Helper: style a slider with theme colors
+  auto style_slider = [&](lv_obj_t *sl){
+    lv_obj_set_style_bg_color(sl, g_theme.card2, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, g_theme.accent, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, g_theme.text, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 4, LV_PART_KNOB);
+    lv_obj_set_height(sl, 6);
+    lv_obj_set_width(sl, lv_pct(100));
+  };
+
+  // Helper: style a textarea with theme colors
+  auto style_ta = [&](lv_obj_t *ta){
+    lv_obj_set_style_bg_color(ta, g_theme.card2, 0);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(ta, g_theme.card2, 0);
+    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_set_style_text_color(ta, g_theme.text, 0);
+    lv_obj_set_style_radius(ta, 6, 0);
+    lv_obj_set_style_pad_all(ta, 8, 0);
+    lv_obj_set_width(ta, lv_pct(100));
+    // Prevent textarea from intercepting scroll gestures.
+    // lv_textarea_create() sets LV_OBJ_FLAG_SCROLLABLE by default; clearing it
+    // makes LVGL skip this object and scroll the nearest scrollable ancestor (content) instead.
+    lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ta, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  };
+
+  // Helper: create a labelled row (flex row) for a toggle switch
+  auto make_toggle_row = [&](lv_obj_t *parent, const char *label_text) -> lv_obj_t* {
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, 34);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, label_text);
+    lv_obj_set_flex_grow(lbl, 1);
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+    return row;
+  };
+
+  // Helper: add a styled switch to a row
+  auto make_switch = [&](lv_obj_t *row) -> lv_obj_t* {
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_set_size(sw, 50, 26);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(sw, g_theme.card2, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, g_theme.accent, (lv_style_selector_t)(LV_PART_INDICATOR | LV_STATE_CHECKED));
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, (lv_style_selector_t)(LV_PART_INDICATOR | LV_STATE_CHECKED));
+    return sw;
+  };
+
+  // ── Section: Motor speeds ────────────────────────────────────────────────
+  lv_obj_t *cardMotor = make_section("MOTOR SPEED");
+
+  // pH pump row: label + value%
+  { lv_obj_t *row = lv_obj_create(cardMotor);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100)); lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 0, 0); lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, "pH Pump"); lv_obj_set_flex_grow(lbl, 1);
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0);
+    lv_lbl_val_m1 = lv_label_create(row);
+    { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m1); lv_label_set_text(lv_lbl_val_m1, b); }
+    lv_obj_set_style_text_color(lv_lbl_val_m1, g_theme.accent, 0); }
+  lv_slider_m1 = lv_slider_create(cardMotor);
   lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(lv_slider_m1, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m1, 0, 100);
   lv_slider_set_value(lv_slider_m1, initial_m1, LV_ANIM_OFF);
+  style_slider(lv_slider_m1);
 
-  // ORP slider
-  lv_obj_t *lblm2 = lv_label_create(content); lv_label_set_text(lblm2, "ORP Motor Speed"); lv_obj_align(lblm2, LV_ALIGN_TOP_LEFT, 0, 88);
-  lv_lbl_val_m2 = lv_label_create(content); { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m2); lv_label_set_text(lv_lbl_val_m2, b);} lv_obj_align(lv_lbl_val_m2, LV_ALIGN_TOP_RIGHT, 0, 88);
-  lv_slider_m2 = lv_slider_create(content); lv_obj_set_width(lv_slider_m2, lv_pct(100)); lv_obj_align(lv_slider_m2, LV_ALIGN_TOP_LEFT, 0, 108);
+  // ORP pump row: label + value%
+  { lv_obj_t *row = lv_obj_create(cardMotor);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100)); lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 0, 0); lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, "ORP Pump"); lv_obj_set_flex_grow(lbl, 1);
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0);
+    lv_lbl_val_m2 = lv_label_create(row);
+    { char b[8]; snprintf(b, sizeof(b), "%u%%", (unsigned)initial_m2); lv_label_set_text(lv_lbl_val_m2, b); }
+    lv_obj_set_style_text_color(lv_lbl_val_m2, g_theme.accent, 0); }
+  lv_slider_m2 = lv_slider_create(cardMotor);
   lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(lv_slider_m2, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_slider_set_range(lv_slider_m2, 0, 100);
   lv_slider_set_value(lv_slider_m2, initial_m2, LV_ANIM_OFF);
+  style_slider(lv_slider_m2);
 
   lv_obj_add_event_cb(lv_slider_m1, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m1){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m1,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(1,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
   lv_obj_add_event_cb(lv_slider_m2, [](lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_VALUE_CHANGED){ int v=(int)lv_slider_get_value(lv_event_get_target(e)); if (lv_lbl_val_m2){ char b[8]; snprintf(b,sizeof(b),"%d%%",v); lv_label_set_text(lv_lbl_val_m2,b);} if (handlers.onSpeedChange) handlers.onSpeedChange(2,v);} }, LV_EVENT_VALUE_CHANGED, NULL);
 
-  // Intercept vertical swipe on sliders to scroll the content instead of adjusting the slider
+  // Intercept vertical swipe on sliders to scroll content instead of adjusting the slider
   struct ScrollInterceptCtx { lv_obj_t *scroll; int initial; int ax; int ay; bool adjust; };
   auto attach_interceptor = [&](lv_obj_t *slider){
     ScrollInterceptCtx *ctx = (ScrollInterceptCtx*)lv_mem_alloc(sizeof(ScrollInterceptCtx));
@@ -839,261 +1150,207 @@ void showSettings(){
   attach_interceptor(lv_slider_m1);
   attach_interceptor(lv_slider_m2);
 
+  // ── Section: System ──────────────────────────────────────────────────────
+  lv_obj_t *cardSystem = make_section("SYSTEM");
+
+  // Dark/Light theme toggle
+  { lv_obj_t *row = make_toggle_row(cardSystem, "Dark Theme");
+    lv_obj_t *sw  = make_switch(row);
+    if (g_theme_dark) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, [](lv_event_t *e){
+      if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        bool dark = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        ui::setTheme(dark);
+      }
+    }, LV_EVENT_VALUE_CHANGED, NULL); }
+
+  // Audio toggle
+  { lv_obj_t *row = make_toggle_row(cardSystem, "Audio / Click");
+    lv_obj_t *sw  = make_switch(row);
+    if (g_storage.getSoundEnabled(true)) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, [](lv_event_t *e){
+      if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        bool en = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        g_storage.setSoundEnabled(en);
+      }
+    }, LV_EVENT_VALUE_CHANGED, NULL); }
+
   // Zigbee mode toggle (for boards with HAS_ZIGBEE support)
   #if HAS_ZIGBEE
-  lv_obj_t *lblZigbee = lv_label_create(content);
-  lv_label_set_text(lblZigbee, getBoard().uiConfig().zigbeeLabelText);
-  lv_obj_align(lblZigbee, LV_ALIGN_TOP_LEFT, 0, 148);
-  
-  lv_obj_t *swZigbee = lv_switch_create(content);
-  lv_obj_set_size(swZigbee, 50, 24);
-  bool currentModeIsZigbee = (g_storage.getMode(::core::Storage::MODE_WIFI_MQTT) == ::core::Storage::MODE_ZIGBEE);
-  if (currentModeIsZigbee) lv_obj_add_state(swZigbee, LV_STATE_CHECKED); 
-  else lv_obj_clear_state(swZigbee, LV_STATE_CHECKED);
-  lv_obj_align(swZigbee, LV_ALIGN_TOP_RIGHT, 0, 144);
-  lv_obj_add_event_cb(swZigbee, [](lv_event_t *e){
-    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
-    bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-    int modeInt = zig ? 1 : 0;
-    requestModeChange(modeInt);
-  }, LV_EVENT_VALUE_CHANGED, NULL);
+  { lv_obj_t *row = make_toggle_row(cardSystem, getBoard().uiConfig().zigbeeLabelText);
+    lv_obj_t *sw  = make_switch(row);
+    bool currentModeIsZigbee = (g_storage.getMode(::core::Storage::MODE_WIFI_MQTT) == ::core::Storage::MODE_ZIGBEE);
+    if (currentModeIsZigbee) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, [](lv_event_t *e){
+      if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+      bool zig = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+      requestModeChange(zig ? 1 : 0);
+    }, LV_EVENT_VALUE_CHANGED, NULL); }
   #endif
 
-  // Editable WiFi fields
-  #if HAS_ZIGBEE
-  const lv_coord_t wifi_y_offset = 30;  // Extra space for Zigbee toggle
-  #else
-  const lv_coord_t wifi_y_offset = 0;
-  #endif
-  
-  // Audio Toggle
-  lv_obj_t *swAudio = lv_switch_create(content);
-  lv_obj_align(swAudio, LV_ALIGN_TOP_RIGHT, -20, 148 + wifi_y_offset);
-  if (g_storage.getSoundEnabled(true)) lv_obj_add_state(swAudio, LV_STATE_CHECKED);
-  lv_obj_add_event_cb(swAudio, [](lv_event_t *e){
-      // Code is implicitly filtered by registration, but double check doesn't hurt
-      if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
-          bool en = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-          g_storage.setSoundEnabled(en);
-          ESP_LOGI("UI", "Audio enabled: %d", en);
-      }
-  }, LV_EVENT_VALUE_CHANGED, NULL);
-  lv_obj_t *lblAudio = lv_label_create(content);
-  lv_label_set_text(lblAudio, "Audio / Click");
-  lv_obj_align_to(lblAudio, swAudio, LV_ALIGN_OUT_LEFT_MID, -10, 0);
+  // ── Section: Network ─────────────────────────────────────────────────────
+  lv_obj_t *cardNet = make_section("NETWORK");
 
-  lv_obj_t *lblEdSsid = lv_label_create(content); lv_label_set_text(lblEdSsid, "WiFi SSID"); lv_obj_align(lblEdSsid, LV_ALIGN_TOP_LEFT, 0, 148 + wifi_y_offset);
-  lv_ta_ssid = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_ssid, true); lv_obj_set_width(lv_ta_ssid, lv_pct(100)); lv_obj_align(lv_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 172 + wifi_y_offset);
-  lv_obj_t *lblEdPass = lv_label_create(content); lv_label_set_text(lblEdPass, "WiFi Password"); lv_obj_align(lblEdPass, LV_ALIGN_TOP_LEFT, 0, 220 + wifi_y_offset);
-  lv_ta_pass = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true); lv_obj_set_width(lv_ta_pass, lv_pct(100)); lv_obj_align(lv_ta_pass, LV_ALIGN_TOP_LEFT, 0, 244 + wifi_y_offset);
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "WiFi SSID");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_ssid = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_ssid, true);
+  style_ta(lv_ta_ssid);
 
-  // MQTT fields
-  lv_obj_t *lblMqttHost = lv_label_create(content); lv_label_set_text(lblMqttHost, "MQTT Host"); lv_obj_align(lblMqttHost, LV_ALIGN_TOP_LEFT, 0, 292 + wifi_y_offset);
-  lv_ta_mqtt_host = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_host, true); lv_obj_set_width(lv_ta_mqtt_host, lv_pct(100)); lv_obj_align(lv_ta_mqtt_host, LV_ALIGN_TOP_LEFT, 0, 316 + wifi_y_offset);
-  lv_obj_t *lblMqttPort = lv_label_create(content); lv_label_set_text(lblMqttPort, "MQTT Port"); lv_obj_align(lblMqttPort, LV_ALIGN_TOP_LEFT, 0, 364 + wifi_y_offset);
-  lv_ta_mqtt_port = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_port, true); lv_obj_set_width(lv_ta_mqtt_port, lv_pct(100)); lv_obj_align(lv_ta_mqtt_port, LV_ALIGN_TOP_LEFT, 0, 388 + wifi_y_offset);
-  lv_obj_t *lblMqttUser = lv_label_create(content); lv_label_set_text(lblMqttUser, "MQTT User"); lv_obj_align(lblMqttUser, LV_ALIGN_TOP_LEFT, 0, 436 + wifi_y_offset);
-  lv_ta_mqtt_user = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_user, true); lv_obj_set_width(lv_ta_mqtt_user, lv_pct(100)); lv_obj_align(lv_ta_mqtt_user, LV_ALIGN_TOP_LEFT, 0, 460 + wifi_y_offset);
-  lv_obj_t *lblMqttPass = lv_label_create(content); lv_label_set_text(lblMqttPass, "MQTT Password"); lv_obj_align(lblMqttPass, LV_ALIGN_TOP_LEFT, 0, 508 + wifi_y_offset);
-  lv_ta_mqtt_pw = lv_textarea_create(content); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true); lv_obj_set_width(lv_ta_mqtt_pw, lv_pct(100)); lv_obj_align(lv_ta_mqtt_pw, LV_ALIGN_TOP_LEFT, 0, 532 + wifi_y_offset);
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "WiFi Password");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_pass = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_pass, true); lv_textarea_set_password_mode(lv_ta_pass, true);
+  style_ta(lv_ta_pass);
 
-  // Pump Flow Rate Calibration section
-  lv_obj_t *sepPump = lv_obj_create(content); lv_obj_remove_style_all(sepPump); lv_obj_set_size(sepPump, lv_pct(100), 2);
-  lv_obj_set_style_bg_color(sepPump, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sepPump, LV_OPA_COVER, 0);
-  lv_obj_align_to(sepPump, lv_ta_mqtt_pw, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
-  
-  lv_obj_t *lblPumpCal = lv_label_create(content); lv_label_set_text(lblPumpCal, "Pump Flow Rate Calibration");
-  lv_obj_align_to(lblPumpCal, sepPump, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  
-  // M1 (pH pump) calibration
-  lv_obj_t *lblM1Cal = lv_label_create(content); lv_label_set_text(lblM1Cal, "pH Pump (M1)");
-  lv_obj_align_to(lblM1Cal, lblPumpCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
-  
-  lv_lbl_cal_m1_status = lv_label_create(content); 
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "MQTT Host");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_mqtt_host = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_mqtt_host, true);
+  style_ta(lv_ta_mqtt_host);
+
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "MQTT Port");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_mqtt_port = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_mqtt_port, true);
+  style_ta(lv_ta_mqtt_port);
+
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "MQTT User");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_mqtt_user = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_mqtt_user, true);
+  style_ta(lv_ta_mqtt_user);
+
+  { lv_obj_t *lbl = lv_label_create(cardNet); lv_label_set_text(lbl, "MQTT Password");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
+  lv_ta_mqtt_pw = lv_textarea_create(cardNet); lv_textarea_set_one_line(lv_ta_mqtt_pw, true); lv_textarea_set_password_mode(lv_ta_mqtt_pw, true);
+  style_ta(lv_ta_mqtt_pw);
+
+  // ── Section: Pump Flow Calibration ──────────────────────────────────────
+  lv_obj_t *cardPumpCal = make_section("PUMP FLOW CALIBRATION");
+
+  // M1 (pH pump)
+  { lv_obj_t *lbl = lv_label_create(cardPumpCal); lv_label_set_text(lbl, "pH Pump (M1)");
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0); }
+  lv_lbl_cal_m1_status = lv_label_create(cardPumpCal);
   lv_label_set_text(lv_lbl_cal_m1_status, "Ready");
-  lv_obj_set_style_text_color(lv_lbl_cal_m1_status, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_align_to(lv_lbl_cal_m1_status, lblM1Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-  
-  lv_obj_t *btnM1Cal = lv_btn_create(content); 
+  lv_obj_set_style_text_color(lv_lbl_cal_m1_status, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_cal_m1_status, &lv_font_montserrat_12, 0);
+  lv_obj_t *btnM1Cal = lv_btn_create(cardPumpCal);
   lv_obj_set_size(btnM1Cal, lv_pct(100), 40);
-  lv_obj_align_to(btnM1Cal, lv_lbl_cal_m1_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  lv_obj_t *lblBtnM1 = lv_label_create(btnM1Cal); 
-  lv_label_set_text(lblBtnM1, "Start Calibratie (60s @ 100%)"); 
-  lv_obj_center(lblBtnM1);
+  lv_obj_set_style_bg_color(btnM1Cal, g_theme.ph_arc, 0);
+  lv_obj_set_style_radius(btnM1Cal, 8, 0);
+  { lv_obj_t *lbl = lv_label_create(btnM1Cal); lv_label_set_text(lbl, "Start Calibratie (60s @ 100%)"); lv_obj_center(lbl); }
   lv_obj_add_event_cb(btnM1Cal, [](lv_event_t *e){
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    if (g_cal_motor != 0) return; // Already running
-    g_cal_motor = 1;
-    g_cal_countdown = 60;
+    if (g_cal_motor != 0) return;
+    g_cal_motor = 1; g_cal_countdown = 60;
     if (lv_lbl_cal_m1_status) lv_label_set_text(lv_lbl_cal_m1_status, "Running... 60s");
     if (handlers.onPumpCalStart) handlers.onPumpCalStart(1);
     if (!g_cal_timer) g_cal_timer = lv_timer_create(pump_cal_timer_cb, 1000, NULL);
   }, LV_EVENT_CLICKED, NULL);
-  
-  // M2 (ORP pump) calibration
-  lv_obj_t *lblM2Cal = lv_label_create(content); lv_label_set_text(lblM2Cal, "ORP Pump (M2)");
-  lv_obj_align_to(lblM2Cal, btnM1Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
-  
-  lv_lbl_cal_m2_status = lv_label_create(content); 
+
+  // M2 (ORP pump)
+  { lv_obj_t *lbl = lv_label_create(cardPumpCal); lv_label_set_text(lbl, "ORP Pump (M2)");
+    lv_obj_set_style_text_color(lbl, g_theme.text, 0); }
+  lv_lbl_cal_m2_status = lv_label_create(cardPumpCal);
   lv_label_set_text(lv_lbl_cal_m2_status, "Ready");
-  lv_obj_set_style_text_color(lv_lbl_cal_m2_status, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_align_to(lv_lbl_cal_m2_status, lblM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-  
-  lv_obj_t *btnM2Cal = lv_btn_create(content); 
+  lv_obj_set_style_text_color(lv_lbl_cal_m2_status, g_theme.text2, 0);
+  lv_obj_set_style_text_font(lv_lbl_cal_m2_status, &lv_font_montserrat_12, 0);
+  lv_obj_t *btnM2Cal = lv_btn_create(cardPumpCal);
   lv_obj_set_size(btnM2Cal, lv_pct(100), 40);
-  lv_obj_align_to(btnM2Cal, lv_lbl_cal_m2_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  lv_obj_t *lblBtnM2 = lv_label_create(btnM2Cal); 
-  lv_label_set_text(lblBtnM2, "Start Calibratie (60s @ 100%)"); 
-  lv_obj_center(lblBtnM2);
+  lv_obj_set_style_bg_color(btnM2Cal, g_theme.orp_arc, 0);
+  lv_obj_set_style_radius(btnM2Cal, 8, 0);
+  { lv_obj_t *lbl = lv_label_create(btnM2Cal); lv_label_set_text(lbl, "Start Calibratie (60s @ 100%)"); lv_obj_center(lbl); }
   lv_obj_add_event_cb(btnM2Cal, [](lv_event_t *e){
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    if (g_cal_motor != 0) return; // Already running
-    g_cal_motor = 2;
-    g_cal_countdown = 60;
+    if (g_cal_motor != 0) return;
+    g_cal_motor = 2; g_cal_countdown = 60;
     if (lv_lbl_cal_m2_status) lv_label_set_text(lv_lbl_cal_m2_status, "Running... 60s");
     if (handlers.onPumpCalStart) handlers.onPumpCalStart(2);
     if (!g_cal_timer) g_cal_timer = lv_timer_create(pump_cal_timer_cb, 1000, NULL);
   }, LV_EVENT_CLICKED, NULL);
 
 #if USE_ANALOG_SENSORS
-  // Calibration section (pH and ORP sensors), positioned under pump calibration
-  lv_obj_t *sep = lv_obj_create(content); lv_obj_remove_style_all(sep); lv_obj_set_size(sep, lv_pct(100), 2);
-  lv_obj_set_style_bg_color(sep, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
-  lv_obj_align_to(sep, btnM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
-
-  lv_obj_t *lblCal = lv_label_create(content); lv_label_set_text(lblCal, "Calibration");
-  lv_obj_align_to(lblCal, sep, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-
-  // Two buttons: pH Cal and ORP Cal in a row
-  lv_obj_t *rowCal = lv_obj_create(content); lv_obj_remove_style_all(rowCal);
-  lv_obj_set_width(rowCal, LV_PCT(100)); lv_obj_set_height(rowCal, LV_SIZE_CONTENT);
+  // ── Section: Sensor Calibration ──────────────────────────────────────────
+  lv_obj_t *cardSens = make_section("SENSOR CALIBRATION");
+  lv_obj_t *rowCal = lv_obj_create(cardSens);
+  lv_obj_remove_style_all(rowCal);
+  lv_obj_set_width(rowCal, lv_pct(100)); lv_obj_set_height(rowCal, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(rowCal, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowCal, 10, 0);
-  lv_obj_align_to(rowCal, lblCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  lv_obj_t *btnPhCal = lv_btn_create(rowCal); lv_obj_set_size(btnPhCal, 120, 36); { lv_obj_t *t=lv_label_create(btnPhCal); lv_label_set_text(t, "pH Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnPhCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showPhCalibration(); }, LV_EVENT_CLICKED, NULL);
-  lv_obj_t *btnOrpCal = lv_btn_create(rowCal); lv_obj_set_size(btnOrpCal, 120, 36); { lv_obj_t *t=lv_label_create(btnOrpCal); lv_label_set_text(t, "ORP Cal"); lv_obj_center(t);} lv_obj_add_event_cb(btnOrpCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showOrpCalibration(); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_set_style_pad_all(rowCal, 0, 0); lv_obj_clear_flag(rowCal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *btnPhCal = lv_btn_create(rowCal); lv_obj_set_size(btnPhCal, 130, 40);
+  lv_obj_set_style_bg_color(btnPhCal, g_theme.ph_arc, 0); lv_obj_set_style_radius(btnPhCal, 8, 0);
+  { lv_obj_t *t = lv_label_create(btnPhCal); lv_label_set_text(t, "pH Cal"); lv_obj_center(t); }
+  lv_obj_add_event_cb(btnPhCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showPhCalibration(); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *btnOrpCal = lv_btn_create(rowCal); lv_obj_set_size(btnOrpCal, 130, 40);
+  lv_obj_set_style_bg_color(btnOrpCal, g_theme.orp_arc, 0); lv_obj_set_style_radius(btnOrpCal, 8, 0);
+  { lv_obj_t *t = lv_label_create(btnOrpCal); lv_label_set_text(t, "ORP Cal"); lv_obj_center(t); }
+  lv_obj_add_event_cb(btnOrpCal, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) ui::showOrpCalibration(); }, LV_EVENT_CLICKED, NULL);
 #endif
 
-  // Safety Test Section (for testing emergency stop triggers)
-  lv_obj_t *sepSafety = lv_obj_create(content); lv_obj_remove_style_all(sepSafety); lv_obj_set_size(sepSafety, lv_pct(100), 2);
-  lv_obj_set_style_bg_color(sepSafety, lv_color_make(60,60,60), 0); lv_obj_set_style_bg_opa(sepSafety, LV_OPA_COVER, 0);
-  #if USE_ANALOG_SENSORS
-  lv_obj_align_to(sepSafety, rowCal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
-  #else
-  lv_obj_align_to(sepSafety, btnM2Cal, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
-  #endif
-  
-  lv_obj_t *lblSafety = lv_label_create(content); lv_label_set_text(lblSafety, "Safety System Test");
-  lv_obj_set_style_text_color(lblSafety, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  lv_obj_align_to(lblSafety, sepSafety, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  
-  // Info label
-  lv_obj_t *lblInfo = lv_label_create(content); 
-  lv_label_set_text(lblInfo, "Test emergency stop triggers:");
-  lv_obj_set_style_text_font(lblInfo, &lv_font_montserrat_12, 0);
-  lv_obj_align_to(lblInfo, lblSafety, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-  
-  // Test buttons in a grid layout
-  lv_obj_t *rowTest1 = lv_obj_create(content); lv_obj_remove_style_all(rowTest1);
-  lv_obj_set_width(rowTest1, LV_PCT(100)); lv_obj_set_height(rowTest1, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(rowTest1, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest1, 6, 0);
-  lv_obj_align_to(rowTest1, lblInfo, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-  
-  // Test button: Daily Limit
-  lv_obj_t *btnTestDaily = lv_btn_create(rowTest1); lv_obj_set_size(btnTestDaily, 95, 32);
-  lv_obj_set_style_bg_color(btnTestDaily, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_t *lblTestDaily = lv_label_create(btnTestDaily); 
-  lv_label_set_text(lblTestDaily, "Daily Lim"); 
-  lv_obj_set_style_text_font(lblTestDaily, &lv_font_montserrat_12, 0);
-  lv_obj_center(lblTestDaily);
-  if (handlers.onTestSafety) {
-    lv_obj_add_event_cb(btnTestDaily, [](lv_event_t *e){ 
-      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
-        handlers.onTestSafety(1); // Test daily limit
-    }, LV_EVENT_CLICKED, NULL);
-  }
-  
-  // Test button: Session Volume
-  lv_obj_t *btnTestSession = lv_btn_create(rowTest1); lv_obj_set_size(btnTestSession, 95, 32);
-  lv_obj_set_style_bg_color(btnTestSession, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_t *lblTestSession = lv_label_create(btnTestSession); 
-  lv_label_set_text(lblTestSession, "Sess Vol"); 
-  lv_obj_set_style_text_font(lblTestSession, &lv_font_montserrat_12, 0);
-  lv_obj_center(lblTestSession);
-  if (handlers.onTestSafety) {
-    lv_obj_add_event_cb(btnTestSession, [](lv_event_t *e){ 
-      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
-        handlers.onTestSafety(2); // Test session volume
-    }, LV_EVENT_CLICKED, NULL);
-  }
-  
-  // Test button: Sensor Timeout
-  lv_obj_t *btnTestTimeout = lv_btn_create(rowTest1); lv_obj_set_size(btnTestTimeout, 95, 32);
-  lv_obj_set_style_bg_color(btnTestTimeout, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_t *lblTestTimeout = lv_label_create(btnTestTimeout); 
-  lv_label_set_text(lblTestTimeout, "Timeout"); 
-  lv_obj_set_style_text_font(lblTestTimeout, &lv_font_montserrat_12, 0);
-  lv_obj_center(lblTestTimeout);
-  if (handlers.onTestSafety) {
-    lv_obj_add_event_cb(btnTestTimeout, [](lv_event_t *e){ 
-      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
-        handlers.onTestSafety(3); // Test sensor timeout
-    }, LV_EVENT_CLICKED, NULL);
-  }
-  
-  // Second row of test buttons
-  lv_obj_t *rowTest2 = lv_obj_create(content); lv_obj_remove_style_all(rowTest2);
-  lv_obj_set_width(rowTest2, LV_PCT(100)); lv_obj_set_height(rowTest2, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(rowTest2, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest2, 6, 0);
-  lv_obj_align_to(rowTest2, rowTest1, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
-  
-  // Test button: pH Sanity
-  lv_obj_t *btnTestPh = lv_btn_create(rowTest2); lv_obj_set_size(btnTestPh, 95, 32);
-  lv_obj_set_style_bg_color(btnTestPh, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_t *lblTestPh = lv_label_create(btnTestPh); 
-  lv_label_set_text(lblTestPh, "pH Sanity"); 
-  lv_obj_set_style_text_font(lblTestPh, &lv_font_montserrat_12, 0);
-  lv_obj_center(lblTestPh);
-  if (handlers.onTestSafety) {
-    lv_obj_add_event_cb(btnTestPh, [](lv_event_t *e){ 
-      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
-        handlers.onTestSafety(4); // Test pH sanity
-    }, LV_EVENT_CLICKED, NULL);
-  }
-  
-  // Test button: ORP Sanity
-  lv_obj_t *btnTestOrp = lv_btn_create(rowTest2); lv_obj_set_size(btnTestOrp, 95, 32);
-  lv_obj_set_style_bg_color(btnTestOrp, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_t *lblTestOrp = lv_label_create(btnTestOrp); 
-  lv_label_set_text(lblTestOrp, "ORP Sanity"); 
-  lv_obj_set_style_text_font(lblTestOrp, &lv_font_montserrat_12, 0);
-  lv_obj_center(lblTestOrp);
-  if (handlers.onTestSafety) {
-    lv_obj_add_event_cb(btnTestOrp, [](lv_event_t *e){ 
-      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety) 
-        handlers.onTestSafety(5); // Test ORP sanity
-    }, LV_EVENT_CLICKED, NULL);
-  }
+  // ── Section: Safety System Test ──────────────────────────────────────────
+  lv_obj_t *cardSafety = make_section("SAFETY SYSTEM TEST");
+  { lv_obj_t *lbl = lv_label_create(cardSafety); lv_label_set_text(lbl, "Test emergency stop triggers:");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); }
 
-  // Footer
+  auto make_test_btn = [&](lv_obj_t *parent, const char *label, int test_type) -> lv_obj_t* {
+    lv_obj_t *btn = lv_btn_create(parent); lv_obj_set_size(btn, 95, 34);
+    lv_obj_set_style_bg_color(btn, g_theme.bad, 0); lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_t *lbl = lv_label_create(btn); lv_label_set_text(lbl, label);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0); lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn, [](lv_event_t *e){
+      if (lv_event_get_code(e)==LV_EVENT_CLICKED && handlers.onTestSafety)
+        handlers.onTestSafety((int)(intptr_t)lv_event_get_user_data(e));
+    }, LV_EVENT_CLICKED, (void*)(intptr_t)test_type);
+    return btn;
+  };
+
+  lv_obj_t *rowTest1 = lv_obj_create(cardSafety);
+  lv_obj_remove_style_all(rowTest1);
+  lv_obj_set_width(rowTest1, lv_pct(100)); lv_obj_set_height(rowTest1, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(rowTest1, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest1, 6, 0);
+  lv_obj_set_style_pad_all(rowTest1, 0, 0); lv_obj_clear_flag(rowTest1, LV_OBJ_FLAG_SCROLLABLE);
+  make_test_btn(rowTest1, "Daily Lim", 1);
+  make_test_btn(rowTest1, "Sess Vol",  2);
+  make_test_btn(rowTest1, "Timeout",   3);
+
+  lv_obj_t *rowTest2 = lv_obj_create(cardSafety);
+  lv_obj_remove_style_all(rowTest2);
+  lv_obj_set_width(rowTest2, lv_pct(100)); lv_obj_set_height(rowTest2, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(rowTest2, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(rowTest2, 6, 0);
+  lv_obj_set_style_pad_all(rowTest2, 0, 0); lv_obj_clear_flag(rowTest2, LV_OBJ_FLAG_SCROLLABLE);
+  make_test_btn(rowTest2, "pH Sanity",  4);
+  make_test_btn(rowTest2, "ORP Sanity", 5);
+
+  // ── Footer ────────────────────────────────────────────────────────────────
   lv_obj_t *footer = lv_obj_create(scr);
   lv_obj_remove_style_all(footer);
   lv_obj_set_size(footer, scr_w, footer_h);
-  lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -pad);
-  lv_obj_set_style_bg_color(footer, lv_color_make(30,30,30), 0);
+  lv_obj_align(footer, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(footer, g_theme.status, 0);
   lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(footer, 12, 0);
-  lv_obj_set_style_pad_all(footer, pad, 0);
+  lv_obj_set_style_pad_all(footer, 8, 0);
   lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(footer, 10, 0);
+  lv_obj_set_style_pad_column(footer, 8, 0);
+  lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
 
   // Reset WiFi button
-  lv_obj_t *btnReset = lv_btn_create(footer); lv_obj_set_height(btnReset, footer_h-16); lv_obj_set_flex_grow(btnReset, 1); lv_obj_set_style_bg_color(btnReset, lv_palette_main(LV_PALETTE_GREY), 0); lv_obj_add_flag(btnReset, LV_OBJ_FLAG_CLICKABLE);
-  { lv_obj_t *lbl = lv_label_create(btnReset); lv_label_set_text(lbl, "Reset WiFi"); lv_obj_center(lbl); lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE); }
+  lv_obj_t *btnReset = lv_btn_create(footer);
+  lv_obj_set_height(btnReset, footer_h - 16); lv_obj_set_flex_grow(btnReset, 1);
+  lv_obj_set_style_bg_color(btnReset, g_theme.card2, 0);
+  lv_obj_set_style_radius(btnReset, 8, 0);
+  lv_obj_add_flag(btnReset, LV_OBJ_FLAG_CLICKABLE);
+  { lv_obj_t *lbl = lv_label_create(btnReset); lv_label_set_text(lbl, "Reset WiFi");
+    lv_obj_set_style_text_color(lbl, g_theme.text2, 0); lv_obj_center(lbl);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE); }
   lv_obj_add_event_cb(btnReset, [](lv_event_t *e){ if (lv_event_get_code(e)==LV_EVENT_CLICKED) { if (handlers.onWifiReset) handlers.onWifiReset(); } }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnSave = lv_btn_create(footer); lv_obj_set_height(btnSave, footer_h-16); lv_obj_set_flex_grow(btnSave, 1); lv_obj_set_style_bg_color(btnSave, lv_palette_main(LV_PALETTE_BLUE), 0); lv_obj_add_flag(btnSave, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_t *lblSave = lv_label_create(btnSave); lv_label_set_text(lblSave, "Save"); lv_obj_center(lblSave);
-  lv_obj_clear_flag(lblSave, LV_OBJ_FLAG_CLICKABLE);  // Let touches pass through to button
+  // Save button
+  lv_obj_t *btnSave = lv_btn_create(footer);
+  lv_obj_set_height(btnSave, footer_h - 16); lv_obj_set_flex_grow(btnSave, 2);
+  lv_obj_set_style_bg_color(btnSave, g_theme.accent, 0);
+  lv_obj_set_style_radius(btnSave, 8, 0);
+  lv_obj_add_flag(btnSave, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t *lblSave = lv_label_create(btnSave); lv_label_set_text(lblSave, "Save");
+  lv_obj_set_style_text_color(lblSave, g_theme.bg, 0); lv_obj_center(lblSave);
+  lv_obj_clear_flag(lblSave, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(btnSave, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
       const char *s = lv_textarea_get_text(lv_ta_ssid);
@@ -1103,27 +1360,40 @@ void showSettings(){
       const char *port = lv_textarea_get_text(lv_ta_mqtt_port);
       const char *user = lv_textarea_get_text(lv_ta_mqtt_user);
       const char *pw   = lv_textarea_get_text(lv_ta_mqtt_pw);
-      uint16_t prt = (uint16_t)((port && *port) ? atoi(port) : 0); // 0 = unspecified
+      uint16_t prt = (uint16_t)((port && *port) ? atoi(port) : 0);
       if (handlers.onMqttSave) handlers.onMqttSave(host ? host : "", prt, user ? user : "", pw ? pw : "");
       if (handlers.onSaveSettings) handlers.onSaveSettings();
     }
   }, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t *btnCancel = lv_btn_create(footer); lv_obj_set_height(btnCancel, footer_h-16); lv_obj_set_flex_grow(btnCancel, 1); lv_obj_set_style_bg_color(btnCancel, lv_palette_main(LV_PALETTE_RED), 0); lv_obj_add_flag(btnCancel, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_t *lblCancel = lv_label_create(btnCancel); lv_label_set_text(lblCancel, "Back"); lv_obj_center(lblCancel);
-  lv_obj_clear_flag(lblCancel, LV_OBJ_FLAG_CLICKABLE);  // Let touches pass through to button
+  // Back button
+  lv_obj_t *btnCancel = lv_btn_create(footer);
+  lv_obj_set_height(btnCancel, footer_h - 16); lv_obj_set_flex_grow(btnCancel, 1);
+  lv_obj_set_style_bg_color(btnCancel, g_theme.card, 0);
+  lv_obj_set_style_radius(btnCancel, 8, 0);
+  lv_obj_add_flag(btnCancel, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t *lblCancel = lv_label_create(btnCancel); lv_label_set_text(lblCancel, "Back");
+  lv_obj_set_style_text_color(lblCancel, g_theme.text, 0); lv_obj_center(lblCancel);
+  lv_obj_clear_flag(lblCancel, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(btnCancel, [](lv_event_t *e){
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) {
       if (handlers.onCancelSettings) handlers.onCancelSettings();
     }
   }, LV_EVENT_CLICKED, NULL);
 
-  // Keyboard binding
+  // ── Freeze inner height ───────────────────────────────────────────────────
+  // inner uses LV_SIZE_CONTENT which LVGL may recalculate on every scroll event,
+  // causing an expensive nested-flex cascade. Force layout immediately, then
+  // lock the height to a fixed pixel value so scroll never triggers recalculation.
+  lv_obj_update_layout(inner);
+  lv_coord_t inner_h = lv_obj_get_height(inner);
+  if (inner_h > 0) lv_obj_set_height(inner, inner_h);
+
+  // ── Keyboard binding ──────────────────────────────────────────────────────
   lv_obj_t *kb = lv_keyboard_create(scr);
   lv_obj_set_width(kb, scr_w - pad*2);
   lv_obj_set_style_max_height(kb, scr_h/2, 0);
-  // Align keyboard above footer so it doesn't overlap it
-  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -(pad + footer_h));
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -(footer_h));
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
   struct KbCtx { lv_obj_t *kb; lv_obj_t *content; lv_coord_t base_pad; lv_coord_t footer_h; lv_coord_t pad; };
   static KbCtx kbctx_store; KbCtx *kbctx = &kbctx_store;
@@ -1138,7 +1408,6 @@ void showSettings(){
       if (code == LV_EVENT_FOCUSED) {
         lv_keyboard_set_textarea(kb, ta);
         lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-        // Ensure TA is visible above keyboard: increase bottom padding and scroll into view
         if (c->content) {
           lv_coord_t kh = lv_obj_get_height(kb);
           lv_obj_set_style_pad_bottom(c->content, kh + c->pad, 0);
@@ -1157,7 +1426,6 @@ void showSettings(){
   bind_kb(lv_ta_mqtt_port);
   bind_kb(lv_ta_mqtt_user);
   bind_kb(lv_ta_mqtt_pw);
-  // Hide keyboard on ready/cancel
   lv_obj_add_event_cb(kb, [](lv_event_t *e){
     auto code = lv_event_get_code(e);
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
@@ -1167,6 +1435,7 @@ void showSettings(){
   }, LV_EVENT_ALL, NULL);
   // Fields will be populated by caller after opening settings
 }
+
 // --- Calibration Dialogs ---
 static void modal_close_async(lv_obj_t *modal){ lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ lv_obj_t *obj=(lv_obj_t*)tm->user_data; if (obj) lv_obj_del(obj); }, 0, modal); lv_timer_set_repeat_count(t, 1); }
 
@@ -1480,6 +1749,21 @@ void setEmergencyStop(bool active, const char* alertMsg) {
     }
   }
 }
+
+void setTheme(bool dark) {
+  if (g_theme_dark == dark) return;
+  g_theme_dark = dark;
+  g_theme = dark ? THEME_DARK : THEME_LIGHT;
+  ::g_storage.setThemeDark(dark);
+  // Rebuild main screen immediately so change is visible at once
+  if (!onSettings) {
+    lv_obj_clean(lv_scr_act());
+    build(false);
+  }
+}
+
+bool getThemeDark() { return g_theme_dark; }
+
 
 } // namespace ui
 
