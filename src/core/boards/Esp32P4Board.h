@@ -15,6 +15,7 @@ public:
   bool lvglLock()                override { return true; }
   void lvglUnlock()              override {}
   bool hasZigbee()         const override { return true; } // via C6 bridge
+  UiConfig uiConfig()      const override;
 };
 
 } // namespace core

@@ -44,41 +44,6 @@
 #define ZB_ENABLED 0
 #endif
 #endif
-#if ZB_ENABLED
-#include <Zigbee.h>
-#include <ZigbeeEP.h>
-#include <ep/ZigbeeTempSensor.h>
-#include <ep/ZigbeeAnalog.h>
-#include <ep/ZigbeeFlowSensor.h>
-#include <ep/ZigbeePressureSensor.h>
-// Use Analog Input for pH and ORP (correct semantics); ZHA needs a quirk to label nicely
-#include <esp_zigbee_secur.h>
-#include <esp_zigbee_core.h>
-static inline bool zb_is_joined(){
-  return esp_zb_bdb_dev_joined();
-}
-static ZigbeeTempSensor zbTempSensor(10);
-// Prefer standard HA clusters where possible for best ZHA compatibility
-static ZigbeeFlowSensor  zbPh(11);
-static ZigbeePressureSensor zbOrp(12);
-static bool zbStarted = false;
-static uint32_t zbCommissionUntilMs = 0;
-static bool zbScanRequested = false;
-static bool zbMaskAdjusted = false;
-static uint32_t zbLastScanMs = 0;
-static uint32_t zbCommissionStartMs = 0;
-static bool zbMaskExpanded = false;
-static bool zbEverJoined = false; // becomes true once Zigbee.connected() observed
-// Writable thresholds via Zigbee (Analog Output)
-static ZigbeeAnalog      zbPhMin(13);
-static ZigbeeAnalog      zbPhMax(14);
-static ZigbeeAnalog      zbOrpMin(15);
-static ZigbeeAnalog      zbOrpMax(16);
-// Defer AO writes from ZCL context to main loop to avoid reentrancy during interview
-static volatile bool zbPhMinPending = false, zbPhMaxPending = false, zbOrpMinPending = false, zbOrpMaxPending = false;
-static volatile float zbPhMinValue = 0, zbPhMaxValue = 0, zbOrpMinValue = 0, zbOrpMaxValue = 0;
-static Preferences zbPrefs;
-#endif
 static bool wifiOff = false;
 static volatile bool g_settingsRequested = false;
 static volatile bool g_startPortalRequested = false;
@@ -87,11 +52,6 @@ static char g_ui_ip_buf[24] = {0};  // Thread-safe fixed buffer for IP text (rep
 static volatile bool g_showMainRequested = false;
 
 extern "C" void requestShowMain(){ g_showMainRequested = true; }
-#if ZB_ENABLED
-static const char *ZB_PREF_NS = "poollab";
-static const char *ZB_PREF_PAIR = "zb_pair"; // bool flag to start pairing on next boot
-static const char *ZB_PREF_BOUND = "zb_bound"; // bool flag: device has joined a network before
-#endif
 // Global boot timestamp for UI grace periods
 static uint32_t APP_BOOT_MS = 0;
 
@@ -384,9 +344,6 @@ static String MQTT_USER     = "";  // optional
 static String MQTT_PASS     = "";  // optional
 static char MQTT_CLIENTID_BUF[48] = {0};
 static const char* MQTT_CLIENTID = MQTT_CLIENTID_BUF;
-#if defined(BOARD_ESP32S3_35)
-static volatile uint32_t g_s3_lvgl_heartbeat_ms = 0;
-#endif
 
 // MQTT is handled by io::MqttClient now
 core::Storage g_storage("poolcfg");
@@ -569,9 +526,7 @@ static void updateLvglValues(){
     }
     if (lv_img_link) {
       #if ZB_ENABLED
-      bool connected_now = Zigbee.connected();
-      bool joined_now = zb_is_joined();
-      if (connected_now && joined_now) {
+      if (zigbee.isConnected() && zigbee.isJoined()) {
         lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
       } else {
         lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
@@ -702,127 +657,6 @@ static void showZigbeeHoldToPairModal(){
   lv_timer_set_repeat_count(t, 1);
 }
 
-#if ZB_ENABLED
-static void zb_start_and_commission(uint8_t seconds){
-  if (!zbStarted) {
-    // Register endpoints and start stack
-    ESP_LOGI("ZB", "Commissioning: preparing endpoints");
-    zbTempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
-    zbTempSensor.setMinMaxValue(0, 60);
-    // Configure Flow/Pressure endpoints for pH and ORP (ZHA-friendly)
-    zbPh.setManufacturerAndModel("PoolLab", "Pool pH");
-    zbPh.setMinMaxValue(0.0f, 14.0f);
-    zbOrp.setManufacturerAndModel("PoolLab", "Pool ORP");
-    zbOrp.setMinMaxValue(-2000, 2000);
-    // Writable thresholds (Analog Output)
-    zbPhMin.addAnalogOutput();
-    zbPhMax.addAnalogOutput();
-    zbOrpMin.addAnalogOutput();
-    zbOrpMax.addAnalogOutput();
-    // Defer writes to main loop to avoid blocking ZCL thread during interview
-    zbPhMin.onAnalogOutputChange([](float v){ zbPhMinValue = v; zbPhMinPending = true; });
-    zbPhMax.onAnalogOutputChange([](float v){ zbPhMaxValue = v; zbPhMaxPending = true; });
-    zbOrpMin.onAnalogOutputChange([](float v){ zbOrpMinValue = v; zbOrpMinPending = true; });
-    zbOrpMax.onAnalogOutputChange([](float v){ zbOrpMaxValue = v; zbOrpMaxPending = true; });
-    Zigbee.setRxOnWhenIdle(true);
-    // Start on coordinator channel 11; we'll expand to all channels after ~20s if needed
-    Zigbee.setPrimaryChannelMask(1u << 11);
-    Zigbee.setScanDuration(4); // max
-    Zigbee.setTimeout(120000);
-    Zigbee.addEndpoint(&zbTempSensor);
-    Zigbee.addEndpoint(&zbPh);
-    Zigbee.addEndpoint(&zbOrp);
-    Zigbee.addEndpoint(&zbPhMin);
-    Zigbee.addEndpoint(&zbPhMax);
-    Zigbee.addEndpoint(&zbOrpMin);
-    Zigbee.addEndpoint(&zbOrpMax);
-    // Allow multiple binding records; useful for ZHA reconfigure
-    ZigbeeEP::allowMultipleBinding(true);
-    // Router mode with maximum TX power
-    ESP_LOGI("ZB", "Commissioning: starting Zigbee (factory-new, ROUTER, erase NVS)");
-    bool ok = Zigbee.begin(ZIGBEE_ROUTER, true);
-    // Boost 802.15.4 TX power for better range/link margin
-    esp_zb_set_tx_power(20);
-    ESP_LOGI("ZB", "begin() -> %s", ok ? "OK" : "FAIL");
-    (void)ok;
-    // Configure reporting and push initial values
-    zbTempSensor.setReporting(1, 0, 1);
-    // Ensure pH/ORP report at least every 30s and on small changes
-    zbPh.setReporting(0, 30, 0.01f);
-    zbOrp.setReporting(0, 30, 5);
-    float initT = METRICS().haveTemp ? METRICS().tempC : 25.0f;
-    float initPh = METRICS().havePh ? METRICS().phVal : 7.00f;
-    int16_t initOrp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
-    zbTempSensor.setTemperature(initT);
-    zbTempSensor.reportTemperature();
-    // Push initial pH/ORP immediately so ZHA entities become available fast
-    zbPh.setFlow(initPh);
-    zbPh.report();
-    zbOrp.setPressure(initOrp);
-    zbOrp.report();
-    // Post initial values after a longer delay to avoid race during interview
-    lv_timer_t *zb_ai_init = lv_timer_create([](lv_timer_t *tm){
-      (void)tm;
-      float ph = METRICS().havePh ? METRICS().phVal : 7.00f;
-      int16_t orp = METRICS().haveOrp ? (int16_t)lrintf(METRICS().orpMv) : (int16_t)300;
-      zbPh.setFlow(ph);
-      zbPh.report();
-      zbOrp.setPressure(orp);
-      zbOrp.report();
-    }, 2000, NULL);
-    lv_timer_set_repeat_count(zb_ai_init, 1);
-    // Writable outputs use default values; user can set them from ZHA
-    zbStarted = true;
-  }
-  // Track commissioning window
-  zbCommissionUntilMs = millis() + (uint32_t)seconds * 1000UL;
-  zbCommissionStartMs = millis();
-  zbMaskExpanded = false;
-}
-#endif
-
-#if ZB_ENABLED
-static void zb_start_joined(){
-  if (zbStarted) return;
-  ESP_LOGI("ZB", "Start Zigbee (joined mode, no commissioning)");
-  // Prepare endpoints identical to commissioning, but don't erase NVS
-  zbTempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
-  zbTempSensor.setMinMaxValue(0, 60);
-  zbPh.setManufacturerAndModel("PoolLab", "Pool pH");
-  zbPh.setMinMaxValue(0.0f, 14.0f);
-  zbOrp.setManufacturerAndModel("PoolLab", "Pool ORP");
-  zbOrp.setMinMaxValue(-2000, 2000);
-  // Writable thresholds
-  zbPhMin.addAnalogOutput();
-  zbPhMax.addAnalogOutput();
-  zbOrpMin.addAnalogOutput();
-  zbOrpMax.addAnalogOutput();
-  zbPhMin.onAnalogOutputChange([](float v){ zbPhMinValue = v; zbPhMinPending = true; });
-  zbPhMax.onAnalogOutputChange([](float v){ zbPhMaxValue = v; zbPhMaxPending = true; });
-  zbOrpMin.onAnalogOutputChange([](float v){ zbOrpMinValue = v; zbOrpMinPending = true; });
-  zbOrpMax.onAnalogOutputChange([](float v){ zbOrpMaxValue = v; zbOrpMaxPending = true; });
-  Zigbee.setRxOnWhenIdle(true);
-  // Broad channel mask; device will use stored network params
-  Zigbee.setPrimaryChannelMask(0x07FFF800);
-  Zigbee.setScanDuration(3);
-  Zigbee.setTimeout(120000);
-  Zigbee.addEndpoint(&zbTempSensor);
-  Zigbee.addEndpoint(&zbPh);
-  Zigbee.addEndpoint(&zbOrp);
-  Zigbee.addEndpoint(&zbPhMin);
-  Zigbee.addEndpoint(&zbPhMax);
-  Zigbee.addEndpoint(&zbOrpMin);
-  Zigbee.addEndpoint(&zbOrpMax);
-  ZigbeeEP::allowMultipleBinding(true);
-  bool ok = Zigbee.begin(ZIGBEE_ROUTER, false /* erase_nvs */);
-  esp_zb_set_tx_power(20);
-  ESP_LOGI("ZB", "begin(joined) -> %s", ok ? "OK" : "FAIL");
-  zbTempSensor.setReporting(1, 0, 1);
-  zbPh.setReporting(0, 30, 0.01f);
-  zbOrp.setReporting(0, 30, 5);
-  zbStarted = true;
-}
-#endif
 
 // ---- Simple vector icons (drawn with primitives) ----
 // Legacy Arduino_GFX icon helpers removed
@@ -896,8 +730,8 @@ extern "C" void requestModeChange(int mode){
     WiFi.mode(WIFI_OFF);
     wifiOff = true;
     #if ZB_ENABLED
-    if (!zbStarted) {
-      if (zbEverJoined) zb_start_joined(); else ui::showHoldToPair();
+    if (!zigbee.isStarted()) {
+      if (zigbee.everJoined()) zigbee.startJoined(); else ui::showHoldToPair();
     }
     #endif
   } else {
@@ -905,7 +739,7 @@ extern "C" void requestModeChange(int mode){
     WIFI_SSID = g_storage.getWifiSsid(WIFI_SSID);
     WIFI_PASSWORD = g_storage.getWifiPass(WIFI_PASSWORD);
     #if ZB_ENABLED
-    if (zbStarted) { ESP.restart(); }
+    if (zigbee.isStarted()) { ESP.restart(); }
     #endif
     if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); } }
     else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiMgr.ensureSta(); ensureMqtt(); }
@@ -1440,8 +1274,8 @@ void setup() {
         wifiOff = true;
         // Stop Zigbee if not started via joined/commissioning, then (re)start joined if we were bound
         #if ZB_ENABLED
-        if (!zbStarted && zbEverJoined) {
-          zb_start_joined();
+        if (!zigbee.isStarted() && zigbee.everJoined()) {
+          zigbee.startJoined();
         }
         #endif
       } else {
@@ -1849,12 +1683,8 @@ void setup() {
       // Row: mode
       #if HAS_ZIGBEE
       lv_obj_t *row_mode = lv_obj_create(sec_general); lv_obj_remove_style_all(row_mode); lv_obj_set_width(row_mode, LV_PCT(100)); lv_obj_set_height(row_mode, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_mode, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_mode, 12, 0);
-      lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0); 
-      #if defined(BOARD_ESP32P4_43)
-      lv_label_set_text(lblMode, "Zigbee (C6)"); 
-      #else
-      lv_label_set_text(lblMode, "Zigbee mode");
-      #endif
+      lv_obj_t *lblMode = lv_label_create(row_mode); lv_obj_set_style_text_color(lblMode, lv_color_black(), 0);
+      lv_label_set_text(lblMode, getBoard().uiConfig().zigbeeLabelText);
       lv_obj_set_flex_grow(lblMode, 1);
       lv_obj_t *swMode = lv_switch_create(row_mode); lv_obj_set_size(swMode, 50, 24); if (runMode == core::Storage::MODE_ZIGBEE) lv_obj_add_state(swMode, LV_STATE_CHECKED); else lv_obj_clear_state(swMode, LV_STATE_CHECKED);
       lv_obj_add_event_cb(swMode, [](lv_event_t *e){
@@ -1867,8 +1697,8 @@ void setup() {
         // C6/S3: Additional inline logic for immediate UI updates
         if (runMode == core::Storage::MODE_ZIGBEE) {
           #if ZB_ENABLED
-          if (!zbStarted) {
-            if (!zbEverJoined) {
+          if (!zigbee.isStarted()) {
+            if (!zigbee.everJoined()) {
               ui::showHoldToPair();
             }
           }
@@ -1895,19 +1725,19 @@ void setup() {
       lv_obj_t *spacer = lv_obj_create(row_pair); lv_obj_remove_style_all(spacer); lv_obj_set_width(spacer, LV_PCT(100)); lv_obj_set_height(spacer, 1); lv_obj_set_flex_grow(spacer, 1);
       lv_obj_t *btnPair = lv_btn_create(row_pair); lv_obj_set_size(btnPair, 120, 30);
       // Style + label based on bound state
-      if (zbEverJoined) { lv_obj_set_style_bg_color(btnPair, lv_palette_main(LV_PALETTE_RED), 0); lv_label_set_text(lv_label_create(btnPair), "UNPAIR"); }
+      if (zigbee.everJoined()) { lv_obj_set_style_bg_color(btnPair, lv_palette_main(LV_PALETTE_RED), 0); lv_label_set_text(lv_label_create(btnPair), "UNPAIR"); }
       else { lv_label_set_text(lv_label_create(btnPair), "PAIR"); }
       lv_obj_add_event_cb(btnPair, [](lv_event_t *e){
         if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
         #if ZB_ENABLED
-        if (zbEverJoined) {
+        if (zigbee.everJoined()) {
           // Perform a Zigbee factory reset (will reboot)
           ESP_LOGI("ZB", "Unpair requested -> factory reset Zigbee");
-          Zigbee.factoryReset(true);
+          zigbee.factoryReset();
         } else {
           ui::showHoldToPair();
           ESP_LOGI("ZB", "Manual commissioning (60s)");
-          zigbee.startCommissioning(60);
+          zigbee.startCommission(60);
         }
         #else
         (void)e;
@@ -2009,26 +1839,16 @@ void setup() {
 
   // Init Zigbee client only on platforms that support it and when enabled
   #if ZB_ENABLED && !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-  io::ZigbeeConfig zcfg{};
-  zigbee.begin(zcfg);
-  zbPrefs.begin(ZB_PREF_NS, true);
-  bool doPair = zbPrefs.getBool(ZB_PREF_PAIR, false);
-  zbEverJoined = zbPrefs.getBool(ZB_PREF_BOUND, false);
-  zbPrefs.end();
-  ESP_LOGI("ZB", "Commissioning flag: %d", doPair ? 1 : 0);
-  ESP_LOGI("ZB", "Zigbee bound flag: %d", zbEverJoined ? 1 : 0);
-  if (doPair) {
-    // Clear flag and start pairing flow on clean boot
-    zbPrefs.begin(ZB_PREF_NS, false);
-    zbPrefs.putBool(ZB_PREF_PAIR, false);
-    zbPrefs.end();
-    // Schakel WiFi uit vóór de Zigbee stack start om radio-contentie te voorkomen
-    if (WiFi.isConnected()) WiFi.disconnect(true, true);
-    WiFi.mode(WIFI_OFF);
-    wifiOff = true;
-    ESP_LOGI("ZB", "WiFi disabled for commissioning");
-    ESP_LOGI("ZB", "Starting commissioning flow (steering, 120s)");
-    zb_start_and_commission(120);
+  {
+    io::ZigbeeConfig zcfg{ &PH_MIN, &PH_MAX, &ORP_MIN, &ORP_MAX, &g_storage };
+    bool doPair = zigbee.begin(zcfg);
+    if (doPair) {
+      if (WiFi.isConnected()) WiFi.disconnect(true, true);
+      WiFi.mode(WIFI_OFF);
+      wifiOff = true;
+      ESP_LOGI("ZB", "WiFi disabled for commissioning");
+      zigbee.startCommission(120);
+    }
   }
   #endif
 
@@ -2119,11 +1939,7 @@ void setup() {
         portal.beginAP("PoolLab-Setup");
         delay(1000);  // Give captive portal time to fully initialize
         if (USE_LVGL_UI) {
-          #if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
           if (LVGL_LOCK()) { ui::setIp(WiFi.softAPIP().toString().c_str()); LVGL_UNLOCK(); }
-          #else
-          ui::setIp(WiFi.softAPIP().toString().c_str());
-          #endif
         }
       } else {
         wifiOff = false;
@@ -2133,11 +1949,7 @@ void setup() {
           String pass = g_storage.getWifiPass("");
           wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { strncpy(g_ui_ip_buf, ip.c_str(), sizeof(g_ui_ip_buf)-1); g_ui_ip_buf[sizeof(g_ui_ip_buf)-1] = '\0'; g_ui_ip_dirty = true; } });
           if (USE_LVGL_UI) {
-            #if defined(BOARD_ESP32S3_35) || defined(BOARD_ESP32P4_43)
             if (LVGL_LOCK()) { ui::setSsid(ssid.c_str()); LVGL_UNLOCK(); }
-            #else
-            ui::setSsid(ssid.c_str());
-            #endif
           }
           // Ensure WebUI started on both boards
           webui.setStorage(&g_storage);
@@ -2154,8 +1966,8 @@ void setup() {
       ESP_LOGI("WiFi", "Boot: Zigbee mode -> WiFi OFF");
       // If we were previously joined, start Zigbee stack immediately
       #if ZB_ENABLED
-      if (zbEverJoined) {
-        zb_start_joined();
+      if (zigbee.everJoined()) {
+        zigbee.startJoined();
       }
       #endif
     }
@@ -2228,11 +2040,7 @@ void loop() {
     // Apply deferred UI IP update from WiFi callback without crossing threads
     if (g_ui_ip_dirty) {
       g_ui_ip_dirty = false;
-      #if defined(BOARD_ESP32S3_35)
       if (LVGL_LOCK()) { ui::setIp(g_ui_ip_buf); LVGL_UNLOCK(); }
-      #else
-      ui::setIp(g_ui_ip_buf);
-      #endif
     }
     updateLvglValues();
     if (!MOTOR_ENABLE) {
@@ -2267,13 +2075,9 @@ void loop() {
   // Apply deferred navigation back to main UI (one-shot)
   if (g_showMainRequested) {
     g_showMainRequested = false;
-    #if defined(BOARD_ESP32S3_35)
-    // Defer to LVGL context to avoid cross-thread UI calls
+    // Always defer via zero-delay timer so showMain() runs in the LVGL context
     lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showMain(); }, 0, NULL);
     lv_timer_set_repeat_count(t, 1);
-    #else
-    ui::showMain();
-    #endif
   }
   // Removed alive ticker
 
@@ -2288,16 +2092,15 @@ void loop() {
       if (WiFi.isConnected()) WiFi.disconnect(true, true);
       WiFi.mode(WIFI_OFF);
       wifiOff = true;
-      zb_start_and_commission(120);
+      zigbee.startCommission(120);
 #endif
     }
 
   // If commissioning finished, optionally restore WiFi
   #if ZB_ENABLED
-  if (wifiOff) {
-#if ZB_ENABLED
-  if (zbStarted && (zbCommissionUntilMs && millis() > zbCommissionUntilMs)) {
+  if (wifiOff && zigbee.isStarted() && zigbee.commissionUntilMs() && millis() > zigbee.commissionUntilMs()) {
     ESP_LOGI("ZB", "Commissioning window ended");
+    zigbee.clearCommissionTimer();
     if (modeForced) {
       // Restore user's previous mode selection
       runMode = savedMode;
@@ -2317,32 +2120,19 @@ void loop() {
       ESP_LOGI("WiFi", "Remain OFF (Zigbee mode)");
     }
   }
-#endif
-  }
   #endif
 
   // Defer settings screen outside LVGL event context (lock-protected)
   if (g_settingsRequested) {
     if (USE_LVGL_UI) {
       bool opened = false;
-      #if defined(BOARD_ESP32S3_35)
       if (LVGL_LOCK()) {
-        // Defer UI changes to a zero-delay LVGL timer to avoid event/reentrancy issues
         lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
         lv_timer_set_repeat_count(t, 1);
-        // Populate fields shortly after the UI is created to ensure textareas exist
-      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
+        lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
         lv_timer_set_repeat_count(t2, 1);
         LVGL_UNLOCK(); opened = true;
       }
-      #else
-      // Non-S3 path: still defer to next tick
-      lv_timer_t *t = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::showSettings(); }, 0, NULL);
-      lv_timer_set_repeat_count(t, 1);
-      lv_timer_t *t2 = lv_timer_create([](lv_timer_t *tm){ (void)tm; ui::setSavedWifi(g_storage.getWifiSsid("").c_str(), g_storage.getWifiPass("").c_str()); ui::setSavedMqtt(g_storage.getMqttHost("").c_str(), g_storage.getMqttPort(1883), g_storage.getMqttUser("").c_str(), g_storage.getMqttPass("").c_str()); }, 20, NULL);
-      lv_timer_set_repeat_count(t2, 1);
-      opened = true;
-      #endif
       if (opened) g_settingsRequested = false;
     } else {
       g_settingsRequested = false;
@@ -2645,47 +2435,32 @@ void loop() {
     delay(0);
   }
 
-  // Zigbee periodic reporting (Arduino Zigbee runs internally; no explicit loop needed)
+  // Zigbee periodic reporting and state management
   static uint32_t lastZbReport = 0;
   if (now - lastZbReport > 2000) {
     lastZbReport = now;
     #if ZB_ENABLED
-    if (zbStarted) {
-      // Apply deferred AO changes safely in app thread context
-      if (zbPhMinPending) { zbPhMinPending = false; PH_MIN = zbPhMinValue; g_storage.setPhMin(PH_MIN); }
-      if (zbPhMaxPending) { zbPhMaxPending = false; PH_MAX = zbPhMaxValue; g_storage.setPhMax(PH_MAX); }
-      if (zbOrpMinPending) { zbOrpMinPending = false; ORP_MIN = (int)lrintf(zbOrpMinValue); g_storage.setOrpMin(ORP_MIN); }
-      if (zbOrpMaxPending) { zbOrpMaxPending = false; ORP_MAX = (int)lrintf(zbOrpMaxValue); g_storage.setOrpMax(ORP_MAX); }
-      if (domain::Metrics::instance().havePh)   zbPh.setFlow(domain::Metrics::instance().phVal);
-      if (domain::Metrics::instance().haveOrp)  zbOrp.setPressure((int16_t)lrintf(domain::Metrics::instance().orpMv));
-      if (domain::Metrics::instance().haveTemp) { zbTempSensor.setTemperature(domain::Metrics::instance().tempC); }
-      // Opportunistic re-steering if not yet connected (only when LVGL UI is active)
-      if (USE_LVGL_UI) {
-      bool connected_now = Zigbee.connected();
-      bool joined_now = zb_is_joined();
-        #if defined(BOARD_ESP32S3_35)
-        if (LVGL_LOCK()) {
-        #endif
-          if (lv_img_link) {
-      if (connected_now && joined_now) {
-        lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
-      } else {
-        lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
-            }
-          }
-        #if defined(BOARD_ESP32S3_35)
-          LVGL_UNLOCK();
+    zigbee.loop();
+    if (USE_LVGL_UI && zigbee.isStarted()) {
+      // Update link icon
+      if (LVGL_LOCK()) {
+        if (lv_img_link) {
+          if (zigbee.isConnected() && zigbee.isJoined())
+            lv_img_set_src(lv_img_link, &link_16dp_999999_FILL0_wght400_GRAD0_opsz20);
+          else
+            lv_img_set_src(lv_img_link, &link_off_16dp_999999_FILL0_wght400_GRAD0_opsz20);
         }
-        #endif
+        LVGL_UNLOCK();
       }
     }
-    #endif
     // Auto-close commissioning modal when commissioning ends
-    #if ZB_ENABLED
-    if (USE_LVGL_UI && lv_zb_modal && zbCommissionUntilMs && millis() > zbCommissionUntilMs) {
-      lv_obj_del(lv_zb_modal);
-      lv_zb_modal = nullptr;
-      zbCommissionUntilMs = 0;
+    if (USE_LVGL_UI && lv_zb_modal && zigbee.commissionUntilMs() && millis() > zigbee.commissionUntilMs()) {
+      if (LVGL_LOCK()) {
+        lv_obj_del(lv_zb_modal);
+        lv_zb_modal = nullptr;
+        LVGL_UNLOCK();
+      }
+      zigbee.clearCommissionTimer();
     }
     #endif
   }
@@ -2714,30 +2489,8 @@ void loop() {
   }
   #endif
 
-  // S3-only: LVGL watchdog to recover from UI stalls (both BSP and non-BSP paths)
-  #if defined(BOARD_ESP32S3_35)
-  if (USE_LVGL_UI) {
-    static uint32_t s3_next_watchdog = 0;
-    uint32_t now_ms = millis();
-    if (now_ms >= s3_next_watchdog) {
-      // If heartbeat older than 8s, try to rebuild UI safely under lock
-      if (g_s3_lvgl_heartbeat_ms != 0 && (now_ms - g_s3_lvgl_heartbeat_ms) > 8000) {
-        ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled, rebuilding UI");
-        if (LVGL_LOCK()) {
-          lv_obj_clean(lv_scr_act());
-          ui::build(false);
-          ui::updateValues();
-          LVGL_UNLOCK();
-          ESP_LOGI("UI", "S3 LVGL watchdog: rebuild complete");
-          g_s3_lvgl_heartbeat_ms = now_ms;
-        }
-        s3_next_watchdog = now_ms + 15000; // cool-down
-      } else {
-        s3_next_watchdog = now_ms + 2000;
-      }
-    }
-  }
-  #endif
+  // Board-specific LVGL watchdog (no-op on C6/P4; S3 checks for stalled UI task)
+  getBoard().lvglWatchdogTick();
 }
 
 // Legacy pagination removed

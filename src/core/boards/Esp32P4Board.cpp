@@ -181,4 +181,21 @@ void Esp32P4Board::initTouch() {
     // Nothing additional needed here.
 }
 
+UiConfig Esp32P4Board::uiConfig() const {
+    UiConfig cfg;
+    cfg.cardHeight      = 220;
+    cfg.valueFontSize   = 48;
+    cfg.statsFontSize   = 14;
+    cfg.valueY          = 35;
+    cfg.subLblY         = 100;
+    cfg.subValsY        = 118;
+    cfg.pumpStatsY      = 140;
+    cfg.unitSpacing     = 6;
+    cfg.pumpIconY       = -10;
+    cfg.forceThreeCards = true;
+    cfg.showHostnameInIp = true;
+    cfg.zigbeeLabelText = "Zigbee (via C6)";
+    return cfg;
+}
+
 } // namespace core

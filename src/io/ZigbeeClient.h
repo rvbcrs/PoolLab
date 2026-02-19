@@ -1,95 +1,104 @@
 #pragma once
 
 #include <Arduino.h>
+
+// Feature detection — same logic as ZB_ENABLED in main.cpp.
+// P4 has HAS_ZIGBEE=0 in platformio.ini, so HAVE_ARDUINO_ZIGBEE will be 0 there.
 #if defined(HAS_ZIGBEE) && (HAS_ZIGBEE == 0)
   #define HAVE_ARDUINO_ZIGBEE 0
 #elif __has_include(<Zigbee.h>)
   #include <Zigbee.h>
+  #include <ZigbeeEP.h>
+  #include <ep/ZigbeeTempSensor.h>
+  #include <ep/ZigbeeAnalog.h>
+  #include <ep/ZigbeeFlowSensor.h>
+  #include <ep/ZigbeePressureSensor.h>
+  #include <esp_zigbee_secur.h>
+  #include <esp_zigbee_core.h>
   #define HAVE_ARDUINO_ZIGBEE 1
 #else
   #define HAVE_ARDUINO_ZIGBEE 0
 #endif
-// Prefer Arduino Zigbee if present; avoid hard dependency on ESP-IDF Zigbee.
-// Only enable IDF Zigbee if explicitly requested via ENABLE_IDF_ZIGBEE.
-#if defined(ENABLE_IDF_ZIGBEE) && __has_include(<esp_zigbee_core.h>)
-#include <esp_zigbee_core.h>
-#define HAVE_IDF_ZIGBEE 1
-#else
-#define HAVE_IDF_ZIGBEE 0
-#endif
+
+// Forward declarations to avoid circular includes.
+namespace core { class Storage; }
 
 namespace io {
 
 struct ZigbeeConfig {
-  // reserved for future: network/channel/pan id, device info
+  float*         phMin   = nullptr;  // pointer to application PH_MIN float
+  float*         phMax   = nullptr;  // pointer to application PH_MAX float
+  int*           orpMin  = nullptr;  // pointer to application ORP_MIN int
+  int*           orpMax  = nullptr;  // pointer to application ORP_MAX int
+  core::Storage* storage = nullptr;  // for persisting threshold changes
 };
 
 class ZigbeeClient {
 public:
-  void begin(const ZigbeeConfig &cfg) {
-    (void)cfg;
-  #if HAVE_ARDUINO_ZIGBEE
-    // Do not start Zigbee automatically; wait for explicit commissioning request
-    _ready = false;
-  #else
-    _ready = false; // Zigbee stack not available on this target
-  #endif
-  }
+  // Initialise client, load NVS pairing state.
+  // Returns true if a deferred commission was pending (caller should call startCommission).
+  bool begin(const ZigbeeConfig& cfg);
 
-  void loop() {
-    // placeholder for future Zigbee event pump
-  }
+  // Periodic maintenance: apply deferred threshold writes, push sensor values.
+  // Call every ~2 s from the main loop when isStarted().
+  void loop();
 
-  bool startCommissioning(uint32_t durationSeconds = 60) {
-  #if HAVE_ARDUINO_ZIGBEE
-    // Set a window; upper layer will open network and start stack
-    _commissioningUntil = millis() + (uint32_t)min<uint32_t>(durationSeconds, 60) * 1000UL;
-    return true;
-  #else
-    _commissioningUntil = millis() + durationSeconds * 1000UL;
-    return false;
-  #endif
-  }
+  // Start Zigbee in commissioning mode (factory-new, opens join window).
+  void startCommission(uint8_t seconds);
 
-  bool isCommissioning() const {
-    return millis() < _commissioningUntil;
-  }
+  // Start Zigbee without commissioning (uses stored network params).
+  void startJoined();
 
-  bool isReady() const {
-    return _ready;
-  }
+  // Perform Zigbee factory reset (erases NVS network, then reboots).
+  void factoryReset();
 
-  // Stubs for reporting; in real stack map to ZCL attributes and reports
-  void reportPh(float ph) {
-  #if HAVE_ARDUINO_ZIGBEE
-    (void)ph; // map to Analog Input cluster attribute in user code later
-  #else
-    (void)ph;
-  #endif
-  }
-  void reportOrp(int orpMv) {
-  #if HAVE_ARDUINO_ZIGBEE
-    (void)orpMv;
-  #else
-    (void)orpMv;
-  #endif
-  }
-  void reportTemp(float tempC) {
-  #if HAVE_ARDUINO_ZIGBEE
-    if (_ready) {
-      // Use default endpoint 10 temp sensor if present; else no-op
-      // This is a placeholder; the real report is handled in main via zbTempSensor
-    }
-  #else
-    (void)tempC;
-  #endif
-  }
+  bool     isStarted()          const;
+  bool     isJoined()           const;
+  bool     isConnected()        const;
+  bool     everJoined()         const;
+  uint32_t commissionUntilMs()  const;
+  void     clearCommissionTimer();
+
+  // Called from ZCL AO callbacks (public so plain lambdas can reach them).
+  void onPhMinWrite(float v)   { _phMinValue  = v; _phMinPending  = true; }
+  void onPhMaxWrite(float v)   { _phMaxValue  = v; _phMaxPending  = true; }
+  void onOrpMinWrite(float v)  { _orpMinValue = v; _orpMinPending = true; }
+  void onOrpMaxWrite(float v)  { _orpMaxValue = v; _orpMaxPending = true; }
 
 private:
-  bool _ready = false;
-  uint32_t _commissioningUntil = 0;
+  static constexpr const char* PREF_NS    = "poollab";
+  static constexpr const char* PREF_PAIR  = "zb_pair";
+  static constexpr const char* PREF_BOUND = "zb_bound";
+
+#if HAVE_ARDUINO_ZIGBEE
+  ZigbeeConfig _cfg;
+  bool         _started           = false;
+  bool         _everJoined        = false;
+  uint32_t     _commissionUntilMs = 0;
+  bool         _maskExpanded      = false;
+
+  // Deferred threshold writes (set from ZCL context, applied in loop()).
+  volatile bool  _phMinPending  = false, _phMaxPending  = false;
+  volatile bool  _orpMinPending = false, _orpMaxPending = false;
+  volatile float _phMinValue    = 0,     _phMaxValue    = 0;
+  volatile float _orpMinValue   = 0,     _orpMaxValue   = 0;
+
+  // Zigbee endpoints (IDs match original implementation).
+  ZigbeeTempSensor     _tempSensor{10};
+  ZigbeeFlowSensor     _ph{11};
+  ZigbeePressureSensor _orp{12};
+  ZigbeeAnalog         _phMinEp{13};
+  ZigbeeAnalog         _phMaxEp{14};
+  ZigbeeAnalog         _orpMinEp{15};
+  ZigbeeAnalog         _orpMaxEp{16};
+
+  void _setupEndpoints(bool eraseNvs);
+  void _applyDeferredWrites();
+  void _reportSensors();
+  void _saveBoundFlagIfNeeded();
+#endif
 };
 
+extern ZigbeeClient zigbee;
+
 } // namespace io
-
-

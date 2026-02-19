@@ -15,6 +15,11 @@ public:
   bool lvglLock()                override;
   void lvglUnlock()              override;
   bool hasZigbee()         const override { return false; }
+  void lvglWatchdogTick()        override;
+
+private:
+  uint32_t _watchdogNext  = 0;
+  uint32_t _heartbeatMs   = 0;
 };
 
 } // namespace core

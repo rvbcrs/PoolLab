@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <esp_log.h>
+#include "ui/UI.h"
 
 #if defined(USE_JC3248W535)
 #include "jc3248w535.h"
@@ -151,6 +152,26 @@ void Esp32S3Board::lvglUnlock() {
 #elif defined(BOARD_ESP32S3_35)
     bsp_display_unlock();
 #endif
+}
+
+void Esp32S3Board::lvglWatchdogTick() {
+    uint32_t now_ms = millis();
+    if (now_ms < _watchdogNext) return;
+
+    if (_heartbeatMs != 0 && (now_ms - _heartbeatMs) > 8000) {
+        ESP_LOGW("UI", "S3 LVGL watchdog: heartbeat stalled, rebuilding UI");
+        if (lvglLock()) {
+            lv_obj_clean(lv_scr_act());
+            ui::build(false);
+            ui::updateValues();
+            lvglUnlock();
+            ESP_LOGI("UI", "S3 LVGL watchdog: rebuild complete");
+            _heartbeatMs = now_ms;
+        }
+        _watchdogNext = now_ms + 15000; // cool-down
+    } else {
+        _watchdogNext = now_ms + 2000;
+    }
 }
 
 } // namespace core

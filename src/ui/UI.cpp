@@ -1,5 +1,6 @@
 #include "UI.h"
 #include <Arduino.h>
+#include "boards/BoardSelect.h"
 #include <esp_log.h>
 #include <WiFi.h>
 #include <math.h>
@@ -305,6 +306,7 @@ void build(bool safeBaseline){
   int scr_h = (int)lv_disp_get_ver_res(NULL);
   int pad = 12;
   int col_gap = 12;
+  const core::UiConfig ucfg = getBoard().uiConfig();
 
   // Container with padding
   lv_obj_t *root = lv_obj_create(scr);
@@ -339,23 +341,14 @@ void build(bool safeBaseline){
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_shadow_width(card, 10, 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
-    #if defined(BOARD_ESP32P4_43)
-    lv_obj_set_size(card, cw, 220);  // Even taller for P4 with larger fonts and pump icons
-    #else
-    lv_obj_set_size(card, cw, 195);  // Increased from 160 to 195 for pump stats and spacing
-    #endif
+    lv_obj_set_size(card, cw, ucfg.cardHeight);
     return card;
   };
 
   lv_obj_t *card_ph = nullptr, *card_orp = nullptr, *card_tmp = nullptr;
   lv_coord_t inner_w = (scr_w - (pad*2)) - (pad*2);
 
-  // ESP32-P4 is wide enough for 3-card layout even if height is smaller
-  #if defined(BOARD_ESP32P4_43)
-  bool small_layout = false;
-  #else
-  bool small_layout = (scr_w <= 320) || (scr_h <= 180);
-  #endif
+  bool small_layout = !ucfg.forceThreeCards && ((scr_w <= 320) || (scr_h <= 180));
   if (small_layout) {
     // 2-tile layout for C6
     lv_coord_t cw = (inner_w - col_gap) / 2;
@@ -369,29 +362,13 @@ void build(bool safeBaseline){
     card_tmp = make_card(row, lv_palette_darken(LV_PALETTE_AMBER, 4), cw);
   }
 
-  // Use larger fonts for sensor values on P4 (48px for maximum readability)
-  #if defined(BOARD_ESP32P4_43)
-  const lv_font_t *value_font = &lv_font_montserrat_48;
-  const lv_font_t *stats_font = &lv_font_montserrat_14;
-  #else
-  const lv_font_t *value_font = &lv_font_montserrat_28;
-  const lv_font_t *stats_font = &lv_font_montserrat_12;
-  #endif
-  
-  // Icons + labels - adjust positions for P4 with larger fonts
-  #if defined(BOARD_ESP32P4_43)
-  const int value_y = 35;      // Higher up for 48px font
-  const int sub_lbl_y = 100;   // Lower for Target/Min/Max
-  const int sub_vals_y = 118;  // Lower for values
-  const int pump_stats_y = 140; // Lower for pump stats
-  const int unit_spacing = 6;   // Much closer spacing between value and unit for P4 (was 12)
-  #else
-  const int value_y = 44;
-  const int sub_lbl_y = 78;
-  const int sub_vals_y = 96;
-  const int pump_stats_y = 120;
-  const int unit_spacing = 6;
-  #endif
+  const lv_font_t *value_font = (ucfg.valueFontSize >= 48) ? &lv_font_montserrat_48 : &lv_font_montserrat_28;
+  const lv_font_t *stats_font = (ucfg.statsFontSize >= 14) ? &lv_font_montserrat_14 : &lv_font_montserrat_12;
+  const int value_y      = ucfg.valueY;
+  const int sub_lbl_y    = ucfg.subLblY;
+  const int sub_vals_y   = ucfg.subValsY;
+  const int pump_stats_y = ucfg.pumpStatsY;
+  const int unit_spacing = ucfg.unitSpacing;
   
   lv_obj_t *icon_ph = lv_img_create(card_ph); lv_img_set_src(icon_ph, &water_ph_32dp_E3E3E3_FILL0_wght400_GRAD0_opsz40); lv_obj_align(icon_ph, LV_ALIGN_TOP_LEFT, 0, 0); lv_obj_set_style_img_recolor_opa(icon_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(icon_ph, lv_color_white(), 0);
   lv_lbl_ph  = lv_label_create(card_ph);  lv_obj_set_style_text_color(lv_lbl_ph, lv_color_white(), 0);  lv_label_set_text(lv_lbl_ph, "--.--");  lv_obj_set_style_text_font(lv_lbl_ph, value_font, 0); lv_obj_align(lv_lbl_ph, LV_ALIGN_TOP_LEFT, 0, value_y);
@@ -401,12 +378,7 @@ void build(bool safeBaseline){
   // Pump stats labels (above pump icon, with descriptive text)
   lv_pump_ph_stats = lv_label_create(card_ph); lv_obj_set_style_text_color(lv_pump_ph_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_ph_stats, ""); lv_obj_set_style_text_font(lv_pump_ph_stats, stats_font, 0); lv_obj_align(lv_pump_ph_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_ph_stats, LV_OBJ_FLAG_HIDDEN);
   lv_pump_orp_stats = lv_label_create(card_orp); lv_obj_set_style_text_color(lv_pump_orp_stats, lv_palette_lighten(LV_PALETTE_GREY,2), 0); lv_label_set_text(lv_pump_orp_stats, ""); lv_obj_set_style_text_font(lv_pump_orp_stats, stats_font, 0); lv_obj_align(lv_pump_orp_stats, LV_ALIGN_TOP_LEFT, 0, pump_stats_y); lv_obj_add_flag(lv_pump_orp_stats, LV_OBJ_FLAG_HIDDEN);
-  // Pump active icons - position higher for P4 (away from text)
-  #if defined(BOARD_ESP32P4_43)
-  const int pump_icon_y = -10;  // Slightly higher for P4 to avoid text overlap (was -25)
-  #else
-  const int pump_icon_y = 0;    // Normal position for S3
-  #endif
+  const int pump_icon_y = ucfg.pumpIconY;
   lv_pump_ph = lv_img_create(card_ph); lv_img_set_src(lv_pump_ph, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_ph, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_ph, lv_color_white(), 0); lv_obj_align(lv_pump_ph, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_ph, LV_OBJ_FLAG_HIDDEN);
   lv_pump_orp = lv_img_create(card_orp); lv_img_set_src(lv_pump_orp, &water_pump_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24); lv_obj_set_style_img_recolor_opa(lv_pump_orp, LV_OPA_COVER, 0); lv_obj_set_style_img_recolor(lv_pump_orp, lv_color_white(), 0); lv_obj_align(lv_pump_orp, LV_ALIGN_BOTTOM_LEFT, 0, pump_icon_y); lv_obj_add_flag(lv_pump_orp, LV_OBJ_FLAG_HIDDEN);
   if (card_tmp) {
@@ -446,12 +418,7 @@ void build(bool safeBaseline){
     lv_obj_align(lv_lbl_ip, LV_ALIGN_BOTTOM_LEFT, 0, -24);
   }
 
-  // Info labels at bottom-left - slightly larger font for P4 but not too big
-  #if defined(BOARD_ESP32P4_43)
   const lv_font_t *info_font = &lv_font_montserrat_14;
-  #else
-  const lv_font_t *info_font = &lv_font_montserrat_14;
-  #endif
   
   // IP label (content width), placed near bottom-left above the speed dial with more spacing from cards
   lv_lbl_ip = lv_label_create(root); lv_obj_set_style_text_color(lv_lbl_ip, lv_palette_lighten(LV_PALETTE_GREY, 3), 0); lv_obj_set_style_text_font(lv_lbl_ip, info_font, 0); lv_label_set_long_mode(lv_lbl_ip, LV_LABEL_LONG_CLIP);
@@ -527,11 +494,7 @@ void updateValues(){
       // Dynamically reposition mV unit based on value width
       if (lv_lbl_orp_unit) {
         lv_obj_clear_flag(lv_lbl_orp_unit, LV_OBJ_FLAG_HIDDEN);
-        #if defined(BOARD_ESP32P4_43)
-        lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for P4 (was 12)
-        #else
-        lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for S3
-        #endif
+        lv_obj_align_to(lv_lbl_orp_unit, lv_lbl_orp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
       }
       // Colorize by thresholds
       int v = (int)(M.orpMv >= 0 ? (M.orpMv + 0.5f) : (M.orpMv - 0.5f));
@@ -555,11 +518,7 @@ void updateValues(){
       lv_label_set_text_static(lv_lbl_temp, buf_temp);
       // Dynamically reposition °C unit based on value width
       if (lv_lbl_temp_unit) {
-        #if defined(BOARD_ESP32P4_43)
-        lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for P4 (was 12)
-        #else
-        lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);   // 6px spacing for S3
-        #endif
+        lv_obj_align_to(lv_lbl_temp_unit, lv_lbl_temp, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
       }
       if (lv_card_temp) {
         // Color thresholds: <15C blue, 15..25C amber, >25C red
@@ -631,12 +590,10 @@ void updateValues(){
       uint64_t chipid = ESP.getEfuseMac();
       char hostname[32];
       snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
-      // Format: IP + hostname on same line or separate based on screen size
-      #if defined(BOARD_ESP32P4_43)
-      snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d (%s.local)", ip[0], ip[1], ip[2], ip[3], hostname);
-      #else
-      snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-      #endif
+      if (getBoard().uiConfig().showHostnameInIp)
+        snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d (%s.local)", ip[0], ip[1], ip[2], ip[3], hostname);
+      else
+        snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
     } else {
       strncpy(buf_ip, "IP: --", sizeof(buf_ip) - 1);
     }
@@ -880,12 +837,8 @@ void showSettings(){
 
   // Zigbee mode toggle (for boards with HAS_ZIGBEE support)
   #if HAS_ZIGBEE
-  lv_obj_t *lblZigbee = lv_label_create(content); 
-  #if defined(BOARD_ESP32P4_43)
-  lv_label_set_text(lblZigbee, "Zigbee (via C6)");
-  #else
-  lv_label_set_text(lblZigbee, "Zigbee Mode");
-  #endif
+  lv_obj_t *lblZigbee = lv_label_create(content);
+  lv_label_set_text(lblZigbee, getBoard().uiConfig().zigbeeLabelText);
   lv_obj_align(lblZigbee, LV_ALIGN_TOP_LEFT, 0, 148);
   
   lv_obj_t *swZigbee = lv_switch_create(content);
