@@ -746,22 +746,27 @@ void updateValues(){
     lv_obj_set_style_text_color(lv_lbl_pump_orp_status, g_pumpOrp ? g_theme.accent : g_theme.text2, 0);
   }
 
-  // Refresh IP/SSID/hostname on each tick - thread-safe with static buffers
-  static char buf_ip[128] = "IP: --";
+  // Slow-tick: WiFi / NVS / Power calls are throttled to once every 10 ticks (~5 s).
+  // These APIs can block for multiple milliseconds, which stalls the LVGL task
+  // and causes the screen to freeze when called every 500 ms.
+  static int  slow_tick = 0;
+  static char buf_ip[128]  = "IP: --";
   static char buf_mqtt[96] = "MQTT: --";
   static char buf_ssid[96] = "SSID: --";
-  static char buf_bat[32] = {0};
+  static char buf_bat[32]  = {0};
   static char temp_str[80] = {0};
-  
+  const bool  do_slow = (slow_tick++ % 10 == 0);
+
   #if HAS_ZIGBEE
-  // Check current mode to show IP or Zigbee icon
-  ::core::Storage::Mode currentMode = ::g_storage.getMode(::core::Storage::MODE_WIFI_MQTT);
+  // Check current mode to show IP or Zigbee icon (cached via slow_tick)
+  static ::core::Storage::Mode currentMode = ::core::Storage::MODE_WIFI_MQTT;
+  if (do_slow) currentMode = ::g_storage.getMode(::core::Storage::MODE_WIFI_MQTT);
   if (currentMode == ::core::Storage::MODE_WIFI_MQTT) {
     // WiFi mode: show IP/SSID/MQTT, hide link icon
     if (lv_img_link) { lv_obj_add_flag(lv_img_link, LV_OBJ_FLAG_HIDDEN); }
   #endif
-  
-  if (lv_lbl_ip) {
+
+  if (lv_lbl_ip && do_slow) {
     if (WiFi.status() == WL_CONNECTED) {
       IPAddress ip = WiFi.localIP();
       // Get hostname
@@ -780,7 +785,7 @@ void updateValues(){
     lv_obj_clear_flag(lv_lbl_ip, LV_OBJ_FLAG_HIDDEN);
     #endif
   }
-  if (lv_lbl_mqtt) {
+  if (lv_lbl_mqtt && do_slow) {
     String host = ::g_storage.getMqttHost("");
     if (host.length() > 0) {
       strncpy(temp_str, host.c_str(), sizeof(temp_str) - 1);
@@ -794,7 +799,7 @@ void updateValues(){
     lv_obj_clear_flag(lv_lbl_mqtt, LV_OBJ_FLAG_HIDDEN);
     #endif
   }
-  if (lv_lbl_ssid) {
+  if (lv_lbl_ssid && do_slow) {
     if (WiFi.status() == WL_CONNECTED) {
       strncpy(temp_str, WiFi.SSID().c_str(), sizeof(temp_str) - 1);
       temp_str[sizeof(temp_str) - 1] = '\0';
@@ -808,8 +813,8 @@ void updateValues(){
     #endif
   }
 
-  // Update battery (always)
-  if (lv_lbl_battery && Power.isConnected()) {
+  // Update battery (throttled: Power I2C calls can block)
+  if (lv_lbl_battery && do_slow && Power.isConnected()) {
       int level = Power.getBatteryLevel();
       bool charging = Power.isCharging();
       const char* battSym = LV_SYMBOL_BATTERY_FULL;
