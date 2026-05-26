@@ -245,6 +245,10 @@ with BuildPart() as tb6612_mount:
 ctp_w = 23
 ctp_l = 11.5
 ctp_h = 4
+# Thin outer right-wall lip carrying the USB-C slot; the board's +X edge sinks into
+# the wall and butts the back of this faceplate so the socket sits near-flush.
+# (Validated with designs/ctp09_mount_test.py.)
+ctp_faceplate_t = 0.6
 
 with BuildPart() as ctp09_def:
     Box(ctp_w, ctp_l, ctp_h, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -252,62 +256,62 @@ with BuildPart() as ctp09_def:
 ctp09_centered = ctp09_def.part
 
 # Mount Logic: Snap-fit clip mount for CTP09 (PD trigger), USB-C facing +X.
-# -X fixed guide wall (inner stop).
-# ±Y: 2 cantilever snap clips each side (4 clips total) hold the board down.
-# +X (USB-C side): open — the board's USB-C edge butts against the case right
-#   wall, which is the +X stop, so no retention tabs are needed on this side.
+# Geometry validated with the standalone print test (designs/ctp09_mount_test.py):
+#   - clips clamp the bare PCB (~1mm) with a small gap so the board tilts in
+#   - thick/wide clip arms for strength
+#   - clip pairs straddle the side-mounted diode (no clip lands on it)
+#   - -X back wall has a central slot for the power wires
+#   - +X (USB-C) side is open; the board edge butts the right-wall faceplate (the
+#     +X stop), so no retention tabs are needed here.
 with BuildPart() as ctp09_mount:
-    ctp_standoff_z = 3      # clearance under PCB
-    wall_t  = 2.0           # fixed guide wall thickness (+X side)
-    guide_h = 1.5           # +X wall height above PCB top
-    arm_t   = 1.1           # Y-clip arm thickness
-    hook_d  = 0.65          # Y-clip hook barb overhang
-    hook_h  = 1.2           # Y-clip hook zone height
-    clr     = 0.30          # lateral fit clearance per side
+    ctp_standoff_z = 1.5     # clearance under the board (board underside rests here)
+    clamp_t = 1.0            # bare-PCB height the clips grab at
+    wall_t  = 2.0            # back/guide wall thickness (-X side)
+    guide_h = 1.0            # -X wall height above the clamp level
+    arm_t   = 1.8            # clip arm thickness (flex direction) - thick = strong
+    hook_d  = 0.7            # hook barb overhang onto the board top
+    hook_h  = 1.0            # hook barb zone height
+    clr     = 0.30           # lateral fit clearance per side
+    clamp_gap = 0.5          # gap under the hook so the board can be tilted in
+    clip_cx = [2.0, 7.5]     # clip-pair X positions (straddle the diode at X<-2)
+    clip_w  = 4.5            # clip width along X
+    wire_slot_w = 8.0        # central -X-wall opening for the power wires
 
-    pcb_h   = ctp_h
     pkt_w   = ctp_w + 2 * clr
     pkt_l   = ctp_l + 2 * clr
-    pcb_top = ctp_standoff_z + pcb_h
-    arm_h   = pcb_top + hook_h + arm_t + hook_d
+    pcb_top = ctp_standoff_z + clamp_t
+    hook_z  = pcb_top + clamp_gap
+    arm_h   = hook_z + hook_h + arm_t + hook_d
 
-    # 1. Floor platform
-    #    -X direction: extended by wall_t to sit under the fixed guide wall
-    #    ±Y direction: extended by arm_t to anchor the ±Y clip bases
-    #    +X direction: no extension (USB-C access toward the case wall)
+    # 1. Floor platform (extends -X under the back wall, ±Y to anchor clip bases)
     with Locations((-wall_t / 2, 0, 0)):
         Box(pkt_w + wall_t, pkt_l + 2 * arm_t, ctp_standoff_z,
             align=(Align.CENTER, Align.CENTER, Align.MIN))
 
-    # 2. Left wall (-X fixed guide) — inner stop; resists the board being pushed
-    #    inward when a cable is plugged in. The case's right wall is the +X stop.
+    # 2. -X back wall (inner stop) WITH a central wire slot (leaves two corner ribs)
     with Locations((-(pkt_w / 2 + wall_t / 2), 0, ctp_standoff_z)):
-        Box(wall_t, pkt_l, pcb_h + guide_h,
+        Box(wall_t, pkt_l, clamp_t + guide_h,
             align=(Align.CENTER, Align.CENTER, Align.MIN))
+    with Locations((-(pkt_w / 2 + wall_t / 2), 0, ctp_standoff_z)):
+        Box(wall_t + 2, wire_slot_w, clamp_t + guide_h + 2,
+            align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
-    # 3. Snap clips on ±Y sides – 2 arms per side at ±pkt_w/4 in X
-    arm_w = min(4.0, pkt_w / 3)
-
+    # 3. Snap clips on ±Y sides – clip pairs at clip_cx, straddling the diode
     for sign, iy in [(-1, -pkt_l / 2), (+1, +pkt_l / 2)]:
-        for cx in [-pkt_w / 4, pkt_w / 4]:
+        for cx in clip_cx:
             with BuildSketch(Plane.YZ.offset(cx)):
                 with BuildLine():
                     Polyline(
-                        (iy,                    0),
-                        (iy + sign * arm_t,     0),
-                        (iy + sign * arm_t,     arm_h),
-                        (iy - sign * hook_d,    pcb_top + hook_h),
-                        (iy - sign * hook_d,    pcb_top),
-                        (iy,                    pcb_top),
+                        (iy,                 0),
+                        (iy + sign * arm_t,  0),
+                        (iy + sign * arm_t,  arm_h),
+                        (iy - sign * hook_d, hook_z + hook_h),
+                        (iy - sign * hook_d, hook_z),
+                        (iy,                 hook_z),
                         close=True,
                     )
                 make_face()
-            extrude(amount=arm_w, both=True)
-
-    # 4. USB-C side (+X): no retention tabs needed.
-    #    The board's +X (USB-C) edge butts against the case's right inner wall,
-    #    which acts as the +X stop. The -X fixed guide wall is the inner stop and
-    #    the ±Y snap clips hold the board down — together they fully retain it.
+            extrude(amount=clip_w / 2, both=True)
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")
@@ -476,10 +480,10 @@ tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness))
 # PD Trigger — RIGHT WALL (+X), USB-C facing outward through the wall.
 # User request: the PD module's USB-C must be reachable from outside so a cable
 # plugs directly into the socket. It lies flat on the floor against the right wall.
-# Board +X edge (USB-C) sits ~0.5 mm inside the inner wall face (X = length/2 - wall).
-# center_x = (inner wall) - clr_gap - ctp_w/2
+# Board +X edge sinks into the right wall and butts the back of the faceplate, so
+# the edge sits at (outer wall - faceplate_t). center_x = that - ctp_w/2.
 ctp09_loc_y = 0  # same Y as the old panel-mount USB
-ctp09_loc_x = (length/2 - wall_thickness) - 0.5 - ctp_w/2
+ctp09_loc_x = (length/2 - ctp_faceplate_t) - ctp_w/2
 ctp09_loc = Location((ctp09_loc_x, ctp09_loc_y, -height/2 + wall_thickness))
 
 # Screen: On top of the Lid
@@ -529,18 +533,35 @@ with BuildPart() as case:
          with Locations((0,0, height/2)):
              Cylinder(radius=post_hole_r, height=15, align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
     
-    # USB-C Cutout (Right Wall, +X) — direct cable access into the PD module socket
-    # Rectangular slot with rounded corners, centred on the module's USB-C socket.
-    # Socket centre height = floor + standoff + half board thickness.
-    usbc_cut_w = 13.0   # Y width  (room for most USB-C cable plug housings)
-    usbc_cut_h = 6.5    # Z height
-    usbc_cut_z = (-height/2 + wall_thickness) + ctp_standoff_z + ctp_h/2
+    # USB-C access (Right Wall, +X) — matches the validated mount test fixture.
+    # A thin outer faceplate carries a connector-sized slot; behind it an inner
+    # pocket (PCB-edge sized) lets the wide board front edge sink into the wall so
+    # the socket sits near-flush, while the module (11.5mm) can't pass the slot.
+    usbc_cut_w = 9.5     # Y width of the connector slot
+    usbc_cut_h = 3.6     # Z height
+    usbc_cut_fil = 0.8   # corner radius
+    floor_inner_z = -height/2 + wall_thickness
+    # socket centre = floor + standoff + 2.5 (socket sits 2.5mm above board underside)
+    usbc_cut_z = floor_inner_z + ctp_standoff_z + 2.5
+    wall_inner_x = length/2 - wall_thickness
+    board_edge_x = ctp09_loc_x + ctp_w/2          # = length/2 - ctp_faceplate_t
+
+    # Inner pocket: from a bit inside the case up to the faceplate back (board edge)
+    pocket_w  = ctp_l + 1.0
+    pocket_x0 = wall_inner_x - 1.0
+    pocket_x1 = board_edge_x
+    pocket_z0 = floor_inner_z + ctp_standoff_z
+    pocket_z1 = usbc_cut_z + usbc_cut_h / 2 + 0.5
+    with Locations(((pocket_x0 + pocket_x1) / 2, ctp09_loc_y, (pocket_z0 + pocket_z1) / 2)):
+        Box(pocket_x1 - pocket_x0, pocket_w, pocket_z1 - pocket_z0,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
+
+    # Connector slot through the faceplate (rounded rect, centred on the socket)
     with BuildSketch(Plane.YZ.offset(length/2)):
         with Locations((ctp09_loc_y, usbc_cut_z)):
             usbc_rect = Rectangle(usbc_cut_w, usbc_cut_h)
-            fillet(usbc_rect.vertices(), radius=1.5)
-    # Cut inward (-X) through the full wall thickness (+ margin)
-    extrude(amount=-(wall_thickness + 2), mode=Mode.SUBTRACT)
+            fillet(usbc_rect.vertices(), radius=usbc_cut_fil)
+    extrude(amount=-(wall_thickness + 1), mode=Mode.SUBTRACT)
 
     # GX12 Cutout
     with Locations(gx12_cutout_loc):

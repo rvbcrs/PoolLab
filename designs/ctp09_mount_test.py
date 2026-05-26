@@ -50,7 +50,10 @@ arm_t        = 1.8    # clip arm thickness (flex direction) - thicker = stronger
 hook_d       = 0.7    # hook barb overhang onto the board top
 hook_h       = 1.0    # hook barb zone height
 clr          = 0.30   # lateral fit clearance per side
-clamp_gap    = 0.0    # vertical play under the hook (0 = snug)
+clamp_gap    = 0.5    # gap under the hook above the PCB top. Must be > 0 so the
+                      #   board can be tilted in at an angle - 0 made insertion
+                      #   impossible. 0.5 = easy tilt-in with minimal play (hook at
+                      #   Z=3.0; the earlier too-high version was 3.5 = 1mm play).
 # A diode stands ~2mm proud on one long edge, centred ~19mm from the USB-C end
 # (X ~ -7.5, body spanning roughly X[-9.5..-5.5]). The clips straddle it: they
 # sit on the clear band between the diode and the USB-C wall. Same X on both
@@ -155,7 +158,7 @@ test_part.label = "CTP09 Mount Test"
 export_stl(test_part, "designs/ctp09_mount_test.stl")
 export_step(test_part, "designs/ctp09_mount_test.step")
 print("Exported: designs/ctp09_mount_test.stl + .step")
-print(f"  clips clamp at Z={pcb_top:.1f} | USB-C slot {usbc_cut_w}x{usbc_cut_h} centred Z={usbc_cut_z:.1f}")
+print(f"  PCB top Z={pcb_top:.1f} | hook underside Z={hook_z:.1f} (gap {clamp_gap}) | USB-C slot {usbc_cut_w}x{usbc_cut_h} @Z={usbc_cut_z:.1f}")
 print(f"  fixture ~ X[{floor_x_min:.1f}..{wall_outer_x:.1f}] Y[±{fixture_y/2:.1f}] Z[{base_z:.1f}..{wall_top_z:.1f}]")
 
 # Optional live preview (ignored if no viewer running)
