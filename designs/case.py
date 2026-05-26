@@ -1,5 +1,11 @@
 from build123d import *
 from ocp_vscode import show, show_object, set_port, set_defaults
+import os
+
+# Run from the repo root regardless of how the script is launched, so the
+# relative "designs/..." paths below resolve (VS Code's Run button sets the
+# cwd to the file's folder, which breaks them otherwise).
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Define parameters
 wall_thickness = 2
@@ -100,13 +106,9 @@ lm2596_hole_pts = find_hole_locations(imported_lm2596, min_r=1.4, max_r=1.6)
 # Filter to 2 diagonal corners (Top-Left, Bottom-Right)
 lm2596_hole_pts = filter_corner_holes(lm2596_hole_pts, count=2) 
 
-# === 1. Define USB Socket Part (from STEP file) ===
-imported_usb = import_step("designs/USB-C.stp")
-usb_bbox = imported_usb.bounding_box()
-# Center the USB socket
-usb_centered = imported_usb.moved(Location((-usb_bbox.center().X, -usb_bbox.center().Y, -usb_bbox.center().Z)))
-# Cutout diameter for USB (threaded part)
-usb_thread_d = 22 # Keep for cutout dimensions
+# === 1. Panel-mount USB-C socket — REMOVED ===
+# User request: the panel-mount USB-C on the +X wall is cancelled. The PD trigger
+# module (CTP09) now provides USB-C access directly through the right wall instead.
 
 
 # Re-define constants used for placement
@@ -249,12 +251,11 @@ with BuildPart() as ctp09_def:
 
 ctp09_centered = ctp09_def.part
 
-# Mount Logic: Snap-fit clip mount for CTP09.
-# +X fixed guide wall.
-# ±Y: 2 cantilever snap clips each side (4 clips total).
-# -X (USB-C side): 2 small retention tabs at the Y-corners to prevent -X slide.
-#   Tabs flex in -X direction during top-down PCB insertion, then snap back.
-#   They sit at the ±Y extremes, clear of the USB-C connector in the centre.
+# Mount Logic: Snap-fit clip mount for CTP09 (PD trigger), USB-C facing +X.
+# -X fixed guide wall (inner stop).
+# ±Y: 2 cantilever snap clips each side (4 clips total) hold the board down.
+# +X (USB-C side): open — the board's USB-C edge butts against the case right
+#   wall, which is the +X stop, so no retention tabs are needed on this side.
 with BuildPart() as ctp09_mount:
     ctp_standoff_z = 3      # clearance under PCB
     wall_t  = 2.0           # fixed guide wall thickness (+X side)
@@ -271,15 +272,16 @@ with BuildPart() as ctp09_mount:
     arm_h   = pcb_top + hook_h + arm_t + hook_d
 
     # 1. Floor platform
-    #    +X direction: extended by wall_t to sit under the fixed wall
+    #    -X direction: extended by wall_t to sit under the fixed guide wall
     #    ±Y direction: extended by arm_t to anchor the ±Y clip bases
-    #    -X direction: no extension (USB-C access)
-    with Locations((wall_t / 2, 0, 0)):
+    #    +X direction: no extension (USB-C access toward the case wall)
+    with Locations((-wall_t / 2, 0, 0)):
         Box(pkt_w + wall_t, pkt_l + 2 * arm_t, ctp_standoff_z,
             align=(Align.CENTER, Align.CENTER, Align.MIN))
 
-    # 2. Right wall (+X fixed guide)
-    with Locations((pkt_w / 2 + wall_t / 2, 0, ctp_standoff_z)):
+    # 2. Left wall (-X fixed guide) — inner stop; resists the board being pushed
+    #    inward when a cable is plugged in. The case's right wall is the +X stop.
+    with Locations((-(pkt_w / 2 + wall_t / 2), 0, ctp_standoff_z)):
         Box(wall_t, pkt_l, pcb_h + guide_h,
             align=(Align.CENTER, Align.CENTER, Align.MIN))
 
@@ -302,37 +304,10 @@ with BuildPart() as ctp09_mount:
                 make_face()
             extrude(amount=arm_w, both=True)
 
-    # 4. USB-C side retention tabs (-X corners)
-    #    Two small snap-tabs at the ±Y corners of the -X PCB edge.
-    #    Each tab flexes outward in -X when PCB is pressed in, then snaps back
-    #    over the PCB's -X top edge to prevent the board sliding toward the cable.
-    #    Positioned outside the USB-C connector span (≈9 mm centred → ±4.5 mm).
-    tab_arm_t  = 0.9    # thin so it flexes easily in X
-    tab_hook_d = 0.50   # small overhang – needs to clear only clr=0.3 mm
-    tab_hook_h = 1.0    # hook zone height
-    tab_arm_w  = 1.0    # narrow tab so it fits in the corner next to USB-C
-    tab_arm_h  = pcb_top + tab_hook_h + tab_arm_t + tab_hook_d
-
-    ix = -pkt_w / 2    # inner -X face of PCB pocket
-
-    # Place tab centres just inside the ±Y pocket edges, clear of USB-C
-    tab_cy = pkt_l / 2 - tab_arm_w / 2 - 0.2
-
-    for cy_tab in [-tab_cy, tab_cy]:
-        # Profile in XZ plane – arm body outward (-X), hook inward (+X)
-        with BuildSketch(Plane.XZ.offset(cy_tab)):
-            with BuildLine():
-                Polyline(
-                    (ix,               0),
-                    (ix - tab_arm_t,   0),                       # outer base
-                    (ix - tab_arm_t,   tab_arm_h),               # outer top
-                    (ix + tab_hook_d,  pcb_top + tab_hook_h),    # hook tip top
-                    (ix + tab_hook_d,  pcb_top),                 # hook tip bottom
-                    (ix,               pcb_top),                 # inner at PCB surface
-                    close=True,
-                )
-            make_face()
-        extrude(amount=tab_arm_w, both=True)
+    # 4. USB-C side (+X): no retention tabs needed.
+    #    The board's +X (USB-C) edge butts against the case's right inner wall,
+    #    which acts as the +X stop. The -X fixed guide wall is the inner stop and
+    #    the ±Y snap clips hold the board down — together they fully retain it.
 
 # === 3d. Define GX12 Connector ===
 imported_gx12 = import_step("designs/gx12-4p-m.stp")
@@ -437,10 +412,7 @@ with BuildPart() as screen_def:
 
 # === 5. Placements & Layout ===
 
-# USB: Right Side (X+ Face).
-# User request: Flush mount. 
-# Original: length/2. previous -3. User says "nog 5mm", so -8 total.
-usb_loc = Location((length/2 - 8, 0, 0)) * Rotation(0, -90, 0) * Rotation(180, 0, 0) * Rotation(0, 0, 90)
+# USB panel-mount: removed (see top of file). PD module now uses the right wall.
 
 # GX12: "Next to" USB.
 # User feedback: "Niet dwars". Needs rotation around insertion axis.
@@ -501,10 +473,14 @@ left_module_x = -30
 tb6612_loc_y = -55
 tb6612_loc = Location((left_module_x, tb6612_loc_y, -height/2 + wall_thickness)) * Rotation(0, 0, 90) 
 
-# PD Trigger (Rear-Left)
-# Moving North to Y=-32 to maintain gap with TB6612.
-ctp09_loc_y = -32 
-ctp09_loc = Location((left_module_x, ctp09_loc_y, -height/2 + wall_thickness)) 
+# PD Trigger — RIGHT WALL (+X), USB-C facing outward through the wall.
+# User request: the PD module's USB-C must be reachable from outside so a cable
+# plugs directly into the socket. It lies flat on the floor against the right wall.
+# Board +X edge (USB-C) sits ~0.5 mm inside the inner wall face (X = length/2 - wall).
+# center_x = (inner wall) - clr_gap - ctp_w/2
+ctp09_loc_y = 0  # same Y as the old panel-mount USB
+ctp09_loc_x = (length/2 - wall_thickness) - 0.5 - ctp_w/2
+ctp09_loc = Location((ctp09_loc_x, ctp09_loc_y, -height/2 + wall_thickness))
 
 # Screen: On top of the Lid
 # Screen Z=0 (Rim Bottom) aligns with Lid Top Surface.
@@ -553,10 +529,19 @@ with BuildPart() as case:
          with Locations((0,0, height/2)):
              Cylinder(radius=post_hole_r, height=15, align=(Align.CENTER, Align.CENTER, Align.MAX), mode=Mode.SUBTRACT)
     
-    # USB Cutout
-    with Locations(usb_loc):
-        Cylinder(radius=usb_thread_d/2, height=20, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
-        
+    # USB-C Cutout (Right Wall, +X) — direct cable access into the PD module socket
+    # Rectangular slot with rounded corners, centred on the module's USB-C socket.
+    # Socket centre height = floor + standoff + half board thickness.
+    usbc_cut_w = 13.0   # Y width  (room for most USB-C cable plug housings)
+    usbc_cut_h = 6.5    # Z height
+    usbc_cut_z = (-height/2 + wall_thickness) + ctp_standoff_z + ctp_h/2
+    with BuildSketch(Plane.YZ.offset(length/2)):
+        with Locations((ctp09_loc_y, usbc_cut_z)):
+            usbc_rect = Rectangle(usbc_cut_w, usbc_cut_h)
+            fillet(usbc_rect.vertices(), radius=1.5)
+    # Cut inward (-X) through the full wall thickness (+ margin)
+    extrude(amount=-(wall_thickness + 2), mode=Mode.SUBTRACT)
+
     # GX12 Cutout
     with Locations(gx12_cutout_loc):
         Cylinder(radius=gx12_cutout_d/2, height=20, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
@@ -762,7 +747,6 @@ with BuildPart() as lm_mount:
              Cylinder(radius=1.2, height=2, align=(Align.CENTER, Align.CENTER, Align.MIN))
 
 # === 8. Ghosts & Show ===
-usb_ghost = usb_centered.moved(usb_loc)
 sensor1_ghost = ph_sensor_centered.moved(sensor1_loc)
 sensor2_ghost = ph_sensor_centered.moved(sensor2_loc)
 lm2596_ghost = lm2596_centered.moved(lm2596_loc)
@@ -1062,10 +1046,6 @@ ctp09_export = Part(ctp09_ghost)
 ctp09_export.label = "CTP09"
 ctp09_export.color = Color("Red") # PCB Color
 
-usb_export = Part(usb_ghost)
-usb_export.label = "USB"
-usb_export.color = Color("Silver")
-
 sensor1_export = Part(sensor1_ghost)
 sensor1_export.label = "Sensor1"
 sensor1_export.color = Color("Green") # PCB Color
@@ -1110,7 +1090,7 @@ export_step(screen_text_export, "designs/lid_text.step")
 print("Exports Complete: designs/case.stl, designs/lid.stl, designs/lid_text.stl")
 
 
-assembly = Compound(children=[case_export, lid_export, ctp09_export, usb_export, sensor1_export, sensor2_export, lm2596_export, 
+assembly = Compound(children=[case_export, lid_export, ctp09_export, sensor1_export, sensor2_export, lm2596_export,
                             screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
                             tb6612_export, gx12_export])
 assembly.label = "PoolLab_Assembly_V7"
@@ -1119,13 +1099,13 @@ print("Full assembly exported: designs/full_assembly_v7.step")
 
 # All Objects - Names and alphas for visualization
 # Using GHOSTS for imported parts (to keep native STEP colors)
-show(case_export, lid_export, ctp09_ghost, usb_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost, 
-     screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
+show(case_export, lid_export, ctp09_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost,
+     screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export,
      tb6612_ghost, gx12_ghost,
-     names=["Case", "Lid", "CTP09", "USB", "Sensor1", "Sensor2", "LM2596", 
-            "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts", 
+     names=["Case", "Lid", "CTP09", "Sensor1", "Sensor2", "LM2596",
+            "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts",
             "TB6612", "GX12"],
-     alphas=[0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+     alphas=[0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
 
 # DEBUG EXPORT CTP09
 ctp_debug_assembly = Compound(children=[ctp09_ghost, ctp09_mount_part])
