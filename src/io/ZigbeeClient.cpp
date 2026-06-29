@@ -62,11 +62,11 @@ bool ZigbeeClient::begin(const ZigbeeConfig& cfg) {
 void ZigbeeClient::_setupEndpoints(bool eraseNvs) {
   if (_started) return;
 
-  _tempSensor.setManufacturerAndModel("PoolLab", "Pool Temperature");
+  _tempSensor.setManufacturerAndModel("Pura", "Pool Temperature");
   _tempSensor.setMinMaxValue(0, 60);
-  _ph.setManufacturerAndModel("PoolLab", "Pool pH");
+  _ph.setManufacturerAndModel("Pura", "Pool pH");
   _ph.setMinMaxValue(0.0f, 14.0f);
-  _orp.setManufacturerAndModel("PoolLab", "Pool ORP");
+  _orp.setManufacturerAndModel("Pura", "Pool ORP");
   _orp.setMinMaxValue(-2000, 2000);
 
   _phMinEp.addAnalogOutput();

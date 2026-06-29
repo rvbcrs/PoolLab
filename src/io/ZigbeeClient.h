@@ -73,7 +73,7 @@ public:
 #endif
 
 private:
-  static constexpr const char* PREF_NS    = "poollab";
+  static constexpr const char* PREF_NS    = "pura";
   static constexpr const char* PREF_PAIR  = "zb_pair";
   static constexpr const char* PREF_BOUND = "zb_bound";
 

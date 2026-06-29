@@ -1,0 +1,14 @@
+Designator,Comment,Footprint,LCSC Part #,Note
+J1,USB-C 16P,TYPE-C-31-M-12,C2765186,hand-solder
+U1,CH224K,ESSOP-10,C970725,hand-solder
+U2,LM2596S-5.0,TO-263-5,C347421,hand-solder
+U3,ADS1115,VSSOP-10,C468683,hand-solder
+U4,TB6612FNG,SSOP-24,C141517,hand-solder
+U6,ADUM1250,SOIC-8,C13839,hand-solder
+R_CFG2,0R,R0402,C106231,hand-solder
+R_ADDR,0R,R0402,C106231,hand-solder
+C_IN,100uF,C1210,C49066,hand-solder
+C_OUT,100uF,C1210,C49066,hand-solder
+L1,33uH,1210,C394994,hand-solder
+LED1,green LED,0402,C434449,hand-solder
+LED2,blue LED,0402,C434447,hand-solder

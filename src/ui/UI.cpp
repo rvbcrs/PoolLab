@@ -360,7 +360,7 @@ void build(bool safeBaseline){
 
   // Static app title (no live update needed)
   { lv_obj_t *ttl = lv_label_create(statusBar);
-    lv_label_set_text(ttl, "PoolLab");
+    lv_label_set_text(ttl, "Pura");
     lv_obj_set_style_text_color(ttl, g_theme.text, 0);
     lv_obj_set_style_text_font(ttl, &lv_font_montserrat_14, 0);
     lv_obj_align(ttl, LV_ALIGN_LEFT_MID, 8, 0); }
@@ -772,7 +772,7 @@ void updateValues(){
       // Get hostname
       uint64_t chipid = ESP.getEfuseMac();
       char hostname[32];
-      snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+      snprintf(hostname, sizeof(hostname), "pura-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
       if (getBoard().uiConfig().showHostnameInIp)
         snprintf(buf_ip, sizeof(buf_ip), "IP: %d.%d.%d.%d (%s.local)", ip[0], ip[1], ip[2], ip[3], hostname);
       else

@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "Pura Libs") (type "KiCad") (uri "/Users/rvbcrs/GitHub/PoolLab/pcb/pura-mainboard-noroute.kicad") (options "") (descr "Pura Libs"))
+)

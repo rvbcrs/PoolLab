@@ -1,0 +1,15 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,10.0.4*%
+%TF.CreationDate,2026-06-25T21:32:30+02:00*%
+%TF.ProjectId,pura-mainboard-noroute,70757261-2d6d-4616-996e-626f6172642d,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Component,L2,Bot*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 10.0.4) date 2026-06-25 21:32:30*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 APERTURE END LIST*
+M02*

@@ -1,5 +1,6 @@
 #include "MqttClient.h"
 #include <Arduino.h>
+#include <WiFi.h>
 
 namespace io {
 
@@ -91,20 +92,38 @@ void MqttClient::onMessage(char* topic, uint8_t* payload, unsigned int length) {
 void MqttClient::publishDiscoveryOnce() {
   if (_announced || !_client.connected()) return;
   if (_debug) ESP_LOGI("MQTT", "Publishing HA discovery...");
-  String ph;   ph.reserve(160);
+
+  // Shared device block: HA groups entities into a device by matching identifiers.
+  // Every entity must carry this same block, else the sensors appear unlinked.
+  char cpuid[13];
+  uint64_t chip = ESP.getEfuseMac(); // unique per-chip eFuse ID
+  snprintf(cpuid, sizeof(cpuid), "%012llX", chip);
+  String dev; dev.reserve(240);
+  dev  = F(",\"device\":{\"identifiers\":[\"pura_");
+  dev += cpuid;
+  dev += F("\"],\"name\":\"Pura_");
+  dev += cpuid;
+  dev += F("\",\"manufacturer\":\"Ramon\",\"model\":\"ESP32 Pura\",\"configuration_url\":\"http://");
+  dev += WiFi.localIP().toString();
+  dev += F("\"}}");
+
+  String ph;   ph.reserve(360);
   ph   = F("{\"name\":\"Pool pH\",\"state_topic\":\"");
   ph  += TOPIC_STATE_PH;
-  ph  += F("\",\"unit_of_measurement\":\"pH\",\"unique_id\":\"pool_ph\",\"icon\":\"mdi:beaker-outline\"}");
+  ph  += F("\",\"unit_of_measurement\":\"pH\",\"unique_id\":\"pool_ph\",\"icon\":\"mdi:beaker-outline\"");
+  ph  += dev;
 
-  String orp;  orp.reserve(160);
+  String orp;  orp.reserve(360);
   orp  = F("{\"name\":\"Pool ORP\",\"state_topic\":\"");
   orp += TOPIC_STATE_ORP;
-  orp += F("\",\"unit_of_measurement\":\"mV\",\"unique_id\":\"pool_orp\",\"icon\":\"mdi:flash\"}");
+  orp += F("\",\"unit_of_measurement\":\"mV\",\"unique_id\":\"pool_orp\",\"icon\":\"mdi:flash\"");
+  orp += dev;
 
-  String temp; temp.reserve(200);
+  String temp; temp.reserve(400);
   temp = F("{\"name\":\"Pool Temp\",\"state_topic\":\"");
   temp+= TOPIC_STATE_TEMP;
-  temp+= F("\",\"unit_of_measurement\":\"°C\",\"device_class\":\"temperature\",\"unique_id\":\"pool_temp\"}");
+  temp+= F("\",\"unit_of_measurement\":\"°C\",\"device_class\":\"temperature\",\"unique_id\":\"pool_temp\"");
+  temp+= dev;
   
   _client.publish(DISCOVERY_PH, ph.c_str(), true);
   _client.publish(DISCOVERY_ORP, orp.c_str(), true);

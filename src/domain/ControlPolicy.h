@@ -74,6 +74,10 @@ public:
   PumpStats getM1Stats() const { return _m1Stats; }
   PumpStats getM2Stats() const { return _m2Stats; }
   
+  // Restore persisted volumes after boot
+  void restoreM1Volumes(float total, float daily){ _m1Stats.totalVolumeMl = total; _m1Stats.dailyVolumeMl = daily; }
+  void restoreM2Volumes(float total, float daily){ _m2Stats.totalVolumeMl = total; _m2Stats.dailyVolumeMl = daily; }
+
   // Reset pump statistics
   void resetM1Total() { _m1Stats.totalVolumeMl = 0.0f; }  // For tank changes
   void resetM2Total() { _m2Stats.totalVolumeMl = 0.0f; }
@@ -111,6 +115,8 @@ private:
   uint32_t _lastOrpSensorMs = 0;
   float _lastValidPh = 7.0f;
   float _lastValidOrp = 400.0f;
+  bool _phPrimed = false;    // jump check only active after first valid reading
+  bool _orpPrimed = false;
   
   void updatePumpStats(PumpStats &stats, uint32_t &lastStartMs, uint8_t &lastSpeedPc,
                        bool isRunning, uint8_t speedPc, float flowRateMlPerMin);

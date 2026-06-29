@@ -1,0 +1,437 @@
+COMPONENTS:
+ - J1: TYPE_C_16PIN_2MD_073_
+ - U1: CH224K
+ - R_CC1: 5.1kΩ res0402 resistor
+ - R_CC2: 5.1kΩ res0402 resistor
+ - R_CFG2: 0Ω res0402 resistor
+ - C_VDD: 100nF 0402 capacitor
+ - C_IN: 220uF 1210 capacitor
+ - U2: LM2596S_5_0_UMW_
+ - C_OUT: 220uF 1210 capacitor
+ - D1: D1, source_component
+ - L1: L1, source_component
+ - C_DC_IN: 10uF 0603 capacitor
+ - U5: B0505S_1WR3
+ - C_DC_OUT: 10uF 0603 capacitor
+ - C_ISO1: 100nF 0402 capacitor
+ - U6: ADUM1250ARZ_RL7
+ - C_ISO2: 100nF 0402 capacitor
+ - R_SDA: 4.7kΩ res0402 resistor
+ - R_SCL: 4.7kΩ res0402 resistor
+ - U3: ADS1115IDGST
+ - C_ADS: 100nF 0402 capacitor
+ - R_ADDR: 0Ω res0402 resistor
+ - C_VM: 10uF 0603 capacitor
+ - U4: TB6612FNG_C_8_EL
+ - C_VCC: 100nF 0402 capacitor
+ - R_LED: 2.2kΩ res0402 resistor
+ - LED1: LED1, source_component
+ - R_LED2: 2.2kΩ res0402 resistor
+ - LED2: LED2, source_component
+ - J_ESP: J_ESP, source_component
+ - J_PROBE: J_PROBE, source_component
+ - J_M1: J_M1, source_component
+ - J_M2: J_M2, source_component
+ - J_12V: J_12V, source_component
+
+NET: R_CC1_pos
+  - J1 B5
+  - U1 CC1
+  - R_CC1 pin1
+
+NET: R_CC2_pos
+  - J1 A5
+  - U1 CC2
+  - R_CC2 pin1
+
+NET: R_CFG2_pos
+  - U1 CFG2
+  - R_CFG2 pin1
+
+NET: U2_OUT
+  - U2 OUT
+  - L1 pin1 (+)
+  - D1 pin2 (-)
+
+NET: LED1_pos
+  - R_LED pin2
+  - LED1 pin1 (+)
+
+NET: LED2_pos
+  - R_LED2 pin2
+  - LED2 pin1 (+)
+
+NET: U3_VDD
+  - C_ISO2 pin1 (+)
+  - U5 pin4
+  - U6 VDD2
+  - U3 VDD
+  - J_PROBE V5_ISO
+  - R_LED2 pin1
+  - C_DC_OUT pin1 (+)
+  - R_SDA pin2
+  - R_SCL pin2
+  - C_ADS pin1 (+)
+
+NET: U3_ADDR
+  - U3 ADDR
+  - R_ADDR pin1
+
+NET: AGND
+  - R_ADDR pin2
+  - C_ADS pin2 (-)
+  - C_ISO2 pin2 (-)
+  - C_DC_OUT pin2 (-)
+  - LED2 pin2 (-)
+  - U5 pin3
+  - U6 GND2
+  - U3 GND
+  - J_PROBE AGND
+
+NET: U3_SDA
+  - U3 SDA
+  - R_SDA pin1
+  - U6 SDA2
+
+NET: U3_SCL
+  - U3 SCL
+  - R_SCL pin1
+  - U6 SCL2
+
+NET: J_PROBE_PH_PO
+  - U3 AIN0
+  - J_PROBE PH_PO
+
+NET: J_PROBE_ORP_PO
+  - U3 AIN1
+  - J_PROBE ORP_PO
+
+NET: J_ESP_SDA
+  - J_ESP SDA
+  - U6 SDA1
+
+NET: J_ESP_SCL
+  - J_ESP SCL
+  - U6 SCL1
+
+NET: GND
+  - C_VCC pin2 (-)
+  - C_VM pin2 (-)
+  - C_ISO1 pin2 (-)
+  - C_DC_IN pin2 (-)
+  - LED1 pin2 (-)
+  - U2 EP
+  - U2 pin5
+  - C_OUT pin2 (-)
+  - D1 pin1 (+)
+  - C_IN pin2 (-)
+  - U2 GND
+  - C_VDD pin2 (-)
+  - R_CFG2 pin2
+  - R_CC2 pin2
+  - R_CC1 pin2
+  - U1 GND
+  - J1 A1B12
+  - J1 B1A12
+  - J1 EH1
+  - J1 EH2
+  - U4 GND
+  - U4 PGND11
+  - U4 PGND21
+  - J_ESP GND
+  - J_12V GNDP
+  - U6 GND1
+  - U5 pin1
+
+NET: U1_VDD
+  - C_IN pin1 (+)
+  - U1 VDD
+  - U1 VBUS
+  - C_VDD pin1 (+)
+  - J1 A4B9
+  - J1 B4A9
+  - U2 VIN
+  - U4 VM1
+  - J_12V VIN12
+  - C_VM pin1 (+)
+  - U4 VM2
+  - U4 VM3
+
+NET: U4_PWMA
+  - U4 PWMA
+  - J_ESP PWMA
+
+NET: U4_PWMB
+  - U4 PWMB
+  - J_ESP PWMB
+
+NET: U4_AIN1
+  - U4 AIN1
+  - J_ESP AIN1
+
+NET: U4_AIN2
+  - U4 AIN2
+  - J_ESP AIN2
+
+NET: U4_BIN1
+  - U4 BIN1
+  - J_ESP BIN1
+
+NET: U4_BIN2
+  - U4 BIN2
+  - J_ESP BIN2
+
+NET: U2_FB
+  - U4 STBY
+  - C_ISO1 pin1 (+)
+  - L1 pin2 (-)
+  - U2 FB
+  - C_OUT pin1 (+)
+  - U4 VCC
+  - J_ESP V5
+  - U6 VDD1
+  - U5 pin2
+  - R_LED pin1
+  - C_DC_IN pin1 (+)
+  - C_VCC pin1 (+)
+
+NET: U4_AO11
+  - U4 AO11
+  - J_M1 MA1
+
+NET: U4_AO21
+  - U4 AO21
+  - J_M1 MA2
+
+NET: U4_BO11
+  - U4 BO11
+  - J_M2 MB1
+
+NET: U4_BO21
+  - U4 BO21
+  - J_M2 MB2
+
+
+COMPONENT_PINS:
+J1 (TYPE_C_16PIN_2MD_073_)
+- pin1: NOT_CONNECTED
+- pin2: NOT_CONNECTED
+- pin3: NOT_CONNECTED
+- pin4: NOT_CONNECTED
+- pin5: NOT_CONNECTED
+- pin6: NOT_CONNECTED
+- pin7: NOT_CONNECTED
+- pin8: NOT_CONNECTED
+- pin9: NOT_CONNECTED
+- pin10: NOT_CONNECTED
+- pin11: NOT_CONNECTED
+- pin12: NOT_CONNECTED
+- pin13(EH1): NETS(GND)
+- pin14(EH2): NETS(GND)
+- pin15(pin13_alt1): NOT_CONNECTED
+- pin16(pin14_alt1): NOT_CONNECTED
+- pin17(A1B12): NETS(GND)
+- pin18(A4B9): NETS(U1_VDD)
+- pin19(B8): NOT_CONNECTED
+- pin20(A5): NETS(R_CC2_pos)
+- pin21(B7): NOT_CONNECTED
+- pin22(A6): NOT_CONNECTED
+- pin23(A7): NOT_CONNECTED
+- pin24(B6): NOT_CONNECTED
+- pin25(A8): NOT_CONNECTED
+- pin26(B5): NETS(R_CC1_pos)
+- pin27(B4A9): NETS(U1_VDD)
+- pin28(B1A12): NETS(GND)
+
+U1 (CH224K)
+- pin1(VDD): NETS(U1_VDD)
+- pin2(CFG2): NETS(R_CFG2_pos)
+- pin3(CFG3): NOT_CONNECTED
+- pin4(DP): NOT_CONNECTED
+- pin5(DM): NOT_CONNECTED
+- pin6(CC2): NETS(R_CC2_pos)
+- pin7(CC1): NETS(R_CC1_pos)
+- pin8(VBUS): NETS(U1_VDD)
+- pin9(CFG1): NOT_CONNECTED
+- pin10(PG): NOT_CONNECTED
+- pin11(GND): NETS(GND)
+
+R_CC1 (5.1kΩ res0402)
+- pin1(anode, pos, left): NETS(R_CC1_pos)
+- pin2(cathode, neg, right): NETS(GND)
+
+R_CC2 (5.1kΩ res0402)
+- pin1(anode, pos, left): NETS(R_CC2_pos)
+- pin2(cathode, neg, right): NETS(GND)
+
+R_CFG2 (0Ω res0402)
+- pin1(anode, pos, left): NETS(R_CFG2_pos)
+- pin2(cathode, neg, right): NETS(GND)
+
+C_VDD (100nF 0402)
+- pin1(pos, anode, left): NETS(U1_VDD)
+- pin2(neg, cathode, right): NETS(GND)
+
+C_IN (220uF 1210)
+- pin1(pos, anode, left): NETS(U1_VDD)
+- pin2(neg, cathode, right): NETS(GND)
+
+U2 (LM2596S_5_0_UMW_)
+- pin1(VIN): NETS(U1_VDD)
+- pin2(OUT): NETS(U2_OUT)
+- pin3(GND): NETS(GND)
+- pin4(FB): NETS(U2_FB)
+- pin5: NETS(GND)
+- pin6(EP): NETS(GND)
+
+C_OUT (220uF 1210)
+- pin1(pos, anode, left): NETS(U2_FB)
+- pin2(neg, cathode, right): NETS(GND)
+
+D1 (SS34)
+- pin1(pos, anode, left): NETS(GND)
+- pin2(neg, cathode, right): NETS(U2_OUT)
+
+L1
+- pin1(anode, pos, left): NETS(U2_OUT)
+- pin2(cathode, neg, right): NETS(U2_FB)
+
+C_DC_IN (10uF 0603)
+- pin1(pos, anode, left): NETS(U2_FB)
+- pin2(neg, cathode, right): NETS(GND)
+
+U5 (B0505S_1WR3)
+- pin1: NETS(GND)
+- pin2: NETS(U2_FB)
+- pin3: NETS(AGND)
+- pin4: NETS(U3_VDD)
+
+C_DC_OUT (10uF 0603)
+- pin1(pos, anode, left): NETS(U3_VDD)
+- pin2(neg, cathode, right): NETS(AGND)
+
+C_ISO1 (100nF 0402)
+- pin1(pos, anode, left): NETS(U2_FB)
+- pin2(neg, cathode, right): NETS(GND)
+
+U6 (ADUM1250ARZ_RL7)
+- pin1(VDD1): NETS(U2_FB)
+- pin2(SDA1): NETS(J_ESP_SDA)
+- pin3(SCL1): NETS(J_ESP_SCL)
+- pin4(GND1): NETS(GND)
+- pin5(GND2): NETS(AGND)
+- pin6(SCL2): NETS(U3_SCL)
+- pin7(SDA2): NETS(U3_SDA)
+- pin8(VDD2): NETS(U3_VDD)
+
+C_ISO2 (100nF 0402)
+- pin1(pos, anode, left): NETS(U3_VDD)
+- pin2(neg, cathode, right): NETS(AGND)
+
+R_SDA (4.7kΩ res0402)
+- pin1(anode, pos, left): NETS(U3_SDA)
+- pin2(cathode, neg, right): NETS(U3_VDD)
+
+R_SCL (4.7kΩ res0402)
+- pin1(anode, pos, left): NETS(U3_SCL)
+- pin2(cathode, neg, right): NETS(U3_VDD)
+
+U3 (ADS1115IDGST)
+- pin1(ADDR): NETS(U3_ADDR)
+- pin2: NOT_CONNECTED
+- pin3(GND): NETS(AGND)
+- pin4(AIN0): NETS(J_PROBE_PH_PO)
+- pin5(AIN1): NETS(J_PROBE_ORP_PO)
+- pin6(AIN2): NOT_CONNECTED
+- pin7(AIN3): NOT_CONNECTED
+- pin8(VDD): NETS(U3_VDD)
+- pin9(SDA): NETS(U3_SDA)
+- pin10(SCL): NETS(U3_SCL)
+
+C_ADS (100nF 0402)
+- pin1(pos, anode, left): NETS(U3_VDD)
+- pin2(neg, cathode, right): NETS(AGND)
+
+R_ADDR (0Ω res0402)
+- pin1(anode, pos, left): NETS(U3_ADDR)
+- pin2(cathode, neg, right): NETS(AGND)
+
+C_VM (10uF 0603)
+- pin1(pos, anode, left): NETS(U1_VDD)
+- pin2(neg, cathode, right): NETS(GND)
+
+U4 (TB6612FNG_C_8_EL)
+- pin1(AO11): NETS(U4_AO11)
+- pin2(AO12): NOT_CONNECTED
+- pin3(PGND11): NETS(GND)
+- pin4(PGND12): NOT_CONNECTED
+- pin5(AO21): NETS(U4_AO21)
+- pin6(AO22): NOT_CONNECTED
+- pin7(BO21): NETS(U4_BO21)
+- pin8(BO22): NOT_CONNECTED
+- pin9(PGND21): NETS(GND)
+- pin10(PGND22): NOT_CONNECTED
+- pin11(BO11): NETS(U4_BO11)
+- pin12(BO12): NOT_CONNECTED
+- pin13(VM2): NETS(U1_VDD)
+- pin14(VM3): NETS(U1_VDD)
+- pin15(PWMB): NETS(U4_PWMB)
+- pin16(BIN2): NETS(U4_BIN2)
+- pin17(BIN1): NETS(U4_BIN1)
+- pin18(GND): NETS(GND)
+- pin19(STBY): NETS(U2_FB)
+- pin20(VCC): NETS(U2_FB)
+- pin21(AIN1): NETS(U4_AIN1)
+- pin22(AIN2): NETS(U4_AIN2)
+- pin23(PWMA): NETS(U4_PWMA)
+- pin24(VM1): NETS(U1_VDD)
+
+C_VCC (100nF 0402)
+- pin1(pos, anode, left): NETS(U2_FB)
+- pin2(neg, cathode, right): NETS(GND)
+
+R_LED (2.2kΩ res0402)
+- pin1(anode, pos, left): NETS(U2_FB)
+- pin2(cathode, neg, right): NETS(LED1_pos)
+
+LED1
+- pin1(anode, pos, left): NETS(LED1_pos)
+- pin2(cathode, neg, right): NETS(GND)
+
+R_LED2 (2.2kΩ res0402)
+- pin1(anode, pos, left): NETS(U3_VDD)
+- pin2(cathode, neg, right): NETS(LED2_pos)
+
+LED2
+- pin1(anode, pos, left): NETS(LED2_pos)
+- pin2(cathode, neg, right): NETS(AGND)
+
+J_ESP
+- pin1(V5): NETS(U2_FB)
+- pin2(GND): NETS(GND)
+- pin3(SDA): NETS(J_ESP_SDA)
+- pin4(SCL): NETS(J_ESP_SCL)
+- pin5(PWMA): NETS(U4_PWMA)
+- pin6(PWMB): NETS(U4_PWMB)
+- pin7(AIN1): NETS(U4_AIN1)
+- pin8(AIN2): NETS(U4_AIN2)
+- pin9(BIN1): NETS(U4_BIN1)
+- pin10(BIN2): NETS(U4_BIN2)
+
+J_PROBE
+- pin1(V5_ISO): NETS(U3_VDD)
+- pin2(AGND): NETS(AGND)
+- pin3(PH_PO): NETS(J_PROBE_PH_PO)
+- pin4(ORP_PO): NETS(J_PROBE_ORP_PO)
+
+J_M1
+- pin1(MA1): NETS(U4_AO11)
+- pin2(MA2): NETS(U4_AO21)
+
+J_M2
+- pin1(MB1): NETS(U4_BO11)
+- pin2(MB2): NETS(U4_BO21)
+
+J_12V
+- pin1(VIN12): NETS(U1_VDD)
+- pin2(GNDP): NETS(GND)

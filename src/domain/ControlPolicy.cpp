@@ -67,12 +67,14 @@ bool ControlPolicy::checkSafety(const ControlConfig& cfg, bool havePh, float phV
       return false;
     }
     
-    // Check for sudden jumps (> 1.0 pH in 1 sec) - indicates sensor glitch
-    if (fabsf(phVal - _lastValidPh) > 1.0f) {
+    // Check for sudden jumps (> 1.0 pH in 1 sec) - skip on first reading to avoid
+    // a permanent lockout when the live value differs from the 7.0 default.
+    if (_phPrimed && fabsf(phVal - _lastValidPh) > 1.0f) {
       ESP_LOGW("SAFETY", "pH sudden jump detected: %.2f -> %.2f (ignoring)", _lastValidPh, phVal);
-      return false;  // Ignore this reading but don't trigger emergency
+      return false;
     }
     _lastValidPh = phVal;
+    _phPrimed = true;
   }
   
   if (haveOrp) {
@@ -88,12 +90,13 @@ bool ControlPolicy::checkSafety(const ControlConfig& cfg, bool havePh, float phV
       return false;
     }
     
-    // Check for sudden jumps (> 300 mV in 1 sec)
-    if (fabsf(orpMv - _lastValidOrp) > 300.0f) {
+    // Check for sudden jumps (> 300 mV in 1 sec) - skip on first reading
+    if (_orpPrimed && fabsf(orpMv - _lastValidOrp) > 300.0f) {
       ESP_LOGW("SAFETY", "ORP sudden jump detected: %.0f -> %.0f (ignoring)", _lastValidOrp, orpMv);
       return false;
     }
     _lastValidOrp = orpMv;
+    _orpPrimed = true;
   }
   
   // 4. Check daily volume limits
@@ -227,9 +230,10 @@ void ControlPolicy::update(const ControlConfig &cfg,
   }
 
   // pH control (assignable to M1 or M2)
-  // Symmetric policy: dose when pH < min or pH > max; stop when back within band with hysteresis
-  bool phOut = havePh && (phVal < cfg.phMin || phVal > cfg.phMax);
-  bool phBack = havePh && (phVal >= (cfg.phMin + cfg.phHyst) && phVal <= (cfg.phMax - cfg.phHyst));
+  // Single-sided: only pH-minus is dosed → run when pH > max; stop with hysteresis.
+  // Low pH only triggers a warning (no base dosing available in this setup).
+  bool phOut = havePh && (phVal > cfg.phMax);
+  bool phBack = havePh && (phVal <= (cfg.phMax - cfg.phHyst));
   if (PH_ON_MOTOR_A) {
     if (phOut) {
       if (!m1Running) {

@@ -57,18 +57,26 @@ private:
     const uint16_t mux = 0x4000 | (ch << 12); // single-ended AINx
     const uint16_t pga = (uint16_t)_gain << 9;
     const uint16_t mode = 0x0100; // single-shot
-    const uint16_t dr = 0x0080;   // 1600 SPS
+    const uint16_t dr = 0x0040;   // 32 SPS → high effective resolution + 50/60Hz rejection
     uint16_t cfg = 0x8000 | mux | pga | mode | dr | 0x0003; // COMP disabled
-    float acc=0.0f;
-    for (uint8_t i=0;i<_samples;i++){
+    const uint8_t N = _samples > 0 ? _samples : 8;
+    // Use median filter to reject outliers (mains hum, switching spikes)
+    float buf[32]; uint8_t n = N > 32 ? 32 : N;
+    for (uint8_t i=0;i<n;i++){
       writeReg16(0x01, cfg);
-      // wait conversion (~1ms at 860sps; use 3ms)
-      delay(3);
+      // Wait actual conversion: 32 SPS = 31.25ms. Poll OS bit with timeout.
+      uint32_t t0 = millis();
+      while (millis() - t0 < 50) {
+        uint16_t st = readReg16(0x01);
+        if (st & 0x8000) break; // conversion ready
+        delay(1);
+      }
       int16_t code = (int16_t)readReg16(0x00);
-      float v = (float)code / 32767.0f * fsVolts();
-      acc += v;
+      buf[i] = (float)code / 32767.0f * fsVolts();
     }
-    return acc / (float)_samples;
+    // median
+    for (uint8_t i=1;i<n;i++){ float k=buf[i]; int8_t j=i-1; while(j>=0 && buf[j]>k){ buf[j+1]=buf[j]; j--; } buf[j+1]=k; }
+    return buf[n/2];
   }
 
   void writeReg16(uint8_t reg, uint16_t val){ writeBytes(reg, (uint8_t[]){ (uint8_t)(val>>8), (uint8_t)(val&0xFF) }, 2); }

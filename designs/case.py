@@ -240,14 +240,15 @@ with BuildPart() as tb6612_mount:
                 make_face()
             extrude(amount=arm_w, both=True)
         
-# === 3c. Define CTP09 Part & Mount ===
-# User request: Replace CTP09 with custom ghost: 23 * 11.5 * 4mm.
-ctp_w = 23
-ctp_l = 11.5
+# === 3c. Define CH224K Part & Mount ===
+# CH224K USB-C PD trigger module: 31 x 20 x 4 mm. (Variable names kept as ctp_*
+# from the previous CTP09 module — same mount recipe, just resized.)
+ctp_w = 31
+ctp_l = 20
 ctp_h = 4
 # Thin outer right-wall lip carrying the USB-C slot; the board's +X edge sinks into
 # the wall and butts the back of this faceplate so the socket sits near-flush.
-# (Validated with designs/ctp09_mount_test.py.)
+# (Validated with designs/ch224k_mount_test.py.)
 ctp_faceplate_t = 0.6
 
 with BuildPart() as ctp09_def:
@@ -255,33 +256,34 @@ with BuildPart() as ctp09_def:
 
 ctp09_centered = ctp09_def.part
 
-# Mount Logic: Snap-fit clip mount for CTP09 (PD trigger), USB-C facing +X.
-# Geometry validated with the standalone print test (designs/ctp09_mount_test.py):
+# Mount Logic: Snap-fit clip mount for CH224K (USB-C PD trigger), USB-C facing +X.
+# Geometry validated with designs/ch224k_mount_test.py (ABS print):
 #   - clips clamp the bare PCB (~1mm) with a small gap so the board tilts in
-#   - thick/wide clip arms for strength
-#   - clip pairs straddle the side-mounted diode (no clip lands on it)
+#   - long+thick clip arms (arm_extra_h cantilever) so ABS still flexes
+#   - clip pairs symmetric at ±ctp_w/4
 #   - -X back wall has a central slot for the power wires
-#   - +X (USB-C) side is open; the board edge butts the right-wall faceplate (the
-#     +X stop), so no retention tabs are needed here.
+#   - +X (USB-C) side is open; the board edge butts the right-wall faceplate
 with BuildPart() as ctp09_mount:
-    ctp_standoff_z = 1.5     # clearance under the board (board underside rests here)
-    clamp_t = 1.0            # bare-PCB height the clips grab at
-    wall_t  = 2.0            # back/guide wall thickness (-X side)
-    guide_h = 1.0            # -X wall height above the clamp level
-    arm_t   = 1.8            # clip arm thickness (flex direction) - thick = strong
-    hook_d  = 0.7            # hook barb overhang onto the board top
-    hook_h  = 1.0            # hook barb zone height
-    clr     = 0.30           # lateral fit clearance per side
-    clamp_gap = 0.5          # gap under the hook so the board can be tilted in
-    clip_cx = [2.0, 7.5]     # clip-pair X positions (straddle the diode at X<-2)
-    clip_w  = 4.5            # clip width along X
-    wire_slot_w = 8.0        # central -X-wall opening for the power wires
+    ctp_standoff_z = 1.5
+    clamp_t = 1.0
+    wall_t  = 2.0
+    guide_h = 1.0
+    arm_t   = 1.8            # thick for ABS strength
+    hook_d  = 0.5            # smaller barb = easier insert
+    hook_h  = 1.0
+    arm_extra_h = 5.0        # extra outer-arm height = longer cantilever → flexes
+    clr     = 0.30
+    clamp_gap = 0.5          # tilt-in clearance above PCB top
+    clip_cx = [-ctp_w / 4, ctp_w / 4]   # symmetric clip pairs
+    clip_w  = 6.0            # wide for strength
+    wire_slot_w = 10.0       # power-wire opening in -X back wall
+    back_wall_shift = 0.2    # -X wall nudged toward the PCB (snug fit)
 
     pkt_w   = ctp_w + 2 * clr
     pkt_l   = ctp_l + 2 * clr
     pcb_top = ctp_standoff_z + clamp_t
     hook_z  = pcb_top + clamp_gap
-    arm_h   = hook_z + hook_h + arm_t + hook_d
+    arm_h   = hook_z + hook_h + arm_t + hook_d + arm_extra_h
 
     # 1. Floor platform (extends -X under the back wall, ±Y to anchor clip bases)
     with Locations((-wall_t / 2, 0, 0)):
@@ -289,14 +291,15 @@ with BuildPart() as ctp09_mount:
             align=(Align.CENTER, Align.CENTER, Align.MIN))
 
     # 2. -X back wall (inner stop) WITH a central wire slot (leaves two corner ribs)
-    with Locations((-(pkt_w / 2 + wall_t / 2), 0, ctp_standoff_z)):
+    bw_x = -(pkt_w / 2 + wall_t / 2) + back_wall_shift
+    with Locations((bw_x, 0, ctp_standoff_z)):
         Box(wall_t, pkt_l, clamp_t + guide_h,
             align=(Align.CENTER, Align.CENTER, Align.MIN))
-    with Locations((-(pkt_w / 2 + wall_t / 2), 0, ctp_standoff_z)):
+    with Locations((bw_x, 0, ctp_standoff_z)):
         Box(wall_t + 2, wire_slot_w, clamp_t + guide_h + 2,
             align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
 
-    # 3. Snap clips on ±Y sides – clip pairs at clip_cx, straddling the diode
+    # 3. Snap clips on ±Y sides – symmetric clip pairs
     for sign, iy in [(-1, -pkt_l / 2), (+1, +pkt_l / 2)]:
         for cx in clip_cx:
             with BuildSketch(Plane.YZ.offset(cx)):
@@ -440,13 +443,13 @@ gx12_loc = gx12_pos * Rotation(0, 0, 0) # Visual (Flip 180)
 gx12_cutout_loc = gx12_pos * Rotation(90, 0, 0) 
 
 # === Sensors ===
-sensor_x_shift = 22 # Shifted Left (was 30) to avoid Right Post conflict 
+sensor_x_shift = 23 # +1 right to align BNC cutouts with the front-wall holes
 sensor_space = 35 
 sensor1_x = sensor_x_shift - sensor_space/2
 sensor2_x = sensor_x_shift + sensor_space/2
 
 sensor_y = (-width/2 + wall_thickness + 2) + pcb_l/2
-sensor_z = -height/2 + wall_thickness + standoff_h 
+sensor_z = -height/2 + wall_thickness + standoff_h + 0.5  # +0.5 up to align BNC cutouts
 sensor_rot = Rotation(0, 0, -90) 
 
 sensor1_loc = Location((sensor1_x, sensor_y, sensor_z)) * sensor_rot
@@ -541,8 +544,8 @@ with BuildPart() as case:
     usbc_cut_h = 3.6     # Z height
     usbc_cut_fil = 0.8   # corner radius
     floor_inner_z = -height/2 + wall_thickness
-    # socket centre = floor + standoff + 2.5 (socket sits 2.5mm above board underside)
-    usbc_cut_z = floor_inner_z + ctp_standoff_z + 2.5
+    # socket centre = floor + standoff + 2.6 (socket sits 2.6mm above board underside)
+    usbc_cut_z = floor_inner_z + ctp_standoff_z + 2.6
     wall_inner_x = length/2 - wall_thickness
     board_edge_x = ctp09_loc_x + ctp_w/2          # = length/2 - ctp_faceplate_t
 
@@ -779,13 +782,13 @@ lid_part = lid.part.moved(Location((0,0, height/2))) # Lid Base at top of case
 tb6612_ghost = tb6612_centered.moved(tb6612_loc * Location((0,0, tb_standoff_z)))
 ts6612_mount_part = tb6612_mount.part.moved(tb6612_loc)
 
-# CTP09 Ghost & Mount
+# CH224K Ghost & Mount
 ctp09_ghost = ctp09_centered.moved(ctp09_loc * Location((0,0, ctp_standoff_z)))
 ctp09_mount_part = ctp09_mount.part.moved(ctp09_loc)
 
-print(f"DEBUG: CTP09 Loc: {ctp09_loc}")
-print(f"DEBUG: CTP09 Ghost Volume: {ctp09_ghost.volume}")
-print(f"DEBUG: CTP09 Mount Volume: {ctp09_mount_part.volume}")
+print(f"DEBUG: CH224K Loc: {ctp09_loc}")
+print(f"DEBUG: CH224K Ghost Volume: {ctp09_ghost.volume}")
+print(f"DEBUG: CH224K Mount Volume: {ctp09_mount_part.volume}")
 
 # GX12 Ghost
 gx12_ghost = gx12_def.moved(gx12_loc)
@@ -996,13 +999,13 @@ screen_lcd_export = Part(lcd_fresh.part.moved(screen_loc))
 screen_lcd_export.label = "Screen LCD"
 screen_lcd_export.color = Color(0, 0, 0) # Black
 
-# Text "PoolLab" (On Lid Surface)
+# Text "Pura" (On Lid Surface)
 # Save Clean Lid for dimension verification (User Request)
 lid_no_text = lid_export
 
 try:
     # 1. Font Selection: System Font "Arial Black"
-    t_sketch = Text("PoolLab", font_size=25, font="Arial Black")
+    t_sketch = Text("Pura", font_size=25, font="Arial Black")
     
     # 2. Thicken (Extra Bold)
     t_thick = offset(t_sketch, amount=0.2)
@@ -1064,7 +1067,7 @@ else:
     screen_inserts_export = Part()
 
 ctp09_export = Part(ctp09_ghost)
-ctp09_export.label = "CTP09"
+ctp09_export.label = "CH224K"
 ctp09_export.color = Color("Red") # PCB Color
 
 sensor1_export = Part(sensor1_ghost)
@@ -1114,7 +1117,7 @@ print("Exports Complete: designs/case.stl, designs/lid.stl, designs/lid_text.stl
 assembly = Compound(children=[case_export, lid_export, ctp09_export, sensor1_export, sensor2_export, lm2596_export,
                             screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export, 
                             tb6612_export, gx12_export])
-assembly.label = "PoolLab_Assembly_V7"
+assembly.label = "Pura_Assembly_V7"
 export_step(assembly, "designs/full_assembly_v7.step")
 print("Full assembly exported: designs/full_assembly_v7.step")
 
@@ -1123,13 +1126,13 @@ print("Full assembly exported: designs/full_assembly_v7.step")
 show(case_export, lid_export, ctp09_ghost, sensor1_ghost, sensor2_ghost, lm2596_ghost,
      screen_bezel_export, screen_rear_export, screen_lcd_export, screen_text_export, screen_inserts_export,
      tb6612_ghost, gx12_ghost,
-     names=["Case", "Lid", "CTP09", "Sensor1", "Sensor2", "LM2596",
+     names=["Case", "Lid", "CH224K", "Sensor1", "Sensor2", "LM2596",
             "Screen Bezel", "Screen Rear", "Screen LCD", "Screen Text", "Screen Inserts",
             "TB6612", "GX12"],
      alphas=[0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
 
 # DEBUG EXPORT CTP09
 ctp_debug_assembly = Compound(children=[ctp09_ghost, ctp09_mount_part])
-ctp_debug_assembly.label = "CTP09_Debug"
+ctp_debug_assembly.label = "CH224K_Debug"
 export_step(ctp_debug_assembly, "designs/ctp09_debug.step")
 print("Debug export: designs/ctp09_debug.step")

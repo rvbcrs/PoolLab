@@ -1,4 +1,4 @@
-## PoolLab — ESP32‑S3 zwembadmonitor (pH, ORP, Temp · LVGL · MQTT · Zigbee)
+## Pura — ESP32‑S3 zwembadmonitor (pH, ORP, Temp · LVGL · MQTT · Zigbee)
 
 ### Wat het doet
 - **pH en ORP meten** via analoge PH‑4502C/ORP‑4502C sensorbordjes (MCP6002 op 3.3 V) rechtstreeks op de ESP32 ADC.
@@ -241,7 +241,7 @@ Seriële monitor: 115200 baud.
 ### Configuratie
 
 **WiFi** via captive portal:
-- Bij lege WiFi‑gegevens start automatisch AP `PoolLab‑Setup`.
+- Bij lege WiFi‑gegevens start automatisch AP `Pura‑Setup`.
 - Verbind → open willekeurige URL → vul SSID/wachtwoord in → Save & Reboot.
 - Of via Settings → Network → Configure WiFi.
 
@@ -250,7 +250,7 @@ Seriële monitor: 115200 baud.
 MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, MQTT_CLIENTID
 ```
 
-**OTA:** hostnaam `poollab-XXXXXX` (chip‑ID). Upload via PlatformIO "Upload using network" of ArduinoOTA.
+**OTA:** hostnaam `pura-XXXXXX` (chip‑ID). Upload via PlatformIO "Upload using network" of ArduinoOTA.
 
 ---
 

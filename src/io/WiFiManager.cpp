@@ -4,14 +4,14 @@
 namespace io {
 
 void WiFiManager::begin(const String &ssid, const String &pass, const char *clientPrefix, IpCallback onIpUpdate){
-  _ssid = ssid; _pass = pass; _clientPrefix = clientPrefix ? clientPrefix : "poollab"; _onIp = onIpUpdate;
+  _ssid = ssid; _pass = pass; _clientPrefix = clientPrefix ? clientPrefix : "pura"; _onIp = onIpUpdate;
   setupEvents();
   uint64_t chipid = ESP.getEfuseMac(); char host[32];
   snprintf(host, sizeof(host), "%s-%06llX", _clientPrefix.c_str(), (unsigned long long)(chipid & 0xFFFFFFULL));
   ESP_LOGI("WiFi", "Boot: hostname=%s", host);
   if (_ssid.length() == 0) {
     ESP_LOGI("WiFi", "Boot: no SSID -> starting captive portal");
-    startPortal("PoolLab-Setup");
+    startPortal("Pura-Setup");
     if (_onIp) _onIp(WiFi.softAPIP().toString());
     return;
   }
@@ -44,7 +44,7 @@ void WiFiManager::setupEvents(){
         if (_failCount > 3) {
           if (_ssid.length() == 0) {
             ESP_LOGI("WiFi","Too many fails and no SSID -> Captive Portal");
-            startPortal("PoolLab-Setup");
+            startPortal("Pura-Setup");
             if (_onIp) _onIp(WiFi.softAPIP().toString());
           } else {
             ESP_LOGI("WiFi","Too many fails but SSID is set -> keep STA retries, no portal");
@@ -57,7 +57,7 @@ void WiFiManager::setupEvents(){
 }
 
 void WiFiManager::ensureSta(){
-  WiFi.setHostname("poollab");
+  WiFi.setHostname("pura");
   WiFi.persistent(false);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);

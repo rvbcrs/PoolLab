@@ -41,8 +41,8 @@ void PowerManager::begin(int sda, int scl) {
             delay(10);
         }
         
-        // Show scanner just to be sure
-        performI2CScan();
+        // performI2CScan();  // skipped: NUM_0 driver isn't installed → spam
+
     }
 }
 
@@ -57,7 +57,7 @@ void PowerManager::update() {
         Serial.printf("PowerManager (IP5306): Level=%d%%, Charging=%d\n", level, charging);
     } else if (_useADC) {
         float volts = readBatteryVoltage();
-        Serial.printf("PowerManager (ADC Pin %d): %.2fV -> %d%% (Charging=%d)\n", _adcPin, volts, level, charging);
+        (void)volts;  // silenced; uncomment to debug battery
     } else {
         // No power monitoring
     }
@@ -137,11 +137,7 @@ float PowerManager::readBatteryVoltage() {
     }
     int raw = sum / 10;
     
-    // Debug raw value to check calibration
     float v = (raw / 4095.0f) * 3.3f * 1.80f;
-    String msg = "ADC raw: " + String(raw) + " -> Volts: " + String(v, 2);
-    Serial.println(msg);
-    webui.log(msg);
     
     return v;
 }

@@ -115,6 +115,8 @@ public:
          
   domain::PumpStats getM1Stats() const { return _policy ? _policy->getM1Stats() : domain::PumpStats{}; }
   domain::PumpStats getM2Stats() const { return _policy ? _policy->getM2Stats() : domain::PumpStats{}; }
+  void restoreM1Volumes(float total, float daily) { if (_policy) _policy->restoreM1Volumes(total, daily); }
+  void restoreM2Volumes(float total, float daily) { if (_policy) _policy->restoreM2Volumes(total, daily); }
   void resetM1Total() { if (_policy) _policy->resetM1Total(); }
   void resetM2Total() { if (_policy) _policy->resetM2Total(); }
   void resetM1Daily() { if (_policy) _policy->resetM1Daily(); }

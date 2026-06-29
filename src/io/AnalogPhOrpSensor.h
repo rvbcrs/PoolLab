@@ -89,13 +89,11 @@ private:
 
   float readAveragedVolts(int pin) const {
     if (!isValidPin(pin) || _samples == 0) return 0.0f;
-    uint32_t acc = 0;
+    uint32_t acc_mv = 0;
     for (uint16_t i = 0; i < _samples; ++i) {
-      acc += analogRead(pin);
+      acc_mv += analogReadMilliVolts(pin);  // uses eFuse calibration → real mV
     }
-    const float raw = (float)acc / (float)_samples;
-    // Arduino-ESP32 uses 0..4095 for 12-bit
-    return (raw / 4095.0f) * _vref;
+    return (acc_mv / (float)_samples) / 1000.0f;
   }
 
   // Linearize using two-point calibration around pH 7

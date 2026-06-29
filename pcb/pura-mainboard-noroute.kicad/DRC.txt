@@ -1,0 +1,294 @@
+** Drc report for pura-mainboard-noroute.kicad_pcb **
+** Created on 2026-06-29T10:18:48 **
+** Report includes: Errors **
+
+** Found 69 DRC violations **
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1401 mm)
+    Local override; error
+    @(98.4000 mm, 110.9000 mm): Via [AGND] on F.Cu - B.Cu
+    @(97.7919 mm, 110.9918 mm): Track [.U3 > .ADDR to .R_ADDR > .pin1] on B.Cu, length 2.5009 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(96.2900 mm, 103.8000 mm): Pad 1 [.U3 > .SCL to .R_SCL > .pin1] of R_SCL on F.Cu
+    @(96.7117 mm, 102.0217 mm): Track [.U3 > .SDA to .R_SDA > .pin1] on F.Cu, length 3.0405 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(122.0000 mm, 80.1100 mm): PTH pad 9 [.U4 > .BIN1 to .J_ESP > .BIN1] of ESP
+    @(122.9017 mm, 78.4717 mm): Track [.U4 > .BIN2 to .J_ESP > .BIN2] on F.Cu, length 2.0868 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1001 mm)
+    Local override; error
+    @(107.2250 mm, 97.1379 mm): Pad 24 [.U1 > .VDD to .U1 > .VBUS] of U4 on F.Cu
+    @(107.3488 mm, 97.9750 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 9.9351 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(77.0683 mm, 112.0000 mm): Track [.R_LED2 > .pin2 to .LED2 > .pin1] on F.Cu, length 2.3913 mm
+    @(77.4900 mm, 110.0000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of R_LED2 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1297 mm)
+    Local override; error
+    @(122.0000 mm, 80.1100 mm): PTH pad 9 [.U4 > .BIN1 to .J_ESP > .BIN1] of ESP
+    @(122.9017 mm, 80.5585 mm): Track [.U4 > .BIN2 to .J_ESP > .BIN2] on F.Cu, length 1.2964 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1026 mm)
+    Local override; error
+    @(118.5625 mm, 84.5000 mm): Pad 2 [GND] of C_IN on F.Cu
+    @(120.8139 mm, 80.1100 mm): Track [.U4 > .BIN1 to .J_ESP > .BIN1] on F.Cu, length 5.2522 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1282 mm)
+    Local override; error
+    @(109.8249 mm, 97.1379 mm): Pad 20 [.L1 > .pin2 to .U2 > .FB] of U4 on F.Cu
+    @(109.8355 mm, 98.1617 mm): Track [.U4 > .AIN1 to .J_ESP > .AIN1] on F.Cu, length 0.9342 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0946 mm)
+    Local override; error
+    @(122.0000 mm, 82.6500 mm): PTH pad 8 [.U4 > .AIN2 to .J_ESP > .AIN2] of ESP
+    @(121.8743 mm, 81.4752 mm): Track [.U4 > .BIN2 to .J_ESP > .BIN2] on F.Cu, length 3.4262 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0787 mm)
+    Local override; error
+    @(108.5249 mm, 97.1379 mm): Pad 22 [.U4 > .AIN2 to .J_ESP > .AIN2] of U4 on F.Cu
+    @(109.9203 mm, 99.4765 mm): Track [.U4 > .PWMA to .J_ESP > .PWMA] on F.Cu, length 2.8926 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1089 mm)
+    Local override; error
+    @(122.0000 mm, 100.4300 mm): PTH pad 1 [.L1 > .pin2 to .U2 > .FB] of ESP
+    @(122.7909 mm, 101.3639 mm): Track [.J_ESP > .SCL to .U6 > .SCL1] on F.Cu, length 16.3904 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0911 mm)
+    Local override; error
+    @(88.1050 mm, 110.0700 mm): Pad 4 [GND] of U6 on F.Cu
+    @(88.4711 mm, 108.3247 mm): Track [.J_ESP > .SCL to .U6 > .SCL1] on F.Cu, length 2.3138 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0840 mm)
+    Local override; error
+    @(122.9017 mm, 101.2531 mm): Track [.J_ESP > .SCL to .U6 > .SCL1] on F.Cu, length 0.1567 mm
+    @(122.0000 mm, 100.4300 mm): PTH pad 1 [.L1 > .pin2 to .U2 > .FB] of ESP
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(122.9017 mm, 93.7117 mm): Track [.J_ESP > .SCL to .U6 > .SCL1] on F.Cu, length 7.5414 mm
+    @(122.0000 mm, 100.4300 mm): PTH pad 1 [.L1 > .pin2 to .U2 > .FB] of ESP
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0655 mm)
+    Local override; error
+    @(97.4001 mm, 111.2483 mm): Track [.U3 > .ADDR to .R_ADDR > .pin1] on F.Cu, length 0.1353 mm
+    @(106.1295 mm, 102.2142 mm): Track [.J_ESP > .SDA to .U6 > .SDA1] on F.Cu, length 12.8197 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(106.4005 mm, 101.3639 mm): Track [.J_ESP > .SCL to .U6 > .SCL1] on F.Cu, length 9.8441 mm
+    @(99.3999 mm, 107.3500 mm): Pad 6 [<no net>] of U3 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1071 mm)
+    Local override; error
+    @(86.6423 mm, 111.2791 mm): Track [.J_ESP > .SDA to .U6 > .SDA1] on F.Cu, length 1.5235 mm
+    @(86.8350 mm, 110.0700 mm): Pad 3 [.J_ESP > .SCL to .U6 > .SCL1] of U6 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1205 mm)
+    Local override; error
+    @(115.0455 mm, 113.0228 mm): Track [.U4 > .BO11 to .J_M2 > .MB1] on F.Cu, length 5.2427 mm
+    @(114.1000 mm, 112.3300 mm): PTH pad 2 [.U4 > .BO21 to .J_M2 > .MB2] of ORP pump
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0799 mm)
+    Local override; error
+    @(77.4900 mm, 110.0000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of R_LED2 on F.Cu
+    @(77.7588 mm, 109.4597 mm): Track [.R_LED2 > .pin2 to .LED2 > .pin1] on F.Cu, length 0.4660 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1465 mm)
+    Local override; error
+    @(97.4001 mm, 112.0500 mm): Pad 1 [.U3 > .ADDR to .R_ADDR > .pin1] of U3 on F.Cu
+    @(97.0646 mm, 111.2791 mm): Track [.J_ESP > .SDA to .U6 > .SDA1] on F.Cu, length 10.4223 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1453 mm)
+    Local override; error
+    @(77.2173 mm, 109.4597 mm): Track [.R_LED2 > .pin2 to .LED2 > .pin1] on F.Cu, length 0.5415 mm
+    @(77.4900 mm, 110.0000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of R_LED2 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1230 mm)
+    Local override; error
+    @(79.4900 mm, 88.0000 mm): Pad 1 [.J1 > .A5 to .U1 > .CC2] of R_CC2 on F.Cu
+    @(79.8182 mm, 89.1982 mm): Track [.J1 > .B5 to .U1 > .CC1] on F.Cu, length 1.0605 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0827 mm)
+    Local override; error
+    @(77.4900 mm, 110.0000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of R_LED2 on F.Cu
+    @(77.0683 mm, 109.6087 mm): Track [.R_LED2 > .pin2 to .LED2 > .pin1] on F.Cu, length 0.2107 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(86.1000 mm, 90.0999 mm): Pad 9 [<no net>] of U1 on F.Cu
+    @(88.1000 mm, 89.1982 mm): Track [.J1 > .B5 to .U1 > .CC1] on F.Cu, length 8.2818 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(79.4900 mm, 88.0000 mm): Pad 1 [.J1 > .A5 to .U1 > .CC2] of R_CC2 on F.Cu
+    @(79.0683 mm, 88.4483 mm): Track [.J1 > .B5 to .U1 > .CC1] on F.Cu, length 2.4483 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(85.1000 mm, 96.1001 mm): Pad 1 [.U1 > .VDD to .U1 > .VBUS] of U1 on F.Cu
+    @(86.1000 mm, 95.1984 mm): Track [.U1 > .CFG2 to .R_CFG2 > .pin1] on F.Cu, length 3.2008 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0800 mm)
+    Local override; error
+    @(80.2100 mm, 91.7000 mm): Pad 2 [GND] of R_CFG2 on F.Cu
+    @(82.8992 mm, 95.1984 mm): Track [.U1 > .CFG2 to .R_CFG2 > .pin1] on F.Cu, length 4.6492 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0800 mm)
+    Local override; error
+    @(79.9117 mm, 88.2109 mm): Track [.J1 > .A5 to .U1 > .CC2] on F.Cu, length 0.7835 mm
+    @(80.5100 mm, 88.0000 mm): Pad 2 [GND] of R_CC2 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1294 mm)
+    Local override; error
+    @(110.0407 mm, 98.1617 mm): Via [.U4 > .AIN1 to .J_ESP > .AIN1] on F.Cu - B.Cu
+    @(111.0278 mm, 98.5161 mm): Track [.U1 > .VDD to .U1 > .VBUS] on B.Cu, length 3.5089 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0799 mm)
+    Local override; error
+    @(80.5100 mm, 88.0000 mm): Pad 2 [GND] of R_CC2 on F.Cu
+    @(79.7009 mm, 88.0000 mm): Track [.J1 > .A5 to .U1 > .CC2] on F.Cu, length 5.7260 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1445 mm)
+    Local override; error
+    @(122.0000 mm, 97.8900 mm): PTH pad 2 [GND] of ESP
+    @(120.9608 mm, 97.7847 mm): Via [.U1 > .VDD to .U1 > .VBUS] on F.Cu - B.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1445 mm)
+    Local override; error
+    @(122.0000 mm, 97.8900 mm): PTH pad 2 [GND] of ESP
+    @(120.9608 mm, 97.7847 mm): Via [.U1 > .VDD to .U1 > .VBUS] on F.Cu - B.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0876 mm)
+    Local override; error
+    @(79.1900 mm, 91.7000 mm): Pad 1 [.U1 > .CFG2 to .R_CFG2 > .pin1] of R_CFG2 on F.Cu
+    @(79.0683 mm, 91.0018 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 0.4243 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0867 mm)
+    Local override; error
+    @(113.0751 mm, 97.1379 mm): Pad 15 [.U4 > .PWMB to .J_ESP > .PWMB] of U4 on F.Cu
+    @(113.7251 mm, 97.4423 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 0.9051 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1243 mm)
+    Local override; error
+    @(102.6375 mm, 90.2000 mm): Pad 1 [.U2 > .OUT to .L1 > .pin1] of L1 on F.Cu
+    @(102.6023 mm, 92.4046 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 1.1881 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0816 mm)
+    Local override; error
+    @(79.1900 mm, 91.7000 mm): Pad 1 [.U1 > .CFG2 to .R_CFG2 > .pin1] of R_CFG2 on F.Cu
+    @(78.7683 mm, 92.0897 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 5.6716 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0769 mm)
+    Local override; error
+    @(86.1000 mm, 90.0999 mm): Pad 9 [<no net>] of U1 on F.Cu
+    @(87.0998 mm, 91.0018 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 8.0315 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0875 mm)
+    Local override; error
+    @(79.0683 mm, 88.4483 mm): Track [.J1 > .B5 to .U1 > .CC1] on F.Cu, length 2.4483 mm
+    @(78.8308 mm, 84.2784 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 5.4841 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(117.8250 mm, 95.0000 mm): Pad 2 [GND] of C_VM on F.Cu
+    @(118.8028 mm, 95.6267 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 2.6278 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(78.7683 mm, 91.3018 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 0.7879 mm
+    @(79.1900 mm, 91.7000 mm): Pad 1 [.U1 > .CFG2 to .R_CFG2 > .pin1] of R_CFG2 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(80.0998 mm, 80.4233 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 4.8001 mm
+    @(84.2499 mm, 81.1250 mm): Pad 19 [<no net>] of USB-C on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1036 mm)
+    Local override; error
+    @(103.4424 mm, 90.1800 mm): Track [.U1 > .VDD to .U1 > .VBUS] on F.Cu, length 7.1842 mm
+    @(105.5625 mm, 90.2000 mm): Pad 2 [.L1 > .pin2 to .U2 > .FB] of L1 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1278 mm)
+    Local override; error
+    @(101.1944 mm, 81.7000 mm): Pad 6 [GND] of U2 on F.Cu
+    @(102.7312 mm, 90.2000 mm): Track [.U2 > .OUT to .L1 > .pin1] on F.Cu, length 9.6167 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(92.4900 mm, 95.4000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of C_ISO2 on F.Cu
+    @(94.3670 mm, 94.9283 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 2.2184 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0793 mm)
+    Local override; error
+    @(109.2106 mm, 96.0226 mm): Via [.U4 > .AIN2 to .J_ESP > .AIN2] on F.Cu - B.Cu
+    @(109.6117 mm, 95.7183 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 1.2614 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0829 mm)
+    Local override; error
+    @(111.3250 mm, 89.4000 mm): Pad 2 [GND] of C_DC_IN on F.Cu
+    @(111.5279 mm, 88.0988 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 1.8402 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0913 mm)
+    Local override; error
+    @(107.2250 mm, 97.1379 mm): Pad 24 [.U1 > .VDD to .U1 > .VBUS] of U4 on F.Cu
+    @(107.5500 mm, 97.7738 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 0.2845 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1146 mm)
+    Local override; error
+    @(107.2250 mm, 97.1379 mm): Pad 24 [.U1 > .VDD to .U1 > .VBUS] of U4 on F.Cu
+    @(108.3503 mm, 95.7183 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 1.1318 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0800 mm)
+    Local override; error
+    @(83.4100 mm, 103.2000 mm): Pad 2 [GND] of C_ISO1 on F.Cu
+    @(83.3897 mm, 102.4111 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 0.8174 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(115.6375 mm, 84.5000 mm): Pad 1 [.U1 > .VDD to .U1 > .VBUS] of C_IN on F.Cu
+    @(116.3517 mm, 80.1000 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 5.7894 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0828 mm)
+    Local override; error
+    @(92.4900 mm, 95.4000 mm): Pad 1 [.U5 > .pin4 to .U6 > .VDD2] of C_ISO2 on F.Cu
+    @(92.1486 mm, 94.9283 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 10.5823 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0800 mm)
+    Local override; error
+    @(117.1100 mm, 99.9000 mm): Pad 2 [GND] of C_VCC on F.Cu
+    @(116.8308 mm, 100.4300 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 0.4513 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0778 mm)
+    Local override; error
+    @(116.3517 mm, 85.8894 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 3.1246 mm
+    @(115.6375 mm, 84.5000 mm): Pad 1 [.U1 > .VDD to .U1 > .VBUS] of C_IN on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(110.4751 mm, 97.5224 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 1.5725 mm
+    @(111.4616 mm, 98.0823 mm): Via [.U1 > .VDD to .U1 > .VBUS] on F.Cu - B.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0922 mm)
+    Local override; error
+    @(88.1050 mm, 104.9300 mm): Pad 5 [AGND] of U6 on F.Cu
+    @(86.8350 mm, 104.8193 mm): Track [.U3 > .SCL to .R_SCL > .pin1] on F.Cu, length 1.5388 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1013 mm)
+    Local override; error
+    @(87.9231 mm, 103.7312 mm): Track [.U3 > .SCL to .R_SCL > .pin1] on F.Cu, length 7.8764 mm
+    @(88.1050 mm, 104.9300 mm): Pad 5 [AGND] of U6 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1350 mm)
+    Local override; error
+    @(122.0000 mm, 100.4300 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 5.1692 mm
+    @(117.1100 mm, 99.9000 mm): Pad 2 [GND] of C_VCC on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0768 mm)
+    Local override; error
+    @(86.8350 mm, 104.9300 mm): Pad 6 [.U3 > .SCL to .R_SCL > .pin1] of U6 on F.Cu
+    @(85.5650 mm, 104.8410 mm): Track [.U3 > .SDA to .R_SDA > .pin1] on F.Cu, length 4.5835 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1301 mm)
+    Local override; error
+    @(78.5100 mm, 112.0000 mm): Pad 2 [AGND] of LED2 on F.Cu
+    @(83.1900 mm, 115.8000 mm): Track [.U5 > .pin4 to .U6 > .VDD2] on F.Cu, length 7.5354 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0799 mm)
+    Local override; error
+    @(96.2900 mm, 101.6000 mm): Pad 1 [.U3 > .SDA to .R_SDA > .pin1] of R_SDA on F.Cu
+    @(96.8883 mm, 101.3892 mm): Track [.U5 > .pin4 to .U6 > .VDD2] on F.Cu, length 2.8233 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0960 mm)
+    Local override; error
+    @(107.5500 mm, 96.5186 mm): Track [.L1 > .pin2 to .U2 > .FB] on F.Cu, length 1.2552 mm
+    @(107.2250 mm, 97.1379 mm): Pad 24 [.U1 > .VDD to .U1 > .VBUS] of U4 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0829 mm)
+    Local override; error
+    @(93.8250 mm, 98.0000 mm): Pad 2 [AGND] of C_DC_OUT on F.Cu
+    @(94.1195 mm, 99.3928 mm): Track [.U5 > .pin4 to .U6 > .VDD2] on F.Cu, length 1.9697 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0811 mm)
+    Local override; error
+    @(88.2700 mm, 115.8000 mm): PTH pad 2 [.L1 > .pin2 to .U2 > .FB] of U5
+    @(84.1461 mm, 116.7561 mm): Track [.U5 > .pin4 to .U6 > .VDD2] on F.Cu, length 34.0061 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1264 mm)
+    Local override; error
+    @(107.2250 mm, 104.2621 mm): Pad 1 [.U4 > .AO11 to .J_M1 > .MA1] of U4 on F.Cu
+    @(99.4001 mm, 111.0763 mm): Track [.U3 > .AIN1 to .J_PROBE > .ORP_PO] on F.Cu, length 10.8532 mm
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1032 mm)
+    Local override; error
+    @(91.0987 mm, 98.0000 mm): Track [.U5 > .pin4 to .U6 > .VDD2] on F.Cu, length 9.6219 mm
+    @(85.5650 mm, 104.9300 mm): Pad 7 [.U3 > .SDA to .R_SDA > .pin1] of U6 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1232 mm)
+    Local override; error
+    @(107.0745 mm, 103.4019 mm): Track [.U3 > .AIN1 to .J_PROBE > .ORP_PO] on F.Cu, length 12.1374 mm
+    @(107.2250 mm, 104.2621 mm): Pad 1 [.U4 > .AO11 to .J_M1 > .MA1] of U4 on F.Cu
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.1088 mm)
+    Local override; error
+    @(122.0000 mm, 108.7300 mm): Track [.U3 > .AIN0 to .J_PROBE > .PH_PO] on F.Cu, length 9.9585 mm
+    @(114.1000 mm, 114.8700 mm): PTH pad 1 [.U4 > .BO11 to .J_M2 > .MB1] of ORP pump
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0767 mm)
+    Local override; error
+    @(114.9583 mm, 115.7717 mm): Track [.U3 > .AIN0 to .J_PROBE > .PH_PO] on F.Cu, length 13.1383 mm
+    @(114.1000 mm, 114.8700 mm): PTH pad 1 [.U4 > .BO11 to .J_M2 > .MB1] of ORP pump
+[clearance]: Clearance violation ( clearance 0.1500 mm; actual 0.0750 mm)
+    Local override; error
+    @(100.9000 mm, 118.6000 mm): Track [AGND] on B.Cu, length 7.3000 mm
+    @(100.6000 mm, 115.9000 mm): Via [GND] on F.Cu - B.Cu
+
+** Found 0 unconnected pads **
+
+** Found 0 Footprint errors **
+
+** Ignored checks **
+    - Footprint has no courtyard defined
+    - Track endpoint not centered on via
+    - Tuning profile track geometries
+    - Footprint doesn't match symbol's footprint filters
+    - Footprint component type doesn't match footprint pads
+
+** End of Report **

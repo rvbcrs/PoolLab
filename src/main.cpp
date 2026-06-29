@@ -1,4 +1,4 @@
-// PoolLab — ESP32 pool monitor (pH, ORP, temp) with LVGL UI, MQTT, motors
+// Pura — ESP32 pool monitor (pH, ORP, temp) with LVGL UI, MQTT, motors
 
 #include <Arduino.h>
 #include "driver/ledc.h"
@@ -131,7 +131,7 @@ static core::BoardPins g_pins;
   #ifndef ADS_CH_ORP
   #define ADS_CH_ORP 1
   #endif
-  io::AdsPhOrpSensor g_ads(ADS_ADDR, ADS_SDA, ADS_SCL, ADS_CH_PH, ADS_CH_ORP, io::AdsPhOrpSensor::GAIN_1, 8, 1000);
+  io::AdsPhOrpSensor g_ads(ADS_ADDR, ADS_SDA, ADS_SCL, ADS_CH_PH, ADS_CH_ORP, io::AdsPhOrpSensor::GAIN_2_3, 8, 1000);
 #endif
 #if USES_ARDUINO_GFX
 static const bool USE_LVGL_UI = true;  // C6 & P4 use LVGL UI
@@ -207,8 +207,8 @@ static void on_speed_save_cb(lv_event_t *e);
 static void updateLvglValues();
 static void showRangeEditorProxy(bool isPh);
 // Enable dummy/test mode to generate values without the meter connected
-#if USE_ANALOG_SENSORS
-static const bool DUMMY_MODE = true;   // TODO: set false when sensors are connected
+#if USE_ANALOG_SENSORS || USE_ADS1115
+static const bool DUMMY_MODE = false;  // sensors are connected
 #else
 static const bool DUMMY_MODE = true;   // simulate values
 #endif
@@ -673,7 +673,7 @@ extern "C" void requestModeChange(int mode){
     #if ZB_ENABLED
     if (zigbee.isStarted()) { ESP.restart(); }
     #endif
-    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); } }
+    if (WIFI_SSID.length()==0) { if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("Pura-Setup"); } }
     else { if (portal.isActive()) portal.stop(); WiFi.mode(WIFI_STA); wifiMgr.ensureSta(); ensureMqtt(); }
   }
   #endif
@@ -762,7 +762,7 @@ static void sendWhatsAppAsync(void* param) {
     HTTPClient http;
 
     // URL encode the message
-    String encodedMsg = "POOLLAB+ALERT:+";
+    String encodedMsg = "PURA+ALERT:+";
     encodedMsg += String(alertMsg).c_str();
     encodedMsg.replace(" ", "+");
     encodedMsg.replace(",", "%2C");
@@ -892,7 +892,7 @@ static void p4WifiInitTask(void *arg) {
     if (ssid.length() == 0) {
       Serial.println("P4: Starting captive portal");
       portal.setStorage(&g_storage);
-      portal.beginAP("PoolLab-Setup");
+      portal.beginAP("Pura-Setup");
       if (LVGL_LOCK()) { 
         ui::setIp(WiFi.softAPIP().toString().c_str()); 
         LVGL_UNLOCK(); 
@@ -916,7 +916,7 @@ static void p4WifiInitTask(void *arg) {
       // Set hostname for mDNS
       uint64_t chipid = ESP.getEfuseMac();
       char hostname[32];
-      snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+      snprintf(hostname, sizeof(hostname), "pura-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
       WiFi.setHostname(hostname);
       Serial.printf("P4: Hostname set to: %s.local\n", hostname);
       Serial.flush();
@@ -940,7 +940,7 @@ static void p4WifiInitTask(void *arg) {
           // Setup ArduinoOTA with hostname
           uint64_t chipid = ESP.getEfuseMac();
           char hostname[32];
-          snprintf(hostname, sizeof(hostname), "poollab-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
+          snprintf(hostname, sizeof(hostname), "pura-%06llX", (unsigned long long)(chipid & 0xFFFFFFULL));
           ArduinoOTA.setHostname(hostname);
           ArduinoOTA.begin();
           Serial.printf("P4: OTA server at: %s.local:3232\n", hostname);
@@ -1013,7 +1013,7 @@ void setup() {
   Serial.setTimeout(50);
   
   
-  Serial.println("\n\n=== PoolLab Boot Start ===");
+  Serial.println("\n\n=== Pura Boot Start ===");
   Serial.flush();
   core::Log::init(true);
   ESP_LOGI("BOOT", "Boot start");
@@ -1076,6 +1076,9 @@ void setup() {
   #if defined(USE_JC3248W535)
   g_minimal_ui_active = true;
   #endif
+
+  // Open NVS before UI init so the persisted theme is honoured on first paint.
+  g_storage.begin(false);
 
   if (USE_LVGL_UI) {
     // Acquire LVGL mutex (no-op on C6/P4; BSP semaphore on S3)
@@ -1612,7 +1615,7 @@ void setup() {
           // Switch to WiFi/MQTT immediately
           if (WIFI_SSID.length() == 0) {
             // No creds → start captive portal
-            if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }
+            if (!portal.isActive()) { portal.setStorage(&g_storage); portal.beginAP("Pura-Setup"); }
           } else {
             // Ensure portal is stopped and bring up STA now
             if (portal.isActive()) portal.stop();
@@ -1701,7 +1704,7 @@ void setup() {
       lv_obj_t *row_net = lv_obj_create(sec_net); lv_obj_remove_style_all(row_net); lv_obj_set_width(row_net, LV_PCT(100)); lv_obj_set_height(row_net, LV_SIZE_CONTENT); lv_obj_set_flex_flow(row_net, LV_FLEX_FLOW_ROW); lv_obj_set_style_pad_column(row_net, 12, 0);
       lv_obj_t *lblNet = lv_label_create(row_net); lv_obj_set_style_text_color(lblNet, lv_color_black(), 0); lv_label_set_text(lblNet, "WiFi setup portal"); lv_obj_set_flex_grow(lblNet, 1);
       lv_obj_t *btnCfgWifi = lv_btn_create(row_net); lv_obj_set_size(btnCfgWifi, 120, 28); lv_label_set_text(lv_label_create(btnCfgWifi), "Configure WiFi");
-      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&g_storage); portal.beginAP("PoolLab-Setup"); }, LV_EVENT_CLICKED, NULL);
+      lv_obj_add_event_cb(btnCfgWifi, [](lv_event_t *e){ (void)e; portal.setStorage(&g_storage); portal.beginAP("Pura-Setup"); }, LV_EVENT_CLICKED, NULL);
       lv_update_speed_labels();
 
       // Pagination dots removed to simplify and avoid event-related issues
@@ -1722,7 +1725,7 @@ void setup() {
       build_lvgl_ui();
     #else
       #if !(defined(BOARD_ESP32S3_35) && defined(USE_JC3248W535))
-        // Build full PoolLab UI (now with debounced touch for P4 landscape)
+        // Build full Pura UI (now with debounced touch for P4 landscape)
         ui::build(false);
         ui::updateValues();
         // Force LVGL to render the first frame immediately
@@ -1772,6 +1775,9 @@ void setup() {
   #if USE_ADS1115
   g_ads.begin();
   {
+    float testV = g_ads.sampleVoltsPh();
+    Serial.printf("[ADS1115] init: probe AIN0=%.3fV -> %s\n",
+      testV, (testV > 0.001f || testV < -0.001f) ? "OK (device responding)" : "no response (check wiring/address)");
     io::AdsPhOrpSensor::PhCal ph{}; ph.voltsAtPh4 = g_storage.getPhVAt4(3.00f); ph.voltsAtPh10 = g_storage.getPhVAt10(2.00f);
     io::AdsPhOrpSensor::OrpCal orp{}; orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f); orp.mVPerVolt = g_storage.getOrpMvPerV(1000.0f);
     g_ads.setPhCalibration(ph);
@@ -1802,6 +1808,9 @@ void setup() {
   // TB6612 motor init - MUST be before any goto for P4!
   if (MOTOR_ENABLE) {
     g_motor.begin(io::MotorPins{TB_STBY, M1_IN1, M1_IN2, M1_PWM, M2_IN1, M2_IN2, M2_PWM}, PWM_FREQ, PWM_BITS);
+    // Restore persisted pump volumes from NVS so daily/total survive reboots
+    g_motor.restoreM1Volumes(g_storage.getM1TotalVolume(0.0f), g_storage.getM1DailyVolume(0.0f));
+    g_motor.restoreM2Volumes(g_storage.getM2TotalVolume(0.0f), g_storage.getM2DailyVolume(0.0f));
     // Register safety alert callback for MQTT + WhatsApp notifications
     g_motor.setAlertCallback(handleSafetyAlert);
     ESP_LOGI("SAFETY", "Alert callback registered (MQTT + WhatsApp)");
@@ -1827,7 +1836,7 @@ void setup() {
         wifiOff = false;
         ESP_LOGI("WiFi", "Boot: starting captive portal (no SSID)");
         portal.setStorage(&g_storage);
-        portal.beginAP("PoolLab-Setup");
+        portal.beginAP("Pura-Setup");
         delay(1000);  // Give captive portal time to fully initialize
         if (USE_LVGL_UI) {
           if (LVGL_LOCK()) { ui::setIp(WiFi.softAPIP().toString().c_str()); LVGL_UNLOCK(); }
@@ -1838,7 +1847,7 @@ void setup() {
         {
           String ssid = g_storage.getWifiSsid("");
           String pass = g_storage.getWifiPass("");
-          wifiMgr.begin(ssid, pass, "poollab", [](const String &ip){ if (USE_LVGL_UI) { strncpy(g_ui_ip_buf, ip.c_str(), sizeof(g_ui_ip_buf)-1); g_ui_ip_buf[sizeof(g_ui_ip_buf)-1] = '\0'; g_ui_ip_dirty = true; } });
+          wifiMgr.begin(ssid, pass, "pura", [](const String &ip){ if (USE_LVGL_UI) { strncpy(g_ui_ip_buf, ip.c_str(), sizeof(g_ui_ip_buf)-1); g_ui_ip_buf[sizeof(g_ui_ip_buf)-1] = '\0'; g_ui_ip_dirty = true; } });
           if (USE_LVGL_UI) {
             if (LVGL_LOCK()) { ui::setSsid(ssid.c_str()); LVGL_UNLOCK(); }
           }
@@ -2039,21 +2048,40 @@ void loop() {
   #if USE_ANALOG_SENSORS
   if (!DUMMY_MODE) {
     static uint32_t lastRead = 0;
+    static uint32_t lastLog = 0;
     domain::Telemetry t{};
     if (g_analog.read(t)) {
       if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
       if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
       if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+      uint32_t now = millis();
+      if (now - lastLog >= 2000) {
+        lastLog = now;
+        Serial.printf("[ANALOG] pH=%.3f (%.3fV)  ORP=%.0fmV (%.3fV)\n",
+          t.havePh ? t.phVal : NAN, g_analog.sampleVoltsPh(),
+          t.haveOrp ? t.orpMv : NAN, g_analog.sampleVoltsOrp());
+      }
     }
   }
   #endif
   #if USE_ADS1115
   if (!DUMMY_MODE) {
+    static uint32_t lastLog = 0;
     domain::Telemetry t{};
     if (g_ads.read(t)) {
       if (t.havePh)   { METRICS().phVal = t.phVal; METRICS().havePh = true; }
       if (t.haveOrp)  { METRICS().orpMv = t.orpMv; METRICS().haveOrp = true; }
       if (t.haveTemp) { METRICS().tempC = t.tempC; METRICS().haveTemp = true; }
+      uint32_t now = millis();
+      if (now - lastLog >= 2000) {
+        lastLog = now;
+        char b[128];
+        snprintf(b, sizeof(b), "[ADS1115] pH=%.3f (%.3fV)  ORP=%.0fmV (%.3fV)",
+          t.havePh ? t.phVal : NAN, g_ads.sampleVoltsPh(),
+          t.haveOrp ? t.orpMv : NAN, g_ads.sampleVoltsOrp());
+        Serial.println(b);
+        if (webui.isActive()) webui.log(b);
+      }
     }
   }
   #endif
@@ -2064,7 +2092,7 @@ void loop() {
     // Clear WiFiManager credentials to avoid STA attempts with empty SSID
     wifiMgr.setCredentials("", "");
     portal.setStorage(&g_storage);
-    if (!portal.isActive()) portal.beginAP("PoolLab-Setup");
+    if (!portal.isActive()) portal.beginAP("Pura-Setup");
     if (USE_LVGL_UI) ui::setIp(WiFi.softAPIP().toString().c_str());
   }
 
@@ -2108,6 +2136,21 @@ void loop() {
   #endif
 
   // Motor control policy (skip if forced-on test is active)
+  {
+    static uint32_t lastGateLog = 0;
+    uint32_t nowG = millis();
+    if (nowG - lastGateLog > 3000) {
+      lastGateLog = nowG;
+      char buf[200];
+      snprintf(buf, sizeof(buf), "[MOTOR-GATE] enabled=%d motorsEn=%d emergency=%d havePh=%d ph=%.2f haveOrp=%d orp=%.0f m1Run=%d m2Run=%d",
+        MOTOR_ENABLE, motorsEnabled, emergencyStop,
+        domain::Metrics::instance().havePh, domain::Metrics::instance().phVal,
+        domain::Metrics::instance().haveOrp, domain::Metrics::instance().orpMv,
+        g_motor.isM1Running(), g_motor.isM2Running());
+      Serial.println(buf);
+      if (webui.isActive()) webui.log(buf);
+    }
+  }
   if (MOTOR_ENABLE && motorsEnabled) {
     static uint32_t lastLogMs = 0;
     uint32_t nowMs = millis();
@@ -2220,6 +2263,8 @@ void loop() {
       domain::PumpStats m2 = g_motor.getM2Stats();
       g_storage.setM1TotalVolume(m1.totalVolumeMl);
       g_storage.setM2TotalVolume(m2.totalVolumeMl);
+      g_storage.setM1DailyVolume(m1.dailyVolumeMl);
+      g_storage.setM2DailyVolume(m2.dailyVolumeMl);
     }
     if (now - lastPumpStatsLog > 10000) {  // Log every 10 seconds
       lastPumpStatsLog = now;
@@ -2331,4 +2376,19 @@ extern "C" void requestMqttReload(){
   if (WiFi.status() == WL_CONNECTED) {
     ensureMqtt();
   }
+}
+
+extern "C" void requestOrpCalReload(){
+  #if USE_ADS1115
+  io::AdsPhOrpSensor::OrpCal orp{};
+  orp.voltsAt0mV = g_storage.getOrpVAt0(2.50f);
+  orp.mVPerVolt  = g_storage.getOrpMvPerV(1000.0f);
+  g_ads.setOrpCalibration(orp);
+  #endif
+  #if USE_ANALOG_SENSORS
+  io::AnalogPhOrpSensor::OrpCal orpA{};
+  orpA.voltsAt0mV = g_storage.getOrpVAt0(2.50f);
+  orpA.mVPerVolt  = g_storage.getOrpMvPerV(1000.0f);
+  g_analog.setOrpCalibration(orpA);
+  #endif
 }

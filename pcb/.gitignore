@@ -1,0 +1,53 @@
+# macOS junk
+.DS_Store
+
+# tscircuit / Node
+node_modules/
+dist/
+.next/
+package-lock.json
+*.log
+
+# Regenerated artifacts (rebuild from .tsx or .kicad_pcb)
+circuit.json
+*.circuit.json
+*.kicad.zip
+pura-gerbers.zip
+*-noroute.dsn
+*-noroute.ses
+*-noroute.rules
+*-noroute-0.*.dsn
+*-noroute-0.*.ses
+*-noroute-0.*.rules
+
+# Tscircuit dev helper files
+manual-edits.json
+
+# Backup snapshots
+*.backup.tsx
+*.backup2.tsx
+*.preLogo
+*.preSilkscreen
+*.bak
+
+# Helper scripts used once
+add_silkscreen.py
+add_logo.py
+add_logo_v2.py
+add_logo_image.py
+
+# Intermediate logo tracing files
+pura-logo.pbm
+pura-logo.geojson
+
+# KiCad project local state
+*/.history/
+*.kicad_prl
+*/Backup.zip
+*/DRC.json
+*/report.txt
+
+# KiCad fp/sch backups + autosave
+*-backups/
+*.bck
+_autosave-*
