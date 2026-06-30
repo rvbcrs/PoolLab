@@ -45,7 +45,12 @@ pura-logo.geojson
 *.kicad_prl
 */Backup.zip
 */DRC.json
+*/DRC.txt
 */report.txt
+
+# KiCad lock files (auto-generated when project is open)
+~*.lck
+*.lck
 
 # KiCad fp/sch backups + autosave
 *-backups/
