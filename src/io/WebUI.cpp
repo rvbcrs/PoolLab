@@ -180,6 +180,39 @@ void WebUI::sendStyleHeader(String &h){
     ".modal-foot{flex:0 0 auto;padding:12px 20px;border-top:1px solid var(--linesoft);display:flex;gap:10px;justify-content:flex-end}"
     ".modal-foot button{width:auto;padding:8px 16px;font-size:10px;letter-spacing:.3em;background:transparent;color:var(--mute);border:1px solid var(--line);border-radius:4px}"
     ".modal-foot button:hover{color:var(--ink);border-color:var(--ink);background:transparent}"
+    /* mobile responsive */
+    "@media (max-width:640px){"
+      "body{padding:12px 14px}"
+      ".topbar{padding:10px 14px;flex-wrap:wrap;gap:8px;border-radius:24px}"
+      ".topbar .brand{flex:1 1 auto;font-size:11px;letter-spacing:.15em}"
+      ".topbar .brand .node{display:none}"
+      ".topbar .status{gap:8px;font-size:9px;letter-spacing:.12em}"
+      ".themesw{padding:6px 10px;font-size:9px;letter-spacing:.15em}"
+      "h1{font-size:32px;line-height:1.05}"
+      ".sub{font-size:13px;margin-bottom:16px}"
+      ".metrics{grid-template-columns:1fr;gap:10px;margin-bottom:16px}"
+      ".metric{padding:16px}"
+      ".label{font-size:9px;letter-spacing:.2em;margin-bottom:10px}"
+      ".label .id{font-size:8px;padding:2px 8px}"
+      ".val{font-size:44px;letter-spacing:-.03em}"
+      ".val .unit{font-size:11px;letter-spacing:.08em}"
+      ".range{font-size:9px;letter-spacing:.15em;margin-top:10px;gap:6px;flex-wrap:wrap}"
+      ".dosers{margin-top:10px}"
+      ".doser{grid-template-columns:1fr;gap:6px;padding:14px 16px}"
+      ".doser .nums{text-align:left;font-size:10px;letter-spacing:.1em}"
+      ".actions{grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}"
+      ".actions .btn.icon{grid-column:1/-1}"
+      ".btn{padding:12px 14px;font-size:10px;letter-spacing:.2em}"
+      ".alert{padding:12px 14px;gap:10px;font-size:12px}"
+      ".alert .ic{flex:0 0 42px;font-size:10px;letter-spacing:.18em}"
+      ".foot{font-size:9px;letter-spacing:.2em;margin-top:22px}"
+      ".card{padding:20px 16px;margin:14px 8px;border-radius:6px}"
+      "h2{font-size:22px}h3{font-size:18px}"
+      "input,select{padding:10px 12px;font-size:14px}"  // 14px prevents iOS auto-zoom
+      "button[type=submit]{padding:12px;font-size:10px;letter-spacing:.25em}"
+      ".modal{padding:8px}.modal-card{max-height:90vh}"
+      ".modal-body{font-size:10px;padding:12px 14px}"
+    "}"
     "</style></head><body>");
 }
 void WebUI::sendFooter(String &h){ h += F("</body></html>"); }
@@ -267,7 +300,9 @@ void WebUI::handleIndex(){
   float phMin = _phMin? *_phMin : 6.80f; float phMax = _phMax? *_phMax : 7.60f;
   int orpMin = _orpMin? *_orpMin : 250; int orpMax = _orpMax? *_orpMax : 850;
   html += F("<script>");
-  html += "var PH_MIN="+String(phMin,2)+",PH_MAX="+String(phMax,2)+",ORP_MIN="+String(orpMin)+",ORP_MAX="+String(orpMax)+";";
+  float pool_m3 = 0.0f;
+  if (_storage) pool_m3 = ((float)_storage->getPoolLengthCm() * _storage->getPoolWidthCm() * _storage->getPoolHeightCm()) / 1000000.0f;
+  html += "var PH_MIN="+String(phMin,2)+",PH_MAX="+String(phMax,2)+",ORP_MIN="+String(orpMin)+",ORP_MAX="+String(orpMax)+",POOL_M3="+String(pool_m3,1)+";";
   html += F(
     "function syncThemeBtn(){var t=document.documentElement.getAttribute('data-theme')||'dark';"
       "document.getElementById('themesw').innerHTML=(t==='dark'?'◐ light':'◑ dark');}"
@@ -288,14 +323,21 @@ void WebUI::handleIndex(){
     "function nearPh(v){return v<=PH_MIN+0.05||v>=PH_MAX-0.05;}"
     "function nearOrp(v){return v<=ORP_MIN+20||v>=ORP_MAX-20;}"
     "var _curPh=null,_curOrp=null;"
+    "function sodaGrams(dph){return POOL_M3>0?Math.round(75*Math.abs(dph)*POOL_M3):0;}"
+    "function fmtDose(g){return g>=1000?(g/1000).toFixed(2)+' kg':g+' g';}"
     "function renderAlerts(){var a=document.getElementById('alerts'),items=[];"
       "if(_curPh!==null){"
-        "if(_curPh<PH_MIN)items.push({k:'bad',ic:'pH ↓',t:'<b>pH te laag ('+_curPh.toFixed(2)+').</b> Water is te zuur — er is geen base-dosering beschikbaar, voeg handmatig pH-plus toe om weer binnen '+PH_MIN.toFixed(2)+'–'+PH_MAX.toFixed(2)+' te komen.<em>Een lage pH veroorzaakt corrosie en irritatie van de huid/ogen.</em>'});"
-        "else if(_curPh>PH_MAX)items.push({k:'bad',ic:'pH ↑',t:'<b>pH te hoog ('+_curPh.toFixed(2)+').</b> Water is te basisch — pH-minus wordt automatisch gedoseerd om het terug binnen '+PH_MIN.toFixed(2)+'–'+PH_MAX.toFixed(2)+' te brengen.<em>Hoge pH vermindert de werking van chloor.</em>'});"
+        "if(_curPh<PH_MIN){"
+          "var target=(PH_MIN+PH_MAX)/2,g=sodaGrams(target-_curPh);"
+          "var tip=POOL_M3>0?' <b>Voeg ~'+fmtDose(g)+' natriumcarbonaat (soda) toe</b> voor '+POOL_M3.toFixed(1)+' m³ om naar pH '+target.toFixed(1)+' te gaan.':' Stel je pool-afmetingen in bij <a href=\"/settings\">Settings</a> voor een dosis-tip.';"
+          "items.push({k:'bad',ic:'pH ↓',t:'<b>pH te laag ('+_curPh.toFixed(2)+').</b> Water is te zuur.'+tip+'<em>Lage pH veroorzaakt corrosie en irritatie van huid/ogen.</em>'});"
+        "}else if(_curPh>PH_MAX){"
+          "items.push({k:'bad',ic:'pH ↑',t:'<b>pH te hoog ('+_curPh.toFixed(2)+').</b> Water is te basisch — pH-minus pomp doseert automatisch tot '+PH_MIN.toFixed(2)+'–'+PH_MAX.toFixed(2)+'.<em>Hoge pH vermindert de werking van chloor.</em>'});"
+        "}"
       "}"
       "if(_curOrp!==null){"
-        "if(_curOrp<ORP_MIN)items.push({k:'bad',ic:'ORP ↓',t:'<b>ORP te laag ('+_curOrp+' mV).</b> Te weinig chloor in het zwembad — chloor wordt automatisch gedoseerd om boven '+ORP_MIN+' mV te komen.<em>Lage ORP betekent onvoldoende desinfectie.</em>'});"
-        "else if(_curOrp>ORP_MAX)items.push({k:'warn',ic:'ORP ↑',t:'<b>ORP te hoog ('+_curOrp+' mV).</b> Te veel chloor in het zwembad — geen automatische dosering (anders wordt het erger).<em>Wacht tot het chloorgehalte natuurlijk daalt of dun het water aan.</em>'});"
+        "if(_curOrp<ORP_MIN)items.push({k:'bad',ic:'ORP ↓',t:'<b>ORP te laag ('+_curOrp+' mV).</b> Te weinig chloor — chloor-pomp doseert automatisch tot boven '+ORP_MIN+' mV.<em>Lage ORP betekent onvoldoende desinfectie.</em>'});"
+        "else if(_curOrp>ORP_MAX)items.push({k:'warn',ic:'ORP ↑',t:'<b>ORP te hoog ('+_curOrp+' mV).</b> Te veel chloor — geen automatische dosering.<em>Wacht tot het gehalte daalt of dun het water aan.</em>'});"
       "}"
       "if(items.length===0){a.classList.remove('show');a.innerHTML='';return;}"
       "a.innerHTML=items.map(function(i){return '<div class=\"alert '+i.k+'\"><div class=\"ic\">'+i.ic+'</div><div class=\"body\">'+i.t+'</div></div>';}).join('');"
@@ -352,6 +394,19 @@ void WebUI::handleSettings(){
   html += F("</select></div>");
 #endif
   
+  // Pool dimensions — for dosing hints
+  if (_storage) {
+    int pL = _storage->getPoolLengthCm();
+    int pW = _storage->getPoolWidthCm();
+    int pH = _storage->getPoolHeightCm();
+    float vol_m3 = ((float)pL * pW * pH) / 1000000.0f;
+    html += F("<h4 style='margin-top:20px;color:#7fe3cf'>🏊 Pool Dimensions</h4>");
+    html += F("<label>Length (cm)</label><input name='pool_l' value='"); html += String(pL); html += F("'>");
+    html += F("<label>Width (cm)</label><input name='pool_w' value='"); html += String(pW); html += F("'>");
+    html += F("<label>Water Height (cm)</label><input name='pool_h' value='"); html += String(pH); html += F("'>");
+    html += F("<small style='color:#888'>Volume: ~"); html += fmtFloat(vol_m3, 1); html += F(" m³ ("); html += String((int)(vol_m3*1000)); html += F(" L). Used to compute dosing hints in alert banners.</small>");
+  }
+
   // pH Section
   html += F("<h4 style='margin-top:20px;color:#5ec8ff'>💧 pH Sensor & Pump</h4>");
   html += F("<label>Target pH Min</label><input name='ph_min' value='"); html += _phMin? fmtFloat(*_phMin,2) : String(6.80f); html += F("'>");
@@ -431,6 +486,11 @@ void WebUI::handleApiSave(){
   }
   if (_http.hasArg("orp_max") && _orpMax && _storage) {
     *_orpMax = parseIntOr(_http.arg("orp_max"), *_orpMax); _storage->setOrpMax(*_orpMax);
+  }
+  if (_storage) {
+    if (_http.hasArg("pool_l")) _storage->setPoolLengthCm(constrain(parseIntOr(_http.arg("pool_l"), 500), 50, 5000));
+    if (_http.hasArg("pool_w")) _storage->setPoolWidthCm(constrain(parseIntOr(_http.arg("pool_w"), 300), 50, 5000));
+    if (_http.hasArg("pool_h")) _storage->setPoolHeightCm(constrain(parseIntOr(_http.arg("pool_h"), 130), 30, 500));
   }
   if (_http.hasArg("m1") && _m1 && _storage) {
     int v = parseIntOr(_http.arg("m1"), *_m1); v = constrain(v,0,100); *_m1 = (uint8_t)v; _storage->setM1Speed(*_m1);

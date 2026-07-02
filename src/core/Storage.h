@@ -121,6 +121,14 @@ public:
   bool getThemeDark(bool def = true) const;
   void setThemeDark(bool dark);
 
+  // Pool dimensions (cm) — used for dosing hints in alert banners
+  int getPoolLengthCm(int def = 500) const;
+  int getPoolWidthCm(int def = 300) const;
+  int getPoolHeightCm(int def = 130) const;
+  void setPoolLengthCm(int v);
+  void setPoolWidthCm(int v);
+  void setPoolHeightCm(int v);
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

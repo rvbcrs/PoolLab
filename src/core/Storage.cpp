@@ -152,6 +152,14 @@ void Storage::setThemeDark(bool dark) {
   _prefs.putBool("theme_dark", dark);
 }
 
+// Pool dimensions (cm)
+int  Storage::getPoolLengthCm(int def) const { return _prefs.getInt("pool_l", def); }
+int  Storage::getPoolWidthCm(int def)  const { return _prefs.getInt("pool_w", def); }
+int  Storage::getPoolHeightCm(int def) const { return _prefs.getInt("pool_h", def); }
+void Storage::setPoolLengthCm(int v)         { _prefs.putInt("pool_l", v); }
+void Storage::setPoolWidthCm(int v)          { _prefs.putInt("pool_w", v); }
+void Storage::setPoolHeightCm(int v)         { _prefs.putInt("pool_h", v); }
+
 } // namespace core
 
 
