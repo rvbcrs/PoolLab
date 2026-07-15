@@ -1,0 +1,58 @@
+
+(rules PCB pura-mainboard-0805-0.3.dsn
+  (snap_angle 
+    fortyfive_degree
+  )
+  (rule
+    (width 100.0)
+    (clearance 100.0)
+    (clearance 50.0 (type smd_to_turn_gap))
+    (clearance 25.0 (type smd))
+    (clearance 100.0 (type "kicad_default"))
+  )
+  (padstack "Via[0-1]_300:200_um"
+    (shape
+      (circle F.Cu 300.0 0.0 0.0)
+    )
+    (shape
+      (circle B.Cu 300.0 0.0 0.0)
+    )
+    (attach off)
+  )
+  (via 
+    "Via[0-1]_300:200_um" "Via[0-1]_300:200_um" default
+  )
+  (via 
+    "Via[0-1]_300:200_um-kicad_default" "Via[0-1]_300:200_um" "kicad_default"
+  )
+  (via_rule
+    default "Via[0-1]_300:200_um"
+  )
+  (via_rule
+    "kicad_default" "Via[0-1]_300:200_um-kicad_default"
+  )
+  (class default
+    (clearance_class default)
+    (via_rule default)
+    (rule
+      (width 100.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class "kicad_default"
+    GND AGND ".U5 > .pin4 to .U6 > .VDD1" ".L1 > .pin2 to .U2 > .FB" ".J_ESP > .V33 to .U4 > .VCC" ".J_ESP > .SDA to .U6 > .SDA2" ".J_ESP > .SCL to .U6 > .SCL2" ".U4 > .PWMA to .J_ESP > .PWMA"
+    ".U4 > .PWMB to .J_ESP > .PWMB" ".U4 > .AIN1 to .J_ESP > .AIN1" ".U4 > .AIN2 to .J_ESP > .AIN2" ".U4 > .BIN1 to .J_ESP > .BIN1" ".U4 > .BIN2 to .J_ESP > .BIN2" ".J1 > .A4B9 to .R_VDD > .pin1" ".U3 > .SDA to .R_SDA > .pin1" ".R_LED > .pin2 to .LED1 > .pin1"
+    ".U2 > .OUT to .L1 > .pin1" ".U4 > .AO11 to .J_M1 > .MA1" ".U4 > .AO21 to .J_M1 > .MA2" ".J1 > .A5 to .U1 > .CC2" ".J1 > .B5 to .U1 > .CC1" ".R_VSNS > .pin2 to .U1 > .VBUS" ".R_LED2 > .pin2 to .LED2 > .pin1" ".U3 > .AIN0 to .J_PROBE > .PH_PO"
+    ".U3 > .AIN1 to .J_PROBE > .ORP_PO" ".R_VDD > .pin2 to .U1 > .VDD" ".U3 > .ADDR to .R_ADDR > .pin1" ".U3 > .SCL to .R_SCL > .pin1" ".U4 > .BO21 to .J_M2 > .MB2" ".U4 > .BO11 to .J_M2 > .MB1" ".U1 > .DP to .U1 > .DM" ".U1 > .CFG1 to .R_CFG1 > .pin1"
+    (clearance_class "kicad_default")
+    (via_rule "kicad_default")
+    (rule
+      (width 100.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+)

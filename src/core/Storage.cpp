@@ -160,6 +160,27 @@ void Storage::setPoolLengthCm(int v)         { _prefs.putInt("pool_l", v); }
 void Storage::setPoolWidthCm(int v)          { _prefs.putInt("pool_w", v); }
 void Storage::setPoolHeightCm(int v)         { _prefs.putInt("pool_h", v); }
 
+// UI Style + Poolside theme
+int  Storage::getUiStyle(int def) const       { return _prefs.getInt("ui_style", def); }
+void Storage::setUiStyle(int v)               { _prefs.putInt("ui_style", v); }
+int  Storage::getPoolsideTheme(int def) const { return _prefs.getInt("ps_theme", def); }
+void Storage::setPoolsideTheme(int v)         { _prefs.putInt("ps_theme", v); }
+
+// 7-day dosing history (ml/day, [0]=oldest .. [6]=yesterday), stored as float blobs
+void Storage::pushDailyDose(float m1Ml, float m2Ml) {
+  float m1[7], m2[7];
+  getDoseHistory(m1, m2);
+  for (int i = 0; i < 6; i++) { m1[i] = m1[i+1]; m2[i] = m2[i+1]; }
+  m1[6] = m1Ml; m2[6] = m2Ml;
+  _prefs.putBytes("dose7m1", m1, sizeof(m1));
+  _prefs.putBytes("dose7m2", m2, sizeof(m2));
+}
+void Storage::getDoseHistory(float m1Out[7], float m2Out[7]) const {
+  for (int i = 0; i < 7; i++) { m1Out[i] = 0; m2Out[i] = 0; }
+  _prefs.getBytes("dose7m1", m1Out, 7 * sizeof(float));
+  _prefs.getBytes("dose7m2", m2Out, 7 * sizeof(float));
+}
+
 } // namespace core
 
 

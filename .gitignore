@@ -4,3 +4,36 @@
 .vscode/launch.json
 .vscode/ipch
 .cache
+pcb/.rapidapi_key
+pcb/.shipcache.json
+pcb/.skucache.json
+pcb/ali-sdk/
+pcb/ali-sdk.zip
+
+# --- PCB build-artefacten (regenereerbaar via build_flow.py) ---
+pcb/__pycache__/
+pcb/circuit.json
+pcb/*.circuit.json
+pcb/drc*.txt
+pcb/drc*.json
+pcb/pura03.kicad.zip
+pcb/pura-mainboard-noroute.kicad.zip
+pcb/.flowtmp/
+
+# --- KiCad transient/backups ---
+pcb/**/.history/
+pcb/**/_restore_backup_*/
+pcb/**/logs/
+pcb/**/3dmodels/
+pcb/**/*.bak
+pcb/**/*.bak2
+pcb/**/*.bak3
+pcb/**/*.goodhand.bak
+pcb/**/*.routed01.bak
+pcb/**/*.rev02-legacy
+pcb/**/*-backups/
+pcb/**/*.kicad_prl
+pcb/**/*.lck
+pcb/**/~*.lck
+**/.DS_Store
+pcb/pura-mainboard-0805-0.3.kicad.bak2/

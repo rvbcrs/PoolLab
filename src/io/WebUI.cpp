@@ -1,5 +1,6 @@
 #include "WebUI.h"
 #include "MotorController.h"
+#include "domain/History.h"
 #include <WiFi.h>
 #include <SPIFFS.h>
 #include <FS.h>
@@ -18,6 +19,7 @@ void WebUI::begin(){
   _http.on("/safety", [this](){ handleSafety(); });
   _http.on("/console", [this](){ handleConsole(); }); // Console endpoint
   _http.on("/api/state", [this](){ handleApiState(); });
+  _http.on("/api/history", [this](){ handleApiHistory(); });
   _http.on("/api/save", HTTP_POST, [this](){ handleApiSave(); });
   _http.on("/api/test_alert", [this](){ 
     // Trigger test safety alert (pH sanity high) via ControlPolicy
@@ -218,6 +220,16 @@ void WebUI::sendStyleHeader(String &h){
 void WebUI::sendFooter(String &h){ h += F("</body></html>"); }
 
 void WebUI::handleIndex(){
+  // Branch on UI style — 0 = Vapor, 1 = Poolside, 2 = Helder
+  int uiStyle = _storage ? _storage->getUiStyle(0) : 0;
+  if (uiStyle == 1) {
+    String html; renderPoolsideIndex(html); _http.send(200, "text/html", html);
+    return;
+  }
+  if (uiStyle == 2) {
+    String html; renderHelderIndex(html); _http.send(200, "text/html", html);
+    return;
+  }
   String html; sendStyleHeader(html);
   String phRangeMin = _phMin ? fmtFloat(*_phMin,2) : String("--");
   String phRangeMax = _phMax ? fmtFloat(*_phMax,2) : String("--");
@@ -374,90 +386,156 @@ void WebUI::handleIndex(){
   _http.send(200, "text/html; charset=UTF-8", html);
 }
 
+// Settings — grouped, style-independent light page (proposal D)
 void WebUI::handleSettings(){
-  String html; sendStyleHeader(html);
-  html += F("<div class='card'><h3>⚙️ Settings</h3>");
-  html += F("<form method='POST' action='/api/save'>");
-  
-  // Network mode (only if Zigbee compiled in)
-#if HAS_ZIGBEE
-  html += F("<h4 style='margin-top:20px;color:#4caf50'>📡 Network Mode</h4>");
-  core::Storage::Mode modeNow = _storage? _storage->getMode(core::Storage::MODE_WIFI_MQTT) : core::Storage::MODE_WIFI_MQTT;
-  html += F("<label>Mode</label><div class='row'><select name='mode'>");
-  html += F("<option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option>");
-  html += F("<option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); 
-  #if defined(BOARD_ESP32P4_43)
-  html += F(">Zigbee (via C6)</option>");
-  #else
-  html += F(">Zigbee</option>");
-  #endif
-  html += F("</select></div>");
-#endif
-  
-  // Pool dimensions — for dosing hints
-  if (_storage) {
-    int pL = _storage->getPoolLengthCm();
-    int pW = _storage->getPoolWidthCm();
-    int pH = _storage->getPoolHeightCm();
-    float vol_m3 = ((float)pL * pW * pH) / 1000000.0f;
-    html += F("<h4 style='margin-top:20px;color:#7fe3cf'>🏊 Pool Dimensions</h4>");
-    html += F("<label>Length (cm)</label><input name='pool_l' value='"); html += String(pL); html += F("'>");
-    html += F("<label>Width (cm)</label><input name='pool_w' value='"); html += String(pW); html += F("'>");
-    html += F("<label>Water Height (cm)</label><input name='pool_h' value='"); html += String(pH); html += F("'>");
-    html += F("<small style='color:#888'>Volume: ~"); html += fmtFloat(vol_m3, 1); html += F(" m³ ("); html += String((int)(vol_m3*1000)); html += F(" L). Used to compute dosing hints in alert banners.</small>");
-  }
-
-  // pH Section
-  html += F("<h4 style='margin-top:20px;color:#5ec8ff'>💧 pH Sensor & Pump</h4>");
-  html += F("<label>Target pH Min</label><input name='ph_min' value='"); html += _phMin? fmtFloat(*_phMin,2) : String(6.80f); html += F("'>");
-  html += F("<label>Target pH Max</label><input name='ph_max' value='"); html += _phMax? fmtFloat(*_phMax,2) : String(7.60f); html += F("'>");
-  html += F("<label>pH Pump Speed (%)</label><input name='m1' value='"); html += _m1? String((int)*_m1) : String(60); html += F("'>");
-  html += F("<label>pH Pump Flow Rate (ml/min @ 100%)</label><input name='m1_flow' value='"); html += _m1Flow? fmtFloat(*_m1Flow,1) : String(50.0f); html += F("'>");
-  html += F("<small style='color:#888'>Calibrate: run pump for 60s @ 100%, measure volume, divide by 1 min</small>");
-  
-  // ORP Section
-  html += F("<h4 style='margin-top:20px;color:#ffb74d'>⚡ ORP Sensor & Pump</h4>");
-  html += F("<label>Target ORP Min (mV)</label><input name='orp_min' value='"); html += _orpMin? String(*_orpMin) : String(250); html += F("'>");
-  html += F("<label>Target ORP Max (mV)</label><input name='orp_max' value='"); html += _orpMax? String(*_orpMax) : String(850); html += F("'>");
-  html += F("<label>ORP Pump Speed (%)</label><input name='m2' value='"); html += _m2? String((int)*_m2) : String(60); html += F("'>");
-  html += F("<label>ORP Pump Flow Rate (ml/min @ 100%)</label><input name='m2_flow' value='"); html += _m2Flow? fmtFloat(*_m2Flow,1) : String(50.0f); html += F("'>");
-  html += F("<small style='color:#888'>Calibrate: run pump for 60s @ 100%, measure volume, divide by 1 min</small>");
-
-  // ORP slope calibration (board op-amp gain compensation)
-  if (_storage) {
-    float orpMvPerV = _storage->getOrpMvPerV(1000.0f);
-    html += F("<label>ORP Slope (mV per Volt)</label><input name='orp_mv_per_v' value='"); html += fmtFloat(orpMvPerV,1); html += F("'>");
-    html += F("<small style='color:#888'>Put probe in known buffer (e.g. 256 mV @ 25°C), read live ADC voltage in /console, set slope = buffer_mV / (V_adc − V_zero). Default 1000.</small>");
-  }
-
-  // Motor Control
-  html += F("<h4 style='margin-top:20px;color:#7fe3cf'>🔌 Motor Control</h4>");
-  {
-    bool en = _storage ? _storage->getMotorsEnabled(true) : true;
-    html += F("<div style='background:#222;padding:12px;border-radius:8px'><label style='display:flex;align-items:center;gap:8px;margin:0'><input type='checkbox' name='motors_en' value='1'");
-    if (en) html += F(" checked");
-    html += F("> <strong>Enable pH/ORP dosing pumps</strong></label></div>");
-  }
-  
-  // MQTT settings
+  float phMin = _phMin ? *_phMin : (_storage ? _storage->getPhMin(6.80f) : 6.80f);
+  float phMax = _phMax ? *_phMax : (_storage ? _storage->getPhMax(7.60f) : 7.60f);
+  int orpMin = _orpMin ? *_orpMin : (_storage ? _storage->getOrpMin(250) : 250);
+  int orpMax = _orpMax ? *_orpMax : (_storage ? _storage->getOrpMax(850) : 850);
+  int m1 = _m1 ? (int)*_m1 : 60; int m2 = _m2 ? (int)*_m2 : 60;
+  float m1Flow = _m1Flow ? *_m1Flow : 50.0f; float m2Flow = _m2Flow ? *_m2Flow : 50.0f;
+  bool motorsEn = _storage ? _storage->getMotorsEnabled(true) : true;
+  float orpMvPerV = _storage ? _storage->getOrpMvPerV(1000.0f) : 1000.0f;
+  int uiStyle = _storage ? _storage->getUiStyle(0) : 0;
+  int psTheme = _storage ? _storage->getPoolsideTheme(0) : 0;
+  int pL = _storage ? _storage->getPoolLengthCm() : 500;
+  int pW = _storage ? _storage->getPoolWidthCm() : 300;
+  int pH = _storage ? _storage->getPoolHeightCm() : 130;
   String mh = _storage ? _storage->getMqttHost("") : String("");
   uint16_t mp = _storage ? _storage->getMqttPort(1883) : 1883;
   String mu = _storage ? _storage->getMqttUser("") : String("");
   String mw = _storage ? _storage->getMqttPass("") : String("");
-  html += F("<h4 style='margin-top:20px;color:#ff9800'>📡 MQTT Broker</h4>");
-  html += F("<label>Host</label><input name='mqtt_host' value='"); html += mh; html += F("'>");
-  html += F("<label>Port</label><input name='mqtt_port' value='"); if (mp==0) html += F(""); else html += String((unsigned)mp); html += F("'>");
-  html += F("<label>User</label><input name='mqtt_user' value='"); html += mu; html += F("'>");
-  html += F("<label>Password</label><input type='password' name='mqtt_pass' value='"); html += mw; html += F("'>");
-  html += F("<small style='color:#888'>For Home Assistant integration</small>");
-  
-  html += F("<div style='margin-top:24px' class='row'><button type='submit'>💾 Save Settings</button></div>");
-  html += F("</form></div>");
-  html += F("<div style='text-align:center;margin-top:20px'>");
-  html += F("<a href='/' style='color:#4caf50'>← Back to Home</a> | ");
-  html += F("<a href='/safety' style='color:#ff9800'>⚠️ Safety Settings</a>");
+
+  String html;
+  html  = F("<!doctype html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>");
+  html += F("<title>Pura &middot; Instellingen</title><style>");
+  html += F(
+    "*{box-sizing:border-box;margin:0;padding:0}"
+    "html,body{width:100%;min-height:100vh;font-family:-apple-system,'SF Pro Text',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased;color:#12333C;background:#EDF4F5}"
+    "a{color:inherit;text-decoration:none}"
+    ".st{min-height:100vh;background:linear-gradient(180deg,#FAFDFD 0%,#EDF4F5 100%);display:flex;flex-direction:column;padding:max(44px,env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom));gap:12px;max-width:600px;margin:0 auto}"
+    ".top{display:flex;align-items:center;gap:10px;font-weight:650;font-size:16px;padding:0 4px}"
+    ".top .back{color:#0E7C93;font-size:22px;line-height:1;padding:0 4px}"
+    ".grp{background:#fff;border:1px solid #E2EBED;border-radius:14px;overflow:hidden}"
+    ".gh{display:flex;align-items:center;gap:9px;padding:12px 14px;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#4A626B;border-bottom:1px solid #EDF2F4}"
+    ".gh svg{color:#0E7C93;flex:0 0 auto}"
+    ".row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid #EDF2F4;font-size:14px}"
+    ".row:last-child{border-bottom:0}"
+    ".row .k{color:#12333C}"
+    ".row .k small{display:block;font-size:11px;color:#8CA0A8;font-weight:400;margin-top:1px}"
+    ".col{display:block;padding:11px 14px;border-bottom:1px solid #EDF2F4}"
+    ".col:last-child{border-bottom:0}"
+    ".col .k{display:block;font-size:12px;color:#4A626B;font-weight:600;margin-bottom:6px}"
+    "input[type=number],input[type=text],input[type=password],select{padding:9px 12px;background:#F4F7F8;color:#12333C;border:1px solid #DCE6E9;border-radius:8px;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:14px;font-variant-numeric:tabular-nums;outline:none}"
+    "input:focus,select:focus{border-color:#0E7C93}"
+    "input[type=number]{width:110px;text-align:right}"
+    ".col input,.col select{width:100%}"
+    /* toggle */
+    ".sw{position:relative;width:44px;height:26px;flex:0 0 44px}"
+    ".sw input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:1}"
+    ".sw i{position:absolute;inset:0;border-radius:99px;background:#CBD8DC;transition:background .2s}"
+    ".sw i::after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}"
+    ".sw input:checked+i{background:#12A594}"
+    ".sw input:checked+i::after{left:21px}"
+    /* segmented */
+    ".seg{display:flex;background:#EDF2F4;border-radius:9px;padding:3px;gap:3px}"
+    ".seg label{flex:1;text-align:center;padding:8px 0;border-radius:7px;font-size:13px;font-weight:600;color:#7E939B;cursor:pointer}"
+    ".seg input{display:none}"
+    ".seg label:has(input:checked){background:#fff;color:#0E7C93;box-shadow:0 1px 3px rgba(18,51,60,.12)}"
+    /* theme swatches */
+    ".sws{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}"
+    ".sws label{display:block;padding:14px 4px;border-radius:10px;cursor:pointer;text-align:center;color:#fff;font-size:11px;font-weight:600;letter-spacing:.1em;border:2px solid transparent}"
+    ".sws input{display:none}"
+    ".sws label:has(input:checked){border-color:#0E7C93;box-shadow:0 0 0 2px rgba(14,124,147,.25)}"
+    "button[type=submit]{width:100%;padding:14px;background:#0E7C93;color:#fff;border:none;cursor:pointer;font-size:14px;font-weight:650;border-radius:12px;margin-top:4px}"
+    "button[type=submit]:active{filter:brightness(1.1)}"
+    ".hint{font-size:11px;color:#8CA0A8;padding:0 4px}"
+  );
+  html += F("</style></head><body><div class='st'>");
+  html += F("<div class='top'><a class='back' href='/'>&lsaquo;</a> Instellingen</div>");
+  html += F("<form method='POST' action='/api/save' style='display:contents'>");
+
+  // Doelwaarden
+  html += F("<div class='grp'>"
+            "<div class='gh'><svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3c3 4.5 6 7.7 6 11a6 6 0 0 1-12 0c0-3.3 3-6.5 6-11z'/></svg>Doelwaarden</div>");
+  html += F("<div class='row'><span class='k'>pH doel min</span><input type='number' step='0.05' min='6' max='9' name='ph_min' value='"); html += fmtFloat(phMin,2); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>pH doel max</span><input type='number' step='0.05' min='6' max='9' name='ph_max' value='"); html += fmtFloat(phMax,2); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>ORP venster min <small>mV</small></span><input type='number' step='10' name='orp_min' value='"); html += String(orpMin); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>ORP venster max <small>mV</small></span><input type='number' step='10' name='orp_max' value='"); html += String(orpMax); html += F("'></div>");
   html += F("</div>");
-  sendFooter(html);
+
+  // Doseerpompen
+  html += F("<div class='grp'>"
+            "<div class='gh'><svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polygon points='13 2 3 14 12 14 11 22 21 10 12 10 13 2'/></svg>Doseerpompen</div>");
+  html += F("<div class='row'><span class='k'>Pompen actief</span><span class='sw'><input type='checkbox' name='motors_en' value='1'");
+  if (motorsEn) html += F(" checked");
+  html += F("><i></i></span></div>");
+  html += F("<div class='row'><span class='k'>pH&minus; snelheid <small>% van max</small></span><input type='number' min='0' max='100' name='m1' value='"); html += String(m1); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>pH&minus; flow <small>mL/min @ 100%</small></span><input type='number' step='0.1' min='0.1' max='500' name='m1_flow' value='"); html += fmtFloat(m1Flow,1); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Chloor snelheid <small>% van max</small></span><input type='number' min='0' max='100' name='m2' value='"); html += String(m2); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Chloor flow <small>mL/min @ 100%</small></span><input type='number' step='0.1' min='0.1' max='500' name='m2_flow' value='"); html += fmtFloat(m2Flow,1); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Flow kalibreren <small>pomp 60 s op 100%, meet het volume in mL = flow</small></span></div>");
+  html += F("<div class='row'><span class='k'>ORP slope <small>mV per Volt &middot; buffer 256 mV, zie /console</small></span><input type='number' step='1' min='50' max='5000' name='orp_mv_per_v' value='"); html += fmtFloat(orpMvPerV,1); html += F("'></div>");
+  html += F("</div>");
+
+  // Weergave
+  html += F("<div class='grp'>"
+            "<div class='gh'><svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='14' rx='2'/><path d='M8 21h8M12 18v3'/></svg>Weergave</div>");
+  html += F("<div class='col'><span class='k'>Stijl</span><div class='seg'>");
+  const char* styleNames[] = {"Vapor","Poolside","Helder"};
+  for (int i=0;i<3;i++) {
+    html += F("<label><input type='radio' name='ui_style' value='"); html += String(i); html += F("'");
+    if (uiStyle == i) html += F(" checked");
+    html += F(">"); html += styleNames[i]; html += F("</label>");
+  }
+  html += F("</div></div>");
+  html += F("<div class='col'><span class='k'>Poolside-thema</span><div class='sws'>");
+  const char* themeNames[] = {"Ocean","Sunset","Midnight","Verdant"};
+  const char* themeGrads[] = {
+    "linear-gradient(135deg,#2f6aa0,#0b2a4a)",
+    "linear-gradient(135deg,#b8574a,#3d2038)",
+    "linear-gradient(135deg,#1a1f2e,#050810)",
+    "linear-gradient(135deg,#2b7a6f,#0a2e28)"
+  };
+  for (int i=0;i<4;i++) {
+    html += F("<label style='background:"); html += themeGrads[i]; html += F("'>");
+    html += F("<input type='radio' name='ps_theme' value='"); html += String(i); html += F("'");
+    if (psTheme == i) html += F(" checked");
+    html += F(">"); html += themeNames[i]; html += F("</label>");
+  }
+  html += F("</div></div></div>");
+
+  // Bad & netwerk
+  html += F("<div class='grp'>"
+            "<div class='gh'><svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='12' r='10'/><path d='M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z'/></svg>Bad &amp; netwerk</div>");
+#if HAS_ZIGBEE
+  {
+    core::Storage::Mode modeNow = _storage ? _storage->getMode(core::Storage::MODE_WIFI_MQTT) : core::Storage::MODE_WIFI_MQTT;
+    html += F("<div class='col'><span class='k'>Netwerkmodus</span><select name='mode'>");
+    html += F("<option value='wifi'"); if (modeNow==core::Storage::MODE_WIFI_MQTT) html += F(" selected"); html += F(">WiFi/MQTT</option>");
+    html += F("<option value='zigbee'"); if (modeNow==core::Storage::MODE_ZIGBEE) html += F(" selected"); html += F(">Zigbee</option>");
+    html += F("</select></div>");
+  }
+#endif
+  html += F("<div class='row'><span class='k'>Lengte <small>cm</small></span><input type='number' min='50' max='5000' name='pool_l' id='pl' value='"); html += String(pL); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Breedte <small>cm</small></span><input type='number' min='50' max='5000' name='pool_w' id='pw' value='"); html += String(pW); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Waterhoogte <small>cm</small></span><input type='number' min='30' max='500' name='pool_h' id='ph' value='"); html += String(pH); html += F("'></div>");
+  html += F("<div class='row'><span class='k'>Volume <small>voor doseer-tips</small></span><span class='k' id='vol' style=\"font-family:'SF Mono',ui-monospace,Menlo,monospace\"></span></div>");
+  html += F("<div class='col'><span class='k'>MQTT host <small style='display:inline'>voor Home Assistant</small></span><input type='text' name='mqtt_host' value='"); html += mh; html += F("'></div>");
+  html += F("<div class='row'><span class='k'>MQTT poort</span><input type='number' min='1' max='65535' name='mqtt_port' value='"); html += String((unsigned)mp); html += F("'></div>");
+  html += F("<div class='col'><span class='k'>MQTT gebruiker</span><input type='text' name='mqtt_user' value='"); html += mu; html += F("'></div>");
+  html += F("<div class='col'><span class='k'>MQTT wachtwoord</span><input type='password' name='mqtt_pass' value='"); html += mw; html += F("'></div>");
+  html += F("</div>");
+
+  html += F("<button type='submit'>Opslaan</button>");
+  html += F("<div class='hint'>Veiligheidslimieten en WhatsApp-meldingen staan onder <a href='/safety' style='color:#0E7C93'>Safety</a>.</div>");
+  html += F("</form></div>");
+
+  html += F("<script>"
+    "function vol(){var l=+document.getElementById('pl').value||0,w=+document.getElementById('pw').value||0,h=+document.getElementById('ph').value||0;"
+    "document.getElementById('vol').textContent='~'+(l*w*h/1e6).toFixed(1)+' m\\u00B3';}"
+    "['pl','pw','ph'].forEach(function(i){document.getElementById(i).addEventListener('input',vol);});vol();"
+  "</script></body></html>");
   _http.send(200, "text/html; charset=UTF-8", html);
 }
 
@@ -467,6 +545,22 @@ void WebUI::handleApiState(){
   j += ",\"orp\":"; j += domain::Metrics::instance().haveOrp ? String((int)lrintf(domain::Metrics::instance().orpMv)) : String("null");
   j += ",\"temp\":"; j += domain::Metrics::instance().haveTemp ? fmtFloat(domain::Metrics::instance().tempC,1) : String("null");
   j += "}";
+  _http.send(200, "application/json", j);
+}
+
+// 24h sensor history + 7-day dosing (6 stored days + today live)
+void WebUI::handleApiHistory(){
+  String j = "{";
+  domain::History::instance().toJson(j);
+  float m1[7] = {0}, m2[7] = {0};
+  if (_storage) _storage->getDoseHistory(m1, m2);
+  float today1 = 0, today2 = 0;
+  if (_motor) { today1 = _motor->getM1Stats().dailyVolumeMl; today2 = _motor->getM2Stats().dailyVolumeMl; }
+  j += ",\"dose_ph\":[";
+  for (int i = 1; i < 7; i++) { j += fmtFloat(m1[i],1); j += ','; }
+  j += fmtFloat(today1,1); j += "],\"dose_orp\":[";
+  for (int i = 1; i < 7; i++) { j += fmtFloat(m2[i],1); j += ','; }
+  j += fmtFloat(today2,1); j += "]}";
   _http.send(200, "application/json", j);
 }
 
@@ -491,6 +585,8 @@ void WebUI::handleApiSave(){
     if (_http.hasArg("pool_l")) _storage->setPoolLengthCm(constrain(parseIntOr(_http.arg("pool_l"), 500), 50, 5000));
     if (_http.hasArg("pool_w")) _storage->setPoolWidthCm(constrain(parseIntOr(_http.arg("pool_w"), 300), 50, 5000));
     if (_http.hasArg("pool_h")) _storage->setPoolHeightCm(constrain(parseIntOr(_http.arg("pool_h"), 130), 30, 500));
+    if (_http.hasArg("ui_style")) _storage->setUiStyle(constrain(parseIntOr(_http.arg("ui_style"), 0), 0, 2));
+    if (_http.hasArg("ps_theme")) _storage->setPoolsideTheme(constrain(parseIntOr(_http.arg("ps_theme"), 0), 0, 3));
   }
   if (_http.hasArg("m1") && _m1 && _storage) {
     int v = parseIntOr(_http.arg("m1"), *_m1); v = constrain(v,0,100); *_m1 = (uint8_t)v; _storage->setM1Speed(*_m1);
@@ -719,6 +815,383 @@ void WebUI::handleConsole(){
   
   sendFooter(html);
   _http.send(200, "text/html; charset=UTF-8", html);
+}
+
+// ============================================================================
+// Poolside UI — alternative theme (WaterGuru-inspired), 4 color variants
+// ============================================================================
+// ============================================================================
+// Helder UI — light, daylight-readable style (ui_style = 2)
+// ============================================================================
+void WebUI::renderHelderIndex(String &html) {
+  float phMin = _phMin ? *_phMin : 6.80f;
+  float phMax = _phMax ? *_phMax : 7.60f;
+  int   orpMin = _orpMin ? *_orpMin : 250;
+  int   orpMax = _orpMax ? *_orpMax : 850;
+  float vol_m3 = 0.0f;
+  if (_storage) vol_m3 = ((float)_storage->getPoolLengthCm() * _storage->getPoolWidthCm() * _storage->getPoolHeightCm()) / 1000000.0f;
+
+  html  = F("<!doctype html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>");
+  html += F("<title>Pura</title><style>");
+  html += F(
+    "*{box-sizing:border-box;margin:0;padding:0}"
+    "html,body{width:100%;min-height:100vh;font-family:-apple-system,'SF Pro Text',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased;color:#12333C;background:#EDF4F5}"
+    "a{color:inherit;text-decoration:none}"
+    ".hl{min-height:100vh;background:linear-gradient(180deg,#FAFDFD 0%,#EDF4F5 100%);display:flex;flex-direction:column;padding:max(44px,env(safe-area-inset-top)) 16px calc(8px + env(safe-area-inset-bottom));gap:12px;max-width:600px;margin:0 auto}"
+    ".top{display:flex;justify-content:space-between;align-items:center;padding:0 4px}"
+    ".top .loc{font-weight:650;font-size:16px;display:flex;gap:7px;align-items:center}"
+    ".top svg{color:#5E7780}"
+    ".verdict{padding:4px 4px 0}"
+    ".badge{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;border-radius:99px;padding:5px 12px}"
+    ".badge i{width:7px;height:7px;border-radius:50%;display:inline-block}"
+    ".badge.ok{color:#0E7C93;background:#DFF0F3}.badge.ok i{background:#12A594}"
+    ".badge.warn{color:#8A5412;background:#FBEEDC}.badge.warn i{background:#E5A33C}"
+    ".badge.crit{color:#A33A3A;background:#FCE4E4}.badge.crit i{background:#E05252}"
+    ".verdict h1{font-weight:250;font-size:30px;letter-spacing:-.02em;margin:10px 0 2px;line-height:1.12}"
+    ".verdict .when{font-size:12px;color:#7E939B;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}"
+    ".card{background:#fff;border:1px solid #E2EBED;border-radius:16px;padding:14px 16px;box-shadow:0 2px 10px rgba(18,51,60,.05)}"
+    ".mrow{display:flex;justify-content:space-between;align-items:baseline}"
+    ".mrow .lbl{font-size:13px;font-weight:600;color:#4A626B}"
+    ".mrow .v{font-size:26px;font-weight:300;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}"
+    ".mrow .v small{font-size:12px;color:#7E939B;font-weight:400}"
+    ".mrow .v.warn{color:#B4691E}.mrow .v.crit{color:#C24444}"
+    /* band gauge: display range = target window +25% each side, so zone stops are constant */
+    ".band{position:relative;height:8px;border-radius:4px;margin:12px 0 4px;background:linear-gradient(90deg,#F0837B 0 16.7%,#F2C063 16.7% 23.3%,#63C6B4 23.3% 76.7%,#F2C063 76.7% 83.3%,#F0837B 83.3% 100%)}"
+    ".band .pin{position:absolute;top:-4px;width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #0E7C93;box-shadow:0 1px 4px rgba(0,0,0,.25);transform:translateX(-8px);transition:left .4s;left:-20px}"
+    ".bandlbl{display:flex;justify-content:space-between;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:9px;color:#9AACB3}"
+    ".spark{width:100%;height:34px;margin-top:8px}"
+    ".duo{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+    ".mini .lbl{font-size:12px;color:#4A626B;font-weight:600}"
+    ".mini .v{font-size:20px;font-weight:300;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;margin-top:2px}"
+    ".mini .v small{font-size:11px;color:#7E939B}"
+    ".dose{display:flex;justify-content:space-between;align-items:center}"
+    ".dose .t{font-size:12px;color:#4A626B}"
+    ".dose .t b{display:block;font-size:13px;color:#12333C;margin-bottom:1px}"
+    ".dose .st{font-size:12px;color:#7E939B;font-weight:600}"
+    ".dose .st.on{color:#0E7C93;animation:hldose 1.2s ease-in-out infinite}"
+    "@keyframes hldose{0%,100%{opacity:1}50%{opacity:.4}}"
+    "@media(prefers-reduced-motion:reduce){.dose .st.on{animation:none}}"
+    ".nav{margin-top:auto;display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid #E2EBED;padding-top:10px}"
+    ".nav a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:#8CA0A8}"
+    ".nav a.on{color:#0E7C93}"
+  );
+  html += F("</style></head><body><div class='hl'>");
+
+  // topbar
+  html += F("<div class='top'><div class='loc'>"
+            "<svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13S5 14 5 9a7 7 0 0 1 7-7z'/><circle cx='12' cy='9' r='2.5'/></svg>"
+            "Bluey</div>"
+            "<a href='/settings' aria-label='Instellingen'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M20 7h-9M14 17H5'/><circle cx='17' cy='17' r='3'/><circle cx='7' cy='7' r='3'/></svg></a></div>");
+
+  // verdict
+  html += F("<div class='verdict'>"
+            "<span class='badge ok' id='hlBadge'><i></i><span id='hlBadgeTxt'>Wachten op meting&hellip;</span></span>"
+            "<h1 id='hlHead'>Even geduld.</h1>"
+            "<div class='when' id='hlWhen'>live &middot; 2 Hz</div>"
+          "</div>");
+
+  // pH card with band + sparkline
+  html += F("<div class='card'>"
+            "<div class='mrow'><span class='lbl'>pH</span><span class='v' id='hlPhVal'>--</span></div>"
+            "<div class='band'><span class='pin' id='hlPhPin'></span></div>"
+            "<div class='bandlbl'><span id='hlPhLo'></span><span>doel ");
+  html += fmtFloat(phMin,2); html += F(" &ndash; "); html += fmtFloat(phMax,2);
+  html += F("</span><span id='hlPhHi'></span></div>"
+            "<svg class='spark' id='hlPhSpark' viewBox='0 0 280 34' preserveAspectRatio='none'></svg>"
+            "<div class='bandlbl'><span>&minus;24 u</span><span>nu</span></div>"
+          "</div>");
+
+  // ORP card with band
+  html += F("<div class='card'>"
+            "<div class='mrow'><span class='lbl'>ORP</span><span class='v' id='hlOrpVal'>--<small> mV</small></span></div>"
+            "<div class='band'><span class='pin' id='hlOrpPin'></span></div>"
+            "<div class='bandlbl'><span id='hlOrpLo'></span><span>venster ");
+  html += String(orpMin); html += F(" &ndash; "); html += String(orpMax);
+  html += F("</span><span id='hlOrpHi'></span></div>"
+          "</div>");
+
+  // temp + volume
+  html += F("<div class='duo'>"
+            "<div class='card mini'><div class='lbl'>Water</div><div class='v' id='hlTempVal'>--<small> &deg;C</small></div></div>"
+            "<div class='card mini'><div class='lbl'>Volume</div><div class='v'>");
+  html += fmtFloat(vol_m3,1); html += F("<small> m&sup3;</small></div></div></div>");
+
+  // dosing today
+  html += F("<div class='card dose'>"
+            "<div class='t'><b>Dosering vandaag</b><span id='hlDoseTxt'>chloor 0 mL &middot; pH&minus; 0 mL</span></div>"
+            "<span class='st' id='hlDoseSt'>rust</span>"
+          "</div>");
+
+  // nav
+  html += F("<div class='nav'>"
+            "<a class='on' href='/'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3c3 4.5 6 7.7 6 11a6 6 0 0 1-12 0c0-3.3 3-6.5 6-11z'/></svg>Status</a>"
+            "<a href='/safety'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z'/></svg>Safety</a>"
+            "<a href='/settings'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M20 7h-9M14 17H5'/><circle cx='17' cy='17' r='3'/><circle cx='7' cy='7' r='3'/></svg>Instellen</a>"
+            "<a href='/console'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='4 17 10 11 4 5'/><line x1='12' y1='19' x2='20' y2='19'/></svg>Console</a>"
+          "</div>");
+
+  html += F("</div>"); // /hl
+
+  html += F("<script>");
+  html += "var PH_MIN=" + String(phMin, 2) + ",PH_MAX=" + String(phMax, 2);
+  html += ",ORP_MIN=" + String(orpMin) + ",ORP_MAX=" + String(orpMax) + ";";
+  html += F(
+    "var curPh=null,curOrp=null,anyDosing=false;"
+    "function $(i){return document.getElementById(i);}"
+    /* display range = window +25% each side (matches the .band gradient stops) */
+    "function lo(mn,mx){return mn-.25*(mx-mn);}function hi(mn,mx){return mx+.25*(mx-mn);}"
+    "function pin(id,v,mn,mx){var e=$(id);if(!e)return;if(v==null){e.style.left='-20px';return;}"
+      "var p=(v-lo(mn,mx))/(hi(mn,mx)-lo(mn,mx))*100;e.style.left=Math.max(2,Math.min(98,p))+'%';}"
+    "function zone(v,mn,mx){if(v==null)return null;if(v<mn||v>mx)return 'crit';var m=(mx-mn)*.1;"
+      "return(v<mn+m||v>mx-m)?'warn':'ok';}"
+    "function verdict(){var b=$('hlBadge'),t=$('hlBadgeTxt'),h=$('hlHead');"
+      "if(curPh==null&&curOrp==null){b.className='badge ok';t.textContent='Wachten op meting\\u2026';h.textContent='Even geduld.';return;}"
+      "var zp=zone(curPh,PH_MIN,PH_MAX),zo=zone(curOrp,ORP_MIN,ORP_MAX);"
+      "var w=(zp=='crit'||zo=='crit')?'crit':(zp=='warn'||zo=='warn')?'warn':'ok';"
+      "b.className='badge '+w;"
+      "if(w=='ok'){t.textContent='Alles in balans';h.textContent='Je water is gezond.';}"
+      "else if(w=='warn'){t.textContent='Bijna op de grens';h.textContent='Houd je water in de gaten.';}"
+      "else{t.textContent='Actie nodig';h.textContent='Je water heeft aandacht nodig.';}}"
+    "function vcls(id,z){var e=$(id);e.className='v'+(z=='warn'?' warn':z=='crit'?' crit':'');}"
+    "function setPh(v){curPh=v;$('hlPhVal').textContent=(v==null)?'--':v.toFixed(2);"
+      "pin('hlPhPin',v,PH_MIN,PH_MAX);vcls('hlPhVal',zone(v,PH_MIN,PH_MAX));verdict();stamp();}"
+    "function setOrp(v){curOrp=v;$('hlOrpVal').innerHTML=(v==null)?'--<small> mV</small>':Math.round(v)+'<small> mV</small>';"
+      "pin('hlOrpPin',v,ORP_MIN,ORP_MAX);vcls('hlOrpVal',zone(v,ORP_MIN,ORP_MAX));verdict();stamp();}"
+    "function setTemp(v){$('hlTempVal').innerHTML=(v==null)?'--<small> \\u00B0C</small>':v.toFixed(1)+'<small> \\u00B0C</small>';}"
+    "function stamp(){$('hlWhen').textContent='zojuist gemeten \\u00B7 live 2 Hz';}"
+    "function fmt(ml){return ml>=1000?(ml/1000).toFixed(2)+' L':Math.round(ml)+' mL';}"
+    "var todayPh=0,todayOrp=0;"
+    "function dose(){$('hlDoseTxt').innerHTML='chloor '+fmt(todayOrp)+' &middot; pH&minus; '+fmt(todayPh);"
+      "var s=$('hlDoseSt');s.textContent=anyDosing?'\\u25CF doseert':'rust';s.className='st'+(anyDosing?' on':'');}"
+    "$('hlPhLo').textContent=lo(PH_MIN,PH_MAX).toFixed(2);$('hlPhHi').textContent=hi(PH_MIN,PH_MAX).toFixed(2);"
+    "$('hlOrpLo').textContent=Math.round(lo(ORP_MIN,ORP_MAX));$('hlOrpHi').textContent=Math.round(hi(ORP_MIN,ORP_MAX));"
+    "function spark(id,arr,w,h){var el=$(id);if(!el)return;var vals=[],i;"
+      "for(i=0;i<arr.length;i++)if(arr[i]!=null)vals.push(arr[i]);"
+      "if(vals.length<2){el.innerHTML='';return;}"
+      "var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);if(mx-mn<1e-9){mn-=1;mx+=1;}"
+      "var pts=[],lx=0,ly=0,n=arr.length;"
+      "for(i=0;i<n;i++){if(arr[i]==null)continue;lx=i/(n-1)*w;ly=h-2-(arr[i]-mn)/(mx-mn)*(h-4);pts.push(lx.toFixed(1)+','+ly.toFixed(1));}"
+      "el.innerHTML='<polygon points=\"'+pts[0].split(',')[0]+','+h+' '+pts.join(' ')+' '+lx.toFixed(1)+','+h+'\" fill=\"rgba(14,124,147,.08)\"/>'"
+      "+'<polyline points=\"'+pts.join(' ')+'\" fill=\"none\" stroke=\"#0E7C93\" stroke-width=\"1.6\" stroke-linecap=\"round\"/>'"
+      "+'<circle cx=\"'+lx.toFixed(1)+'\" cy=\"'+ly.toFixed(1)+'\" r=\"2.6\" fill=\"#0E7C93\"/>';}"
+    "function loadHist(){fetch('/api/history').then(function(r){return r.json();}).then(function(h){"
+      "spark('hlPhSpark',h.ph,280,34);}).catch(function(){});}"
+    "loadHist();setInterval(loadHist,300000);"
+    "var ws;function wsConn(){ws=new WebSocket('ws://'+location.host+':81/');ws.onclose=function(){setTimeout(wsConn,2000);};"
+      "ws.onmessage=function(e){try{var d=JSON.parse(e.data);var d1=false,d2=false;"
+      "if(d.pump_ph){d1=d.pump_ph.active;todayPh=d.pump_ph.daily;}"
+      "if(d.pump_orp){d2=d.pump_orp.active;todayOrp=d.pump_orp.daily;}"
+      "if(d.pump_ph||d.pump_orp){anyDosing=d1||d2;dose();}"
+      "if(d.ph!==undefined)setPh(d.ph);"
+      "if(d.orp!==undefined)setOrp(d.orp);"
+      "if(d.temp!==undefined)setTemp(d.temp);"
+      "}catch(_){}};}"
+    "wsConn();"
+    "fetch('/api/state').then(function(r){return r.json();}).then(function(d){"
+      "if(d.ph!=null)setPh(d.ph);if(d.orp!=null)setOrp(d.orp);if(d.temp!=null)setTemp(d.temp);}).catch(function(){});"
+  );
+  html += F("</script></body></html>");
+}
+
+void WebUI::renderPoolsideIndex(String &html) {
+  float phMin = _phMin ? *_phMin : 6.80f;
+  float phMax = _phMax ? *_phMax : 7.60f;
+  int   orpMin = _orpMin ? *_orpMin : 250;
+  int   orpMax = _orpMax ? *_orpMax : 850;
+  int theme = _storage ? _storage->getPoolsideTheme(0) : 0;
+  const char* themeClass = "theme-ocean";
+  if (theme == 1) themeClass = "theme-sunset";
+  else if (theme == 2) themeClass = "theme-midnight";
+  else if (theme == 3) themeClass = "theme-verdant";
+
+  html  = F("<!doctype html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>");
+  html += F("<title>Pura</title><style>");
+  html += F(
+    "*{box-sizing:border-box;margin:0;padding:0}"
+    "html,body{width:100%;min-height:100vh;font-family:-apple-system,'SF Pro Text',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased;color:var(--ps-ink);background:var(--ps-bot)}"
+    "a{color:inherit;text-decoration:none}"
+    ".ps{min-height:100vh;background:radial-gradient(120% 60% at 50% 0%,var(--ps-glow) 0%,transparent 50%),linear-gradient(180deg,var(--ps-top) 0%,var(--ps-mid) 45%,var(--ps-bot) 100%);display:flex;flex-direction:column;padding:max(48px,env(safe-area-inset-top)) 14px calc(8px + env(safe-area-inset-bottom));gap:11px;max-width:600px;margin:0 auto}"
+    ".ps-top{display:flex;align-items:center;justify-content:space-between;padding:0 4px 2px}"
+    ".ps-top .pool-select{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:16px}"
+    ".ps-top .pool-select .chev{font-size:11px;opacity:.6}"
+    ".ps-top .cog{width:34px;height:34px;display:grid;place-items:center;color:var(--ps-ink-soft)}"
+    ".glass{background:var(--ps-card);border:1px solid var(--ps-line);border-radius:16px;backdrop-filter:blur(14px)}"
+    /* alert banner */
+    ".ps-alert{display:none;align-items:center;gap:10px;padding:12px 14px;background:rgba(255,95,122,.12);border:1px solid rgba(255,95,122,.25);border-radius:12px;color:var(--ps-ink)}"
+    ".ps-alert.show{display:flex}"
+    ".ps-alert .badge{width:24px;height:24px;flex:0 0 24px;background:var(--ps-crit);color:#fff;display:grid;place-items:center;border-radius:8px;font-weight:700;font-size:13px}"
+    ".ps-alert .msg{flex:1;font-size:13px;font-weight:600;line-height:1.35}"
+    ".ps-alert .chev{color:var(--ps-ink-soft);font-size:14px}"
+    /* score card */
+    ".score{padding:16px;display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center}"
+    ".score .s1{font-size:12px;color:var(--ps-ink-soft)}"
+    ".score .s2{font-size:19px;font-weight:600;line-height:1.25;margin:2px 0}"
+    ".score .s3{font-size:11px;color:var(--ps-ink-soft)}"
+    ".score circle{transition:stroke-dasharray .6s,stroke .3s}"
+    /* metric cards */
+    ".duo{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+    ".metric{padding:12px 14px}"
+    ".metric .l{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;color:var(--ps-ink-soft)}"
+    ".metric .st{font-size:10px}"
+    ".metric .st.ok{color:var(--ps-accent)}"
+    ".metric .st.warn{color:var(--ps-warn)}"
+    ".metric .st.crit{color:var(--ps-crit)}"
+    ".metric .st.dose{color:var(--ps-accent);animation:psdose 1.2s ease-in-out infinite}"
+    "@keyframes psdose{0%,100%{opacity:1}50%{opacity:.4}}"
+    "@media(prefers-reduced-motion:reduce){.metric .st.dose{animation:none}}"
+    ".metric .v{font-size:25px;font-weight:250;font-variant-numeric:tabular-nums;margin:3px 0 0;letter-spacing:-.02em}"
+    ".metric .v small{font-size:11px;color:var(--ps-ink-soft);font-weight:400}"
+    ".metric .sp{width:100%;height:22px;margin-top:6px}"
+    /* temp trend */
+    ".trendcard{padding:13px 14px}"
+    ".trendcard .l{display:flex;justify-content:space-between;font-size:11px;color:var(--ps-ink-soft);margin-bottom:6px}"
+    ".trendcard .l b{color:var(--ps-ink);font-weight:600;font-variant-numeric:tabular-nums}"
+    ".trendcard svg{width:100%;height:30px}"
+    /* dose bars */
+    ".doses{padding:13px 14px}"
+    ".doses .l{font-size:11px;color:var(--ps-ink-soft);margin-bottom:8px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}"
+    ".doses .l .lg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 3px 0 8px}"
+    ".doses .today{font-size:10px;color:var(--ps-ink-muted);margin-top:6px;font-variant-numeric:tabular-nums}"
+    ".bars{display:flex;align-items:flex-end;gap:7px;height:56px}"
+    ".bars .b{flex:1;display:flex;flex-direction:column;gap:2px;justify-content:flex-end;height:100%}"
+    ".bars .b i{display:block;border-radius:2px}"
+    ".bars .b span{font-size:8px;text-align:center;color:var(--ps-ink-muted);margin-top:2px}"
+    /* nav */
+    ".ps-nav{margin-top:auto;display:grid;grid-template-columns:repeat(4,1fr);padding:10px 0 2px;border-top:1px solid var(--ps-line)}"
+    ".ps-nav-item{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:9px;color:var(--ps-ink-muted)}"
+    ".ps-nav-item.active{color:var(--ps-accent)}"
+    /* theme tokens */
+    ".theme-ocean{--ps-top:#2f6aa0;--ps-mid:#1a4a7a;--ps-bot:#0b2a4a;--ps-glow:rgba(94,200,255,.14);--ps-accent:#5ec8ff;--ps-accent-soft:#82d4ff;--ps-ink:#fff;--ps-ink-soft:rgba(255,255,255,.7);--ps-ink-muted:rgba(255,255,255,.5);--ps-card:rgba(255,255,255,.06);--ps-line:rgba(255,255,255,.10);--ps-warn:#f4b544;--ps-crit:#ff5f7a}"
+    ".theme-sunset{--ps-top:#b8574a;--ps-mid:#7a3a3f;--ps-bot:#3d2038;--ps-glow:rgba(255,140,105,.16);--ps-accent:#ff8f6b;--ps-accent-soft:#ffb090;--ps-ink:#fff2e8;--ps-ink-soft:rgba(255,242,232,.72);--ps-ink-muted:rgba(255,242,232,.48);--ps-card:rgba(255,220,200,.06);--ps-line:rgba(255,220,200,.12);--ps-warn:#f4c26a;--ps-crit:#d9445a}"
+    ".theme-midnight{--ps-top:#1a1f2e;--ps-mid:#0d1220;--ps-bot:#050810;--ps-glow:rgba(150,220,255,.08);--ps-accent:#a8dcff;--ps-accent-soft:#c8e8ff;--ps-ink:#f0f4fa;--ps-ink-soft:rgba(240,244,250,.7);--ps-ink-muted:rgba(240,244,250,.4);--ps-card:rgba(255,255,255,.04);--ps-line:rgba(255,255,255,.08);--ps-warn:#e8b544;--ps-crit:#f56b7a}"
+    ".theme-verdant{--ps-top:#2b7a6f;--ps-mid:#1a5548;--ps-bot:#0a2e28;--ps-glow:rgba(103,232,180,.14);--ps-accent:#67e8b4;--ps-accent-soft:#a0f0c8;--ps-ink:#e8fff4;--ps-ink-soft:rgba(232,255,244,.72);--ps-ink-muted:rgba(232,255,244,.48);--ps-card:rgba(200,255,220,.05);--ps-line:rgba(200,255,220,.10);--ps-warn:#f4c86a;--ps-crit:#ff6b7a}"
+  );
+  html += F("</style></head><body>");
+  html += F("<div class='ps "); html += themeClass; html += F("'>");
+
+  // topbar
+  html += F("<div class='ps-top'><div class='pool-select'>Bluey <span class='chev'>&#9662;</span></div>"
+            "<a class='cog' href='/settings' aria-label='Instellingen'>"
+            "<svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M20 7h-9M14 17H5'/><circle cx='17' cy='17' r='3'/><circle cx='7' cy='7' r='3'/></svg></a></div>");
+
+  // alert banner (populated by JS)
+  html += F("<a class='ps-alert' id='psAlert' href='/safety'><div class='badge' id='psAlertBadge'>1</div><div class='msg' id='psAlertMsg'></div><span class='chev'>&rsaquo;</span></a>");
+
+  // score card
+  html += F("<div class='glass score'>"
+            "<svg width='86' height='86' viewBox='0 0 86 86'>"
+            "<circle cx='43' cy='43' r='36' fill='none' stroke='var(--ps-line)' stroke-width='7'/>"
+            "<circle id='psRing' cx='43' cy='43' r='36' fill='none' stroke='var(--ps-accent)' stroke-width='7' stroke-linecap='round' stroke-dasharray='0 226.2' transform='rotate(-90 43 43)'/>"
+            "<text id='psScoreN' x='43' y='41' text-anchor='middle' fill='var(--ps-ink)' font-size='24' font-weight='300'>--</text>"
+            "<text x='43' y='56' text-anchor='middle' fill='var(--ps-ink-soft)' font-size='8'>SCORE</text>"
+            "</svg>"
+            "<div class='txt'><div class='s1'>Waterkwaliteit</div><div class='s2' id='psScoreWord'>Wachten op meting&hellip;</div><div class='s3' id='psScoreSub'></div></div>"
+          "</div>");
+
+  // pH + ORP cards with sparklines
+  html += F("<div class='duo'>"
+            "<div class='glass metric'><div class='l'><span>pH</span><span class='st' id='psPhSt'></span></div><div class='v' id='psPhVal'>--</div>"
+            "<svg class='sp' id='psPhSpark' viewBox='0 0 120 22' preserveAspectRatio='none'></svg></div>"
+            "<div class='glass metric'><div class='l'><span>ORP</span><span class='st' id='psOrpSt'></span></div><div class='v' id='psOrpVal'>--<small> mV</small></div>"
+            "<svg class='sp' id='psOrpSpark' viewBox='0 0 120 22' preserveAspectRatio='none'></svg></div>"
+          "</div>");
+
+  // temperature trend
+  html += F("<div class='glass trendcard'><div class='l'><span>Watertemperatuur</span><b id='psTempVal'>--</b></div>"
+            "<svg id='psTempSpark' viewBox='0 0 280 30' preserveAspectRatio='none'></svg></div>");
+
+  // 7-day dosing bars
+  html += F("<div class='glass doses'>"
+            "<div class='l'><span>Dosering &middot; 7 dagen</span>"
+            "<span class='lg'><i style='background:var(--ps-accent)'></i>chloor<i style='background:var(--ps-crit);opacity:.75'></i>pH&minus;</span></div>"
+            "<div class='bars' id='psBars'></div>"
+            "<div class='today' id='psDoseToday'></div>"
+          "</div>");
+
+  // nav
+  html += F("<div class='ps-nav'>"
+            "<a class='ps-nav-item active' href='/'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3c3 4.5 6 7.7 6 11a6 6 0 0 1-12 0c0-3.3 3-6.5 6-11z'/></svg><span>Status</span></a>"
+            "<a class='ps-nav-item' href='/safety'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z'/></svg><span>Safety</span></a>"
+            "<a class='ps-nav-item' href='/settings'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M20 7h-9M14 17H5'/><circle cx='17' cy='17' r='3'/><circle cx='7' cy='7' r='3'/></svg><span>Instellen</span></a>"
+            "<a class='ps-nav-item' href='/console'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='4 17 10 11 4 5'/><line x1='12' y1='19' x2='20' y2='19'/></svg><span>Console</span></a>"
+          "</div>");
+
+  html += F("</div>"); // /ps
+
+  html += F("<script>");
+  html += "var PH_MIN=" + String(phMin, 2) + ",PH_MAX=" + String(phMax, 2);
+  html += ",ORP_MIN=" + String(orpMin) + ",ORP_MAX=" + String(orpMax) + ";";
+  html += F(
+    "var curPh=null,curOrp=null,phDosing=false,orpDosing=false;"
+    "function $(i){return document.getElementById(i);}"
+    /* score: 100 in the inner 60% of the target window, 50 at the edge, 0 well outside */
+    "function sub(v,mn,mx){var c=(mn+mx)/2,h=(mx-mn)/2;if(h<=0)return 0;var d=Math.abs(v-c)/h;return Math.max(0,Math.round(100-Math.max(0,d-.6)*125));}"
+    "function scoreWord(s){return s>=85?'Uitstekend':s>=70?'Goed':s>=50?'Matig':'Actie nodig';}"
+    "function renderScore(){var n=$('psScoreN'),r=$('psRing'),w=$('psScoreWord'),sb=$('psScoreSub');"
+      "if(curPh==null||curOrp==null){n.textContent='--';w.textContent='Wachten op meting\\u2026';sb.textContent='';r.setAttribute('stroke-dasharray','0 226.2');return;}"
+      "var s=Math.min(sub(curPh,PH_MIN,PH_MAX),sub(curOrp,ORP_MIN,ORP_MAX));"
+      "n.textContent=s;w.textContent=scoreWord(s);"
+      "r.setAttribute('stroke-dasharray',(s/100*226.2).toFixed(1)+' 226.2');"
+      "r.setAttribute('stroke',s>=70?'var(--ps-accent)':s>=50?'var(--ps-warn)':'var(--ps-crit)');"
+      "var m=[];if(curPh<PH_MIN)m.push('pH te laag');else if(curPh>PH_MAX)m.push('pH te hoog');"
+      "if(curOrp<ORP_MIN)m.push('chloor (ORP) te laag');else if(curOrp>ORP_MAX)m.push('chloor (ORP) te hoog');"
+      "sb.textContent=m.length?m.join(' \\u00B7 '):'pH en chloor binnen doel';}"
+    "function stat(id,v,mn,mx,dosing){var e=$(id);if(!e)return;"
+      "if(dosing){e.textContent='\\u25CF doseert';e.className='st dose';return;}"
+      "if(v==null){e.textContent='';e.className='st';return;}"
+      "var t,c;if(v<mn){t='\\u25CF te laag';c='crit';}else if(v>mx){t='\\u25CF te hoog';c='crit';}"
+      "else{var m=(mx-mn)*.1;if(v<mn+m||v>mx-m){t='\\u25CF bijna grens';c='warn';}else{t='\\u25CF in doel';c='ok';}}"
+      "e.textContent=t;e.className='st '+c;}"
+    "function renderAlert(){var a=$('psAlert'),b=$('psAlertMsg'),g=$('psAlertBadge');if(!a)return;var m=[];"
+      "if(curPh!=null){if(curPh<PH_MIN)m.push('pH aan de lage kant');else if(curPh>PH_MAX)m.push('pH aan de hoge kant');}"
+      "if(curOrp!=null){if(curOrp<ORP_MIN)m.push('ORP te laag');else if(curOrp>ORP_MAX)m.push('ORP te hoog');}"
+      "if(!m.length){a.classList.remove('show');return;}"
+      "g.textContent=m.length;b.innerHTML=m.join(' &middot; ');a.classList.add('show');}"
+    "function setPh(v){curPh=v;var e=$('psPhVal');e.textContent=(v==null)?'--':v.toFixed(2);"
+      "stat('psPhSt',v,PH_MIN,PH_MAX,phDosing);renderScore();renderAlert();}"
+    "function setOrp(v){curOrp=v;var e=$('psOrpVal');e.innerHTML=(v==null)?'--<small> mV</small>':Math.round(v)+'<small> mV</small>';"
+      "stat('psOrpSt',v,ORP_MIN,ORP_MAX,orpDosing);renderScore();renderAlert();}"
+    "function setTemp(v){var e=$('psTempVal');if(e)e.textContent=(v==null)?'--':v.toFixed(1)+' \\u00B0C';}"
+    "function fmt(ml){return ml>=1000?(ml/1000).toFixed(2)+' L':Math.round(ml)+' mL';}"
+    "function setToday(){var e=$('psDoseToday');if(e)e.textContent='vandaag: chloor '+fmt(todayOrp)+' \\u00B7 pH\\u2212 '+fmt(todayPh);}"
+    "var todayPh=0,todayOrp=0;"
+    /* sparklines from /api/history */
+    "function spark(id,arr,w,h,area){var el=$(id);if(!el)return;var vals=[],i;"
+      "for(i=0;i<arr.length;i++)if(arr[i]!=null)vals.push(arr[i]);"
+      "if(vals.length<2){el.innerHTML='';return;}"
+      "var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);if(mx-mn<1e-9){mn-=1;mx+=1;}"
+      "var pts=[],lx=0,ly=0,n=arr.length;"
+      "for(i=0;i<n;i++){if(arr[i]==null)continue;lx=i/(n-1)*w;ly=h-2-(arr[i]-mn)/(mx-mn)*(h-4);pts.push(lx.toFixed(1)+','+ly.toFixed(1));}"
+      "var s='';"
+      "if(area)s+='<polygon points=\"'+pts[0].split(',')[0]+','+h+' '+pts.join(' ')+' '+lx.toFixed(1)+','+h+'\" fill=\"var(--ps-glow)\"/>';"
+      "s+='<polyline points=\"'+pts.join(' ')+'\" fill=\"none\" stroke=\"var(--ps-accent-soft)\" stroke-width=\"1.4\" stroke-linecap=\"round\"/>';"
+      "s+='<circle cx=\"'+lx.toFixed(1)+'\" cy=\"'+ly.toFixed(1)+'\" r=\"2.2\" fill=\"var(--ps-accent)\"/>';"
+      "el.innerHTML=s;}"
+    "function bars(dp,dc){var c=$('psBars');if(!c)return;var mx=1,i;"
+      "for(i=0;i<7;i++)mx=Math.max(mx,dp[i]+dc[i]);"
+      "var dn=['zo','ma','di','wo','do','vr','za'],dow=new Date().getDay(),h='';"
+      "for(i=0;i<7;i++){h+='<div class=\"b\"><i style=\"background:var(--ps-accent);height:'+(dc[i]/mx*40).toFixed(0)+'px\"></i>"
+      "<i style=\"background:var(--ps-crit);opacity:.75;height:'+(dp[i]/mx*40).toFixed(0)+'px\"></i>"
+      "<span>'+dn[(dow-(6-i)+14)%7]+'</span></div>';}"
+      "c.innerHTML=h;}"
+    "function loadHist(){fetch('/api/history').then(function(r){return r.json();}).then(function(h){"
+      "spark('psPhSpark',h.ph,120,22,false);spark('psOrpSpark',h.orp,120,22,false);spark('psTempSpark',h.temp,280,30,true);"
+      "bars(h.dose_ph,h.dose_orp);}).catch(function(){});}"
+    "loadHist();setInterval(loadHist,300000);"
+    /* live updates */
+    "var ws;function wsConn(){ws=new WebSocket('ws://'+location.host+':81/');ws.onclose=function(){setTimeout(wsConn,2000);};"
+      "ws.onmessage=function(e){try{var d=JSON.parse(e.data);"
+      "if(d.pump_ph){phDosing=d.pump_ph.active;todayPh=d.pump_ph.daily;setToday();}"
+      "if(d.pump_orp){orpDosing=d.pump_orp.active;todayOrp=d.pump_orp.daily;setToday();}"
+      "if(d.ph!==undefined)setPh(d.ph);"
+      "if(d.orp!==undefined)setOrp(d.orp);"
+      "if(d.temp!==undefined)setTemp(d.temp);"
+      "}catch(_){}};}"
+    "wsConn();"
+    "fetch('/api/state').then(function(r){return r.json();}).then(function(d){"
+      "if(d.ph!=null)setPh(d.ph);if(d.orp!=null)setOrp(d.orp);if(d.temp!=null)setTemp(d.temp);}).catch(function(){});"
+  );
+  html += F("</script></body></html>");
 }
 
 } // namespace io

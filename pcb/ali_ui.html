@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component Bench · Pura</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#16130F; --panel:#211B14; --panel2:#1B1610; --raise:#2A2219;
+  --ink:#EDE4D3; --ink-soft:#A99B82; --ink-dim:#6E634F;
+  --copper:#D98A45; --copper-dim:#8A5A2E;
+  --phos:#8FD98C; --phos-dim:#3f7a42; --amber:#E3B24C; --red:#E27058;
+  --line:rgba(217,138,69,.16); --line-soft:rgba(237,228,211,.07);
+  --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --disp:'Big Shoulders Display',sans-serif;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scrollbar-color:var(--copper-dim) transparent}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;
+  background-image:radial-gradient(circle at center,rgba(217,138,69,.05) 1px,transparent 1.4px);
+  background-size:23px 23px;min-height:100vh;
+}
+a{color:var(--copper);text-decoration:none}
+.wrap{max-width:1280px;margin:0 auto;padding:0 20px 80px}
+
+/* header */
+header{position:sticky;top:0;z-index:20;background:linear-gradient(180deg,var(--bg) 72%,transparent);
+  padding:20px 0 14px;margin-bottom:8px}
+.bar{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:16px}
+.brand{display:flex;align-items:baseline;gap:12px}
+.brand .mark{font-family:var(--disp);font-weight:900;font-size:34px;letter-spacing:.01em;color:var(--ink);line-height:.9}
+.brand .mark b{color:var(--copper)}
+.brand .sub{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim)}
+.basket{text-align:right;font-family:var(--mono)}
+.basket .k{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim)}
+.basket .v{font-size:30px;font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;line-height:1}
+.basket .v.pending{color:var(--ink-dim)}
+
+/* controls */
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:16px}
+.ctl{display:flex;flex-direction:column;gap:5px}
+.ctl label{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+.ctl input,.ctl select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+  font-family:var(--mono);font-size:13px;padding:9px 11px;border-radius:6px;outline:none;width:96px;
+  font-variant-numeric:tabular-nums}
+.ctl input:focus,.ctl select:focus{border-color:var(--copper)}
+.ctl.grow{flex:1;min-width:180px}
+.ctl.grow input{width:100%}
+.btn{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;
+  padding:10px 18px;border-radius:6px;border:1px solid var(--copper);background:transparent;color:var(--copper);
+  cursor:pointer;transition:.15s;height:38px}
+.btn:hover{background:var(--copper);color:#1a1206}
+.btn.solid{background:var(--copper);color:#1a1206}
+.btn.solid:hover{filter:brightness(1.12)}
+.btn:disabled{opacity:.45;cursor:not-allowed;filter:none;background:transparent;color:var(--copper)}
+
+/* rapidapi key intake */
+.keybar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:12px 14px;
+  background:var(--panel2);border:1px dashed var(--copper-dim);border-radius:9px}
+.keybar[hidden]{display:none}
+.keybar .kb-l{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--copper)}
+.keybar input{flex:1;min-width:200px;background:var(--panel);border:1px solid var(--line);color:var(--ink);
+  font-family:var(--mono);font-size:13px;padding:9px 11px;border-radius:6px;outline:none}
+.keybar input:focus{border-color:var(--copper)}
+.keybar .kb-s{font-family:var(--mono);font-size:11px;color:var(--phos)}
+
+/* component grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;margin-top:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  display:flex;flex-direction:column;animation:rise .4s both}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.card{animation:none}}
+.card .top{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line-soft);
+  background:linear-gradient(180deg,var(--raise),transparent)}
+.card .ref{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--copper);border:1px solid var(--copper-dim);
+  padding:3px 7px;border-radius:5px;letter-spacing:.06em;flex:0 0 auto}
+.card .name{font-family:var(--disp);font-weight:700;font-size:23px;letter-spacing:.01em;flex:1;line-height:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .rm{background:none;border:none;color:var(--ink-dim);cursor:pointer;font-size:16px;padding:2px 4px;line-height:1}
+.card .rm:hover{color:var(--red)}
+
+/* qty stepper */
+.qtybar{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid var(--line-soft);
+  background:var(--panel2)}
+.qtybar .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft)}
+.stepper{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.stepper button{background:var(--raise);border:none;color:var(--copper);font-size:17px;width:34px;height:34px;
+  cursor:pointer;font-family:var(--mono);line-height:1}
+.stepper button:hover{background:var(--copper);color:#1a1206}
+.stepper input{width:58px;height:34px;text-align:center;background:var(--panel2);border:none;border-left:1px solid var(--line);
+  border-right:1px solid var(--line);color:var(--ink);font-family:var(--mono);font-size:15px;font-weight:600;outline:none;
+  font-variant-numeric:tabular-nums}
+
+/* two-scenario body */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line-soft)}
+.scn{background:var(--panel);padding:14px 15px 15px;position:relative}
+.scn .h{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--ink-soft);margin-bottom:9px}
+.scn .h{padding-right:78px}
+.scn .h .tag{font-size:8.5px;color:var(--ink-dim)}
+.scn.win .h .tag{display:none}
+.scn .per{font-family:var(--mono);font-size:29px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.01em}
+.scn .per small{font-size:12px;color:var(--ink-soft);font-weight:400}
+.scn .per small{font-size:12px;color:var(--ink-soft);font-weight:400;letter-spacing:0}
+.scn .tot{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin-top:7px;font-variant-numeric:tabular-nums}
+.open{display:block;margin-top:10px;text-align:center;font-family:var(--mono);font-size:11.5px;
+  font-weight:600;letter-spacing:.06em;padding:9px;border:1px solid var(--copper-dim);border-radius:7px;
+  color:var(--copper);transition:.15s}
+.open:hover{background:var(--copper);color:#1a1206;border-color:var(--copper)}
+.open.win{border-color:var(--phos-dim);color:var(--phos)}
+.open.win:hover{background:var(--phos);color:#12220f;border-color:var(--phos)}
+.open.sm{margin-top:7px;padding:6px;font-size:10px;font-weight:500;border-color:var(--phos-dim);color:var(--phos)}
+.open.sm:hover{background:var(--phos);color:#12220f}
+.bulk{margin-top:11px;padding-top:9px;border-top:1px dashed var(--line);font-family:var(--mono);
+  font-size:10.5px;color:var(--phos-dim);line-height:1.5;font-variant-numeric:tabular-nums}
+.bulk b{color:var(--phos);font-weight:700}
+.bulk span{display:block;color:var(--ink-dim)}
+/* single best-listing panel */
+.panel{padding:15px 16px 16px}
+.panel .h{font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-soft);
+  margin-bottom:10px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.panel .h .sub{color:var(--ink-dim);letter-spacing:.04em}
+.panel .per{font-family:var(--mono);font-size:30px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;
+  line-height:1;letter-spacing:-.01em}
+.panel .per.approx{color:var(--amber)}
+.panel .per small{font-size:12px;color:var(--ink-soft);font-weight:400;letter-spacing:0}
+.panel .lines{margin-top:12px;display:flex;flex-direction:column;gap:5px}
+.panel .line{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-family:var(--mono);
+  font-size:12px;font-variant-numeric:tabular-nums;padding:7px 10px;border-radius:7px}
+.panel .line span{color:var(--ink-soft);font-size:10.5px}
+.panel .line b{font-weight:700;white-space:nowrap}
+.panel .line.c{background:rgba(143,217,140,.09)}
+.panel .line.c b{color:var(--phos)}
+.panel .line.r{background:var(--panel2)}
+.panel .line.r b{color:var(--copper)}
+.panel .chk{font-family:var(--mono);font-size:10px;color:var(--ink-dim);margin-top:9px;text-align:center;line-height:1.4}
+.panel .chk b{color:var(--ink-soft)}
+.morec{background:none;border:1px solid var(--line);color:var(--copper);font-family:var(--mono);font-size:9px;
+  padding:3px 8px;border-radius:5px;cursor:pointer;margin-left:6px}
+.morec:hover{border-color:var(--copper)}
+.scn.win{background:linear-gradient(180deg,rgba(143,217,140,.09),rgba(143,217,140,.02))}
+.scn.win .per{color:var(--phos)}
+.scn.win::before{content:'GOEDKOOPST';position:absolute;top:10px;right:12px;font-family:var(--mono);font-size:8px;
+  font-weight:700;letter-spacing:.14em;color:#1a1206;background:var(--phos);padding:2px 6px;border-radius:4px}
+.scn .approx{color:var(--amber)}
+.scn.empty{color:var(--ink-dim);font-family:var(--mono);font-size:12px;grid-column:1/-1;text-align:center;padding:26px}
+
+/* listings drawer */
+.more{border-top:1px solid var(--line-soft)}
+.more>summary{list-style:none;cursor:pointer;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-soft);padding:10px 16px;display:flex;justify-content:space-between}
+.more>summary::-webkit-details-marker{display:none}
+.more>summary:hover{color:var(--copper)}
+.more[open]>summary{color:var(--copper);border-bottom:1px solid var(--line-soft)}
+/* mobiel-vriendelijke listings-lijst (geen horizontaal scrollen) */
+.lsthead{font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--ink-dim);padding:8px 14px;
+  border-top:1px solid var(--line-soft)}
+.lst{max-height:320px;overflow-y:auto}
+.lrow{display:block;padding:9px 14px;border-top:1px solid var(--line-soft);color:var(--ink)}
+.lrow:hover{background:var(--panel2)}
+.lrow .lt{font-family:var(--sans);font-size:12px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-bottom:4px}
+.lrow .ln{display:flex;gap:12px;align-items:baseline;font-family:var(--mono);font-size:11.5px;
+  font-variant-numeric:tabular-nums;flex-wrap:wrap}
+.lrow .ln .pk{color:var(--ink-dim)}
+.lrow .ln .c{color:var(--phos);font-weight:600}
+.lrow .ln .r{color:var(--copper);font-weight:600}
+.lrow .ln .qa{color:var(--amber)}
+.lrow .ln .sh{color:var(--ink-dim);font-size:9.5px;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cbadge{display:inline-block;font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;
+  color:#12220f;background:var(--phos);padding:1px 5px;border-radius:4px;margin-right:6px;vertical-align:1px}
+.scn-empty{color:var(--ink-dim);font-family:var(--mono);font-size:11px;text-align:center;padding:20px 8px;line-height:1.5}
+
+/* states */
+.state{padding:22px 16px;font-family:var(--mono);font-size:12px;color:var(--ink-dim);text-align:center}
+.state.err{color:var(--red)}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--copper-dim);border-top-color:var(--copper);
+  border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:7px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.legend{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);margin-top:26px;line-height:1.7;
+  border-top:1px solid var(--line-soft);padding-top:16px}
+.legend b{color:var(--ink-soft);font-weight:500}
+.legend .sw{color:var(--amber)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="bar">
+      <div class="brand">
+        <div class="mark">◈ COMPONENT <b>BENCH</b></div>
+        <div class="sub">Pura&nbsp;BOM · AliExpress</div>
+      </div>
+      <div class="basket">
+        <div class="k">mand — Choice-fees vervallen (&gt;€10 samen)</div>
+        <div class="v pending" id="basket">€ —</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="ctl"><label>Verzending €</label><input id="ship" type="number" step="0.1" value="4.54"></div>
+      <div class="ctl"><label>Invoer €</label><input id="imp" type="number" step="0.5" value="3.00"></div>
+      <div class="ctl"><label>Naar</label><select id="shipto"><option>NL</option><option>BE</option><option>DE</option></select></div>
+      <div class="ctl grow"><label>Component toevoegen (bv. SS34, USB-C 16P)</label><input id="add" placeholder="zoekterm + Enter"></div>
+      <button class="btn solid" id="searchAll">↻ Zoek alles</button>
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="legend">
+    <div><b>Verzendkosten komen van de officiële AliExpress shipping-API</b> (exact wat de site toont, per kandidaat-listing, gecachet). <b>Choice-verzending is klein (≤€2) en vervalt zodra je Choice-mandje boven ~€10 komt</b> — bij een hele BOM-bestelling dus altijd. Fees &gt;€2 zijn verkoper-verzending en blijven. De mand rekent zo.</div>
+    <div>Kale-chip-zoekopdrachten filteren "module"/"board"-listings eruit (die zijn niet alleen het chipje). Zoek expliciet met "module" als je die wél wilt.</div>
+    <div><span class="sw">~</span>-listings ("5PCS-50PCS") worden automatisch uitgeklapt naar <b>echte variantprijzen</b> via de SKU-API — de kaart toont dan "variant 50pcs" met de exacte prijs. Alleen tijdens het laden of bij kleur-varianten blijft de kleinste-variant-schatting staan.</div>
+    <div>Verzendbedragen kunnen dubbeltjes afwijken van de site: de API geeft de goedkoopste optie op moment van opvragen, en waardes worden gecachet.</div>
+    <div style="margin-top:8px;color:var(--ink-dim)">Aantallen tunen past de plannen direct aan zonder nieuwe API-call. Alleen "Zoek alles" en toevoegen doen een live call.</div>
+  </div>
+</div>
+
+<script>
+// volledige Pura-BOM, gegroepeerd op waarde (één reel dekt meerdere designators)
+const DEFAULTS = [
+  {ref:'U1',   term:'CH224K'},
+  {ref:'U2',   term:'LM2596S-5.0'},
+  {ref:'U3',   term:'ADS1115IDGSR'},
+  {ref:'U4',   term:'TB6612FNG'},
+  {ref:'U6',   term:'ADUM1250'},
+  {ref:'J1',   term:'Type-C 16Pin SMD connector'},
+  {ref:'D1',   term:'SS34 SMA diode'},
+  {ref:'L1',   term:'33uH shielded power inductor'},
+  {ref:'LED1', term:'0805 LED green'},
+  {ref:'LED2', term:'0805 LED blue'},
+  {ref:'R 5K1',term:'0805 5.1K resistor'},
+  {ref:'R 4K7',term:'0805 4.7K resistor'},
+  {ref:'R 2K2',term:'0805 2.2K resistor'},
+  {ref:'R 0R', term:'0805 0R resistor'},
+  {ref:'R 24K',term:'0805 24K resistor'},
+  {ref:'C100n',term:'0805 100nF capacitor'},
+  {ref:'C IN', term:'1210 100uF 25V capacitor'},
+  {ref:'C OUT',term:'220uF 16V SMD electrolytic capacitor'},
+  {ref:'C10u', term:'0805 10uF capacitor'},
+];
+const $ = s => document.querySelector(s);
+const euro = (v,d=2) => '€' + v.toFixed(d);
+// titels/urls komen van AliExpress-verkopers -> escapen vóór innerHTML (XSS)
+const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const safeURL = u => { try{ const p=new URL(u); return (p.protocol==='http:'||p.protocol==='https:') ? p.href : '#'; }catch{ return '#'; } };
+let comps = [];   // {ref,term,desired,rows,dropped,error,loading}
+
+function extra(){ return (parseFloat($('#ship').value)||0) + (parseFloat($('#imp').value)||0); }
+
+// koop hele packs om >= N stuks te halen; packprijs = werkelijke prijs (Choice-aanname)
+function plan(r, N){
+  const packs = Math.ceil(N / r.qty);
+  const units = packs * r.qty;
+  const total = packs * r.price;
+  return {r, packs, units, total, per: total/units};
+}
+function bestPer(rows, N){ let b=null; for(const r of rows){const p=plan(r,N); if(!b||p.per<b.per) b=p;} return b; }
+
+// echte variant-prijzen (5/30/50pcs) via de SKU Dimension API, gecachet op pid
+const skuCache = {};   // pid -> {variants:[{label,qty,price,sku,url}]} | {error} | 'loading'
+function ensureSkus(r){
+  const k = String(r.pid);
+  if(!r.pid || skuCache[k] !== undefined) return;  // caller (expand) bepaalt wanneer nodig
+  skuCache[k] = 'loading';
+  fetch(`/api/skus?pid=${r.pid}&ship=${encodeURIComponent($('#shipto').value)}`)
+    .then(x=>x.json()).then(d=>{ skuCache[k]=d; render(); })
+    .catch(()=>{ skuCache[k]={error:'netwerkfout'}; render(); });
+}
+// variant hoort bij dit onderdeel als het label puur een aantal is ("50pcs")
+// of het onderdeelnummer bevat — varianten van ándere chips vallen af
+function variantOk(label, core){
+  const rest = (label||'').toLowerCase().replace(/\d+\s*(pcs|pc|pieces?|stuks?)/g,'').replace(/[^a-z0-9]+/g,'');
+  if(!rest) return true;
+  return core && (label||'').toLowerCase().includes(core);
+}
+// mix-listing: titel noemt >=2 andere partnummers naast het gezochte onderdeel.
+// De zoekprijs is dan van de standaard-variant — vaak een ANDERE chip (bv. TS272CN
+// als default in een "ADUM1250 TS272 OPA445..."-listing). Dan zijn varianten verplicht.
+function isMix(r){
+  const toks = ((r.title||'').toLowerCase().match(/[a-z]{2,}\d{3,}[a-z0-9]*/g)||[])
+    .filter(t=>!/^(to|sod|sot|dip|sop|essop|ssop|msop|vssop|qfn)\d/.test(t))   // behuizingen niet
+    .filter(t=>!t.includes(r.core) && !(r.core||'').includes(t));
+  return new Set(toks).size >= 2;
+}
+// range- en mix-listings -> echte variant-rijen zodra bekend
+function expand(r){
+  if(!r.approx && !isMix(r)) return [r];
+  ensureSkus(r);
+  const s = skuCache[String(r.pid)];
+  if(s && s.variants){
+    const vs = s.variants.filter(v=>variantOk(v.label, r.core));
+    if(vs.length){
+      // expliciet aantal in het label ("1pcs"/"50pcs") telt altijd — óók 1;
+      // alleen labels zonder aantal ("ADUM1250ARZ SOP-8") erven de titel-pack
+      return vs.map(v=>{
+        const hasQty = /\d+\s*(pcs?|pieces?|stuks?)/i.test(v.label||'');
+        return { ...r, qty: hasQty ? v.qty : r.qty, price:v.price,
+          url:v.url||r.url, sku:v.sku||r.sku, approx:false, variant:v.label };
+      });
+    }
+  }
+  return [r];
+}
+
+// winnaar = laagste WERKELIJKE kosten over de top-4 goedkoopste kandidaten:
+// Choice-fee (<=€2) telt als 0 (vervalt boven €10 mandje), verkoper-fee telt mee.
+// De goedkoopste packprijs is vaak verkoper-verzonden; een iets duurdere
+// Choice-listing wint dan alsnog all-in.
+function effCost(p){
+  const s = shipCache[String(p.r.pid)];
+  if(s===undefined || s==='loading') return {cost:p.total, pending:true};
+  if(s.error) return {cost:p.total + extra(), pending:false};
+  return {cost:p.total + (isChoiceFee(s.fee)?0:s.fee), pending:false};
+}
+function best(rows, N, k){
+  // seed op TOTAAL (wat je betaalt om N te halen) — per-stuk-toppers (mega-reels)
+  // krijgen hun podium via de aparte bulk-tip
+  const seed = rows.map(r=>plan(r,N)).sort((a,b)=>a.total-b.total).slice(0, k||4);
+  let pending = 0;
+  const cands = [];
+  for(const p of seed){
+    if(p.r.approx || isMix(p.r)){
+      const s = skuCache[String(p.r.pid)];
+      if(s === undefined || s === 'loading') pending++;   // variants onderweg
+    }
+    for(const r2 of expand(p.r)) cands.push(plan(r2, N)); // ~/mix -> echte varianten
+  }
+  cands.forEach(p=>ensureShip(p.r));
+  let bp=null, bc=Infinity;
+  for(const p of cands){
+    const e = effCost(p);
+    if(e.pending) pending++;
+    if(e.cost < bc){ bc=e.cost; bp=p; }
+  }
+  if(bp){ bp.pending = pending; bp.k = seed.length; }
+  return bp;
+}
+function moreCands(i){ comps[i].k = (comps[i].k||4) + 4; render(); }
+function packTxt(o){
+  const t = o.packs>1 ? `${o.packs}× ${o.r.qty}-pack` : `${o.r.qty}-pack`;
+  if(o.r.variant) return `${t} · variant ${esc(o.r.variant)}`;  // echte SKU-variant
+  return o.r.approx ? t+' ~kleinste variant' : t;
+}
+
+// echte verzendkosten per listing via RapidAPI, client-side gecachet op pid
+const shipCache = {};           // pid -> {fee,min_days,max_days} | {error} | 'loading'
+// ponytail: fee <= 2 = Choice-logistiek (kleine fee, gratis boven ~€10 mandje);
+// fee > 2 = verkoper-verzending die altijd blijft. Grens instelbaar als het misgokt.
+const CHOICE_FEE_MAX = 2.0;
+function isChoiceFee(fee){ return fee <= CHOICE_FEE_MAX; }
+function ensureShip(r){
+  const k = String(r.pid);
+  if(!r.pid || !r.sku || shipCache[k] !== undefined) return;
+  shipCache[k] = 'loading';
+  fetch(`/api/shipping?pid=${r.pid}&sku=${r.sku}&price=${r.price}&ship=${encodeURIComponent($('#shipto').value)}`)
+    .then(x=>x.json()).then(d=>{ shipCache[k]=d; render(); })
+    .catch(()=>{ shipCache[k]={error:'netwerkfout'}; render(); });
+}
+
+function panelHTML(b, per, i, nRows){
+  const ap = b.r.approx ? ' approx' : '';
+  let bulk = '';
+  if(per && per.r !== b.r && per.per < b.per*0.7){  // duidelijk goedkoper per stuk
+    bulk = `<div class="bulk">bulk: <b>${euro(per.per,3)}/st</b> bij ${packTxt(per)}
+      <span>packprijs ${euro(per.total)} · ${per.units} st</span>
+      <a class="open sm" href="${esc(safeURL(per.r.url))}" target="_blank" rel="noopener">open reel &rarr;</a></div>`;
+  }
+  ensureShip(b.r);
+  const s = shipCache[String(b.r.pid)];
+  let shipHTML, allin = null;
+  if(s === 'loading' || s === undefined){
+    shipHTML = `<div class="line r"><span>verzendkosten ophalen…</span><b>&hellip;</b></div>`;
+  } else if(s.error){
+    const regPer = (b.total + extra()) / b.units;
+    shipHTML = `<div class="line r"><span>verzending onbekend (${esc(s.error)}) — schatting +${euro(extra())}</span><b>${euro(regPer,3)}/st</b></div>`;
+  } else {
+    const days = s.max_days ? ` · ${s.min_days}&ndash;${s.max_days} dgn` : '';
+    if(isChoiceFee(s.fee)){
+      // Choice: kleine fee die vervalt zodra je Choice-mandje boven ~€10 komt
+      allin = b.total;
+      shipHTML = `<div class="line c"><span>CHOICE — verz. ${s.fee===0?'gratis':euro(s.fee)} vervalt bij mandje &gt; &euro;10${days}</span><b>${euro(b.per,3)}/st</b></div>`;
+    } else {
+      allin = b.total + s.fee;
+      shipHTML = `<div class="line r"><span>verkoper-verzending ${euro(s.fee)}${days}</span><b>all-in ${euro(allin/b.units,3)}/st</b></div>`;
+    }
+  }
+  const head = allin !== null
+    ? `${euro(allin)}<small> all-in · ${euro(allin/b.units,3)}/st</small>`
+    : `${euro(b.total)}<small> packprijs · ${euro(b.per,3)}/st</small>`;
+  return `<div class="panel">
+    <div class="h">Beste all-in listing <span class="sub">${packTxt(b)} · ${b.units} st${b.pending?' · vergelijkt kandidaten…':''}</span></div>
+    <div class="per${ap}">${head}</div>
+    <div class="lines">
+      <div class="line c"><span>packprijs</span><b>${euro(b.total)} · ${euro(b.per,3)}/st</b></div>
+      ${shipHTML}
+    </div>
+    <a class="open win" href="${esc(safeURL(b.r.url))}" target="_blank" rel="noopener">Open listing &rarr;</a>
+    <div class="chk">${esc(b.r.shop)} · vergeleken: ${b.k} van ${nRows} listings
+      ${b.k < nRows ? `<button class="morec" onclick="moreCands(${i})">+4 vergelijken</button>` : ''}</div>
+    ${bulk}
+  </div>`;
+}
+
+function rowsTable(rows){
+  const e = extra();
+  const sorted = [...rows].sort((a,b)=> (a.price/a.qty) - (b.price/b.qty));
+  const body = sorted.map(r=>{
+    const cu = r.price/r.qty, ru = (r.price+e)/r.qty;
+    const q = r.qty + (r.approx?'<span class="qa">~</span>':'');
+    const s = shipCache[String(r.pid)];
+    let shipTag = '';
+    if(s && s!=='loading' && !s.error){
+      shipTag = isChoiceFee(s.fee)
+        ? `<span class="c">CHOICE · verz ${euro(s.fee)}</span>`
+        : `<span class="r">verz ${euro(s.fee)}</span>`;
+    }
+    return `<a class="lrow" href="${esc(safeURL(r.url))}" target="_blank" rel="noopener">
+      <div class="lt">${esc(r.title)}</div>
+      <div class="ln"><span class="pk">${q}× · ${euro(r.price)}</span>
+        <span class="c">${euro(cu,3)}/st</span>${shipTag}
+        <span class="sh">${esc(r.shop)}</span></div>
+    </a>`;
+  }).join('');
+  return `<div class="lsthead">prijs/st = packprijs excl. verzending · +verz = incl. €${e.toFixed(2)} schatting · gesorteerd op prijs/st</div>
+    <div class="lst">${body}</div>`;
+}
+
+function cardHTML(c, i){
+  let bodyHTML;
+  if(c.loading) bodyHTML = `<div class="state"><span class="spinner"></span>zoeken…</div>`;
+  else if(c.pending) bodyHTML = `<div class="state">in wachtrij…</div>`;
+  else if(c.error) bodyHTML = `<div class="state err">${esc(c.error)}</div>`;
+  else if(!c.rows || !c.rows.length) bodyHTML = `<div class="state">geen echte '${esc(c.core||c.term)}'-treffers</div>`;
+  else {
+    const b = best(c.rows, c.desired, c.k), per = bestPer(c.rows, c.desired);
+    bodyHTML = panelHTML(b, per, i, c.rows.length) +
+      `<details class="more"><summary><span>alle ${c.rows.length} listings</span><span>▾</span></summary>${rowsTable(c.rows)}</details>`;
+  }
+  return `<div class="card">
+    <div class="top">
+      <span class="ref">${esc(c.ref||'—')}</span>
+      <span class="name" title="${esc(c.term)}">${esc(c.term)}</span>
+      <button class="rm" title="verwijderen" onclick="removeComp(${i})">✕</button>
+    </div>
+    <div class="qtybar">
+      <span class="lbl">gewenst aantal</span>
+      <div class="stepper">
+        <button onclick="bump(${i},-step(${i}))">−</button>
+        <input type="number" min="1" autocomplete="off" value="${c.desired}" onchange="setQty(${i},this.value)">
+        <button onclick="bump(${i},step(${i}))">+</button>
+      </div>
+    </div>
+    ${bodyHTML}
+  </div>`;
+}
+
+function step(i){ return comps[i].desired>=50?10:comps[i].desired>=20?5:1; }
+function render(){
+  $('#grid').innerHTML = comps.map(cardHTML).join('');
+  // basket = packprijzen + alleen verkoper-verzending; Choice-fees vervallen
+  // omdat het gecombineerde Choice-mandje ruim boven de €10-drempel uitkomt
+  let sum=0, have=false;
+  for(const c of comps){
+    if(c.rows && c.rows.length){
+      const b=best(c.rows, c.desired, c.k);
+      if(b){
+        const s=shipCache[String(b.r.pid)];
+        if(s && s!=='loading' && !s.error && !isChoiceFee(s.fee)) sum += s.fee;
+        sum += b.total;
+        have=true;
+      }
+    }
+  }
+  const el=$('#basket');
+  el.textContent = have ? euro(sum) : '€ —';
+  el.classList.toggle('pending', !have);
+}
+function bump(i,d){ comps[i].desired=Math.max(1,comps[i].desired+d); render(); }
+function setQty(i,v){ comps[i].desired=Math.max(1,parseInt(v)||1); render(); }
+function removeComp(i){ comps.splice(i,1); render(); }
+
+async function fetchOne(c){
+  c.loading=true; c.pending=false; c.error=null; render();
+  try{
+    const p=new URLSearchParams({term:c.term, ship:$('#shipto').value});
+    const r=await fetch('/api/search?'+p);
+    const d=await r.json();
+    c.rows=d.rows||[]; c.dropped=d.dropped||0; c.core=d.core; c.error=d.error||null;
+  }catch(e){ c.error='netwerkfout: '+e.message; c.rows=[]; }
+  c.loading=false; render();
+}
+async function searchAll(){
+  const btn=$('#searchAll'); btn.disabled=true;
+  for(const c of comps){ await fetchOne(c); }   // sequentieel = respecteert rate-limit
+  btn.disabled=false;
+}
+
+$('#searchAll').onclick=searchAll;
+$('#add').addEventListener('keydown',e=>{
+  if(e.key==='Enter' && e.target.value.trim()){
+    const c={ref:'+', term:e.target.value.trim(), desired:10, rows:[]};
+    comps.push(c); e.target.value=''; render(); fetchOne(c);
+  }
+});
+['#ship','#imp'].forEach(s=>$(s).addEventListener('input',render));
+
+comps = DEFAULTS.map(d=>({...d, desired:10, rows:[], pending:true}));
+render();
+searchAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+Designator,Qty,Value,Footprint,Manufacturer,MPN (zoek op tme.eu),Note
+R_CFG1,1,24k 1%,0805,Yageo,RC0805FR-0724KL,CH224K -> 12V request
+R_VDD,1,1k 1%,0805,Yageo,RC0805FR-071KL,"CH224K VDD-serieweerstand (shunt-reg, VERPLICHT per datasheet)"
+R_VSNS,1,10k 1%,0805,Yageo,RC0805FR-0710KL,CH224K VBUS-sense serieweerstand (datasheet-eis)
+R_BLD,1,330 1%,0805,Yageo,RC0805FR-07330RL,B0505S minimum-belasting (ongeregelde uitgang)
+"R_SDA,R_SCL,R_SDA2,R_SCL2",4,4.7k 1%,0805,Yageo,RC0805FR-074K7L,"I2C pull-ups (iso-kant naar 5V_iso, ESP-kant naar 3V3)"
+"R_LED,R_LED2",2,2.2k 1%,0805,Yageo,RC0805FR-072K2L,LED-serieweerstand
+R_ADDR,1,0R,0805,Yageo,RC0805JR-070RL,ADS1115 adres 0x48 (of soldeerbrug)
+"C_ADS,C_ISO1,C_ISO2,C_VCC,C_VM2",5,100nF 50V X7R,0805,Yageo,CC0805KRX7R9BB104,ontkoppeling
+C_IN,1,100uF 25V alu-elco,SMD elco D8 (6.3x7.7),Panasonic,EEE-1EA101XP,"buck-ingang (elektrolyt per LM2596-datasheet) - al besteld via Ali: METEN of die Ø6.3 is! LET OP: EEE-1EA101P (zonder X) is Ø8 en past NIET"
+C_OUT,1,220uF 16V,SMD elco D8 (6.3x7.7),Panasonic,EEE-1CA221XP,"LM2596-uitgang (ESR nodig!) - LET OP: EEE-1CA221P (zonder X) is Ø8 en past NIET; land geverifieerd vs Panasonic D8-pattern"
+"C_DC_IN,C_DC_OUT,C_VM",3,10uF 25V X5R,0805,Murata,GRM21BR61E106KA73L,ontkoppeling
+D1,1,SS34,SMA / DO-214AC,Vishay,SS34-E3/57T,buck-freewheel schottky
+L1,1,33uH ~0.7A,CD54 (6.1x5.5),Sumida,CD54NP-330M,"al besteld via Ali (CD54-kloon); NIET SRR5028 bestellen - ander landpattern. Land = Sumida CD54-datasheet (2x 2.15x5.5, gap 1.7)"
+LED1,1,groen,0805,Wurth,150080GS75000,power-LED
+LED2,1,blauw,0805,Wurth,150080BS75000,power-LED
+U1,1,CH224K,ESSOP-10,WCH,CH224K,USB-PD sink - NIET bij TME: LaskaKit / LCSC
+U2,1,LM2596S-5.0,TO-263-5,Texas Instruments,LM2596SX-5.0/NOPB,5V buck
+U3,1,ADS1115,VSSOP-10,Texas Instruments,ADS1115IDGSR,16-bit ADC
+U4,1,TB6612FNG,SSOP-24,Toshiba,"TB6612FNG(O,8,EL)",dubbele motordriver
+U5,1,B0505S-1WR3,SIP,MORNSUN,B0505S-1WR3,geisoleerde 5V/5V DC-DC 1W
+U6,1,ADUM1250ARZ,SOIC-8,Analog Devices,ADUM1250ARZ,geisoleerde I2C
+J1,1,USB-C 16P,TYPE-C-31-M-12,HRO,TYPE-C-31-M-12,CHECK footprint - TME-alt: GCT/Amphenol 16p USB2.0
+"J_ESP,J_PROBE,J_M1,J_M2,J_12V",1,pin header 1x40 2.54mm,THT 2.54mm,Wurth,61304011121,knippen op 11/4/2/2/2 pins (J_ESP is nu 11-pins: V33 erbij!)
+C_VDD,1,1uF 25V X7R,0805,Yageo,CC0805KKX7R8BB105,CH224K VDD-ontkoppeling (1uF per datasheet)

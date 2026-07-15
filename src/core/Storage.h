@@ -129,6 +129,16 @@ public:
   void setPoolWidthCm(int v);
   void setPoolHeightCm(int v);
 
+  // UI style
+  int getUiStyle(int def = 0) const;       // 0 = Vapor, 1 = Poolside, 2 = Helder
+  void setUiStyle(int v);
+  int getPoolsideTheme(int def = 0) const; // 0=Ocean, 1=Sunset, 2=Midnight, 3=Verdant
+  void setPoolsideTheme(int v);
+
+  // 7-day dosing history (ml/day, [0]=oldest .. [6]=yesterday)
+  void pushDailyDose(float m1Ml, float m2Ml);
+  void getDoseHistory(float m1Out[7], float m2Out[7]) const;
+
 private:
   String _ns;
   mutable Preferences _prefs; // lazily opened in begin()

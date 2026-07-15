@@ -27,10 +27,13 @@ public:
 
 private:
   void handleIndex();
+  void renderPoolsideIndex(String &html); // Poolside UI style (ui_style = 1)
+  void renderHelderIndex(String &html);   // Helder UI style, light/daylight (ui_style = 2)
   void handleSettings();
   void handleSafety();  // New: safety status & WhatsApp config
   void handleConsole(); // New: web console
   void handleApiState();
+  void handleApiHistory();
   void handleApiSave();
   void sendStyleHeader(String &html);
   void sendFooter(String &html);

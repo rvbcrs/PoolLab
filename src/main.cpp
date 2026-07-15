@@ -47,6 +47,7 @@ static uint32_t APP_BOOT_MS = 0;
 #include "core/Storage.h"
 #include "core/Board.h"
 #include "domain/Metrics.h"
+#include "domain/History.h"
 #include "domain/ControlPolicy.h"
 // IO modules
 #include "io/MqttClient.h"
@@ -2105,6 +2106,13 @@ void loop() {
     if (webui.isActive()) webui.broadcastMetrics();
   }
 
+  // Feed the 24h sensor history (5-min averages for the WebUI sparklines)
+  static uint32_t lastHistSample = 0;
+  if (nowMs - lastHistSample > 5000) {
+    lastHistSample = nowMs;
+    domain::History::instance().sample();
+  }
+
   // WiFi/MQTT service loop
   static uint32_t lastConnectAttempt = 0;
   uint32_t now = millis();
@@ -2286,6 +2294,11 @@ void loop() {
     }
     if (currentDay != lastDay) {
       ESP_LOGI("PUMP", "Daily reset: Day changed from %d to %d", lastDay, currentDay);
+      {
+        domain::PumpStats m1h = g_motor.getM1Stats();
+        domain::PumpStats m2h = g_motor.getM2Stats();
+        g_storage.pushDailyDose(m1h.dailyVolumeMl, m2h.dailyVolumeMl);
+      }
       g_motor.resetAllDaily();
       g_storage.setLastResetDay(currentDay);
       lastDay = currentDay;
