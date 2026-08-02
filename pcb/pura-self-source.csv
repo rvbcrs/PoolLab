@@ -15,6 +15,6 @@ R_CFG1,24k (12V PD),R0805,TBD,hand-solder
 R_ADDR,0R,R0805,TBD,hand-solder
 C_IN,100uF 25V elco SMD,SMD D8 6.3x7.7 (V-chip),,hand-solder
 C_OUT,220uF 16V elco SMD,SMD D8 6.3x7.7 (V-chip),,hand-solder
-L1,33uH power inductor ~0.7A,CD54 (6.1x5.5mm),,hand-solder
+L1,33uH power inductor 1.5A DJNR6045-330,6045 (6x6x4.5mm),,hand-solder
 LED1,green LED,0805,TBD,hand-solder
 LED2,blue LED,0805,TBD,hand-solder

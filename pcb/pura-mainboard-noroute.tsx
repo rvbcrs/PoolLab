@@ -62,8 +62,9 @@ export default () => (
     </capacitor>
     {/* L1 + D1 in their own row below U2 */}
     <diode    name="D1" footprint="sma" manufacturerPartNumber="SS34" schX={1}  schY={10} pcbX={-3.5} pcbY={10} />
-    {/* L1: CD54 semi-shielded power-inductor 33uH, ~0.7A (Sumida CD54-330 / kloon, 6.1x5.5x4.85mm).
-        Land per Sumida-datasheet: 2 pads 2.15x5.5, gap 1.7 (de voetjes zijn 5.2mm breed!). */}
+    {/* L1: 33uH power-inductor, 6x6x4.5mm. Besteld: FerroCore DJNR6045-330 (1.5A Ioper/Isat,
+        188.5mOhm) van TME. Land is CD54-type: 2 pads 2.15x5.5, gap 1.7; de 6045-voetjes vallen
+        er ~90% op (0.15mm overhang, prima voor handsoldeer). */}
     <inductor name="L1" inductance="33uH" schX={11} schY={10} pcbX={3.7} pcbY={9.6}>
       <footprint>
         <smtpad portHints={["pin1"]} pcbX="-1.925mm" pcbY="0mm" width="2.15mm" height="5.5mm" shape="rect" />
