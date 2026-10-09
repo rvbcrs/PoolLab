@@ -25,7 +25,9 @@
       "mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script",
       "mcp__plugin_chrome-devtools-mcp_chrome-devtools__select_page",
       "Bash(cp \"/Users/rvbcrs/.claude/projects/-Users-rvbcrs-GitHub-PoolLab/658f1a41-3d0f-49d9-ad55-ae07578a358a/tool-results/webfetch-1783935494250-muvttj.pdf\" al_land.pdf)",
-      "Bash(/opt/homebrew/bin/pdftotext -layout al_land.pdf al_land.txt)"
+      "Bash(/opt/homebrew/bin/pdftotext -layout al_land.pdf al_land.txt)",
+      "Bash(ls /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli 2>/dev/null; which kicad-cli; ls /Users/rvbcrs/GitHub/PoolLab/pcb/pura-mainboard-0805-0.3.kicad/; ls /Users/rvbcrs/GitHub/PoolLab/pcb/)",
+      "Read(//Applications/KiCad/KiCad.app/Contents/MacOS/**)"
     ]
   }
 }
