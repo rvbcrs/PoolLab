@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "pura")(type "KiCad")(uri "/Users/rvbcrs/GitHub/PoolLab/pcb/pura-mainboard-0.4.kicad/pura.kicad_sym")(options "")(descr "Pura project symbols (tscircuit-compatible pin numbering)"))
+)
